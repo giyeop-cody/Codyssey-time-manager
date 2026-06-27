@@ -1,16 +1,9 @@
 package kr.codyssey.campus.access.model
 
 data class SessionRecord(
-    val entryTime: String, // e.g. "09:42:32"
-    val exitTime: String,  // e.g. "12:29:03" or "-"
-    val durationStr: String // e.g. "02:46:31" or "진행중"
-)
-
-data class DayAccessRecord(
-    val day: Int,
-    val totalRecognizedMinutes: Int,
-    val hasDetail: Boolean,
-    val sessions: List<SessionRecord> = emptyList()
+    val entryTime: String,
+    val exitTime: String,
+    val durationStr: String
 )
 
 data class AlarmConfig(
@@ -19,3 +12,10 @@ data class AlarmConfig(
     val targetDurationMinutes: Int,
     val baseEntryTimeStr: String
 )
+
+fun formatMins(mins: Int): String {
+    if (mins <= 0) return "0분"
+    val h = mins / 60
+    val m = mins % 60
+    return if (h == 0) "${m}분" else "${h}시간 ${m}분"
+}

@@ -3,6 +3,7 @@ package kr.codyssey.campus.access.bridge
 import android.os.Handler
 import android.os.Looper
 import android.webkit.JavascriptInterface
+import kr.codyssey.campus.access.model.SessionRecord
 import org.json.JSONObject
 
 data class ScrapedAccessPayload(
@@ -11,7 +12,9 @@ data class ScrapedAccessPayload(
     val lastEntryTimeStr: String,
     val isCurrentlyInside: Boolean,
     val currentUrl: String = "",
-    val isSuccessfullyScraped: Boolean = false
+    val isSuccessfullyScraped: Boolean = false,
+    val dayTotalsMap: Map<Int, Int> = emptyMap(),
+    val tableSessions: List<SessionRecord> = emptyList()
 )
 
 class CodysseyWebBridge(private val onDataScraped: (ScrapedAccessPayload) -> Unit) {
@@ -26,7 +29,35 @@ class CodysseyWebBridge(private val onDataScraped: (ScrapedAccessPayload) -> Uni
             val entryStr = json.optString("entryStr", "-")
             val isInside = json.optBoolean("isInside", false)
 
-            val hasRealData = (mRec > 0 || dRec > 0 || (entryStr != "-" && entryStr != ""))
+            val mapObj = json.optJSONObject("dayTotalsMap")
+            val dayMap = mutableMapOf<Int, Int>()
+            if (mapObj != null) {
+                mapObj.keys().forEach { k ->
+                    val dayNum = k.toIntOrNull()
+                    if (dayNum != null) {
+                        dayMap[dayNum] = mapObj.optInt(k, 0)
+                    }
+                }
+            }
+
+            val sessArr = json.optJSONArray("tableSessions")
+            val sessions = mutableListOf<SessionRecord>()
+            if (sessArr != null) {
+                for (i in 0 until sessArr.length()) {
+                    val item = sessArr.optJSONObject(i)
+                    if (item != null) {
+                        sessions.add(
+                            SessionRecord(
+                                entryTime = item.optString("entry", ""),
+                                exitTime = item.optString("exit", "-"),
+                                durationStr = item.optString("dur", "")
+                            )
+                        )
+                    }
+                }
+            }
+
+            val hasRealData = (mRec > 0 || dRec > 0 || sessions.isNotEmpty() || dayMap.isNotEmpty())
 
             val payload = ScrapedAccessPayload(
                 monthlyRecognizedMinutes = mRec,
@@ -34,7 +65,9 @@ class CodysseyWebBridge(private val onDataScraped: (ScrapedAccessPayload) -> Uni
                 lastEntryTimeStr = entryStr,
                 isCurrentlyInside = isInside,
                 currentUrl = url,
-                isSuccessfullyScraped = hasRealData
+                isSuccessfullyScraped = hasRealData,
+                dayTotalsMap = dayMap,
+                tableSessions = sessions
             )
 
             Handler(Looper.getMainLooper()).post {
