@@ -17,10 +17,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import kr.codyssey.campus.access.alarm.ExitAlarmReceiver
-import kr.codyssey.campus.access.bridge.ScrapedAccessPayload
 import kr.codyssey.campus.access.model.AlarmConfig
-import kr.codyssey.campus.access.ui.DashboardScreen
-import kr.codyssey.campus.access.ui.HybridLoginScreen
+import kr.codyssey.campus.access.ui.MainHybridDashboardScreen
 import kr.codyssey.campus.access.ui.theme.CodysseyAccessTheme
 
 class MainActivity : ComponentActivity() {
@@ -39,46 +37,33 @@ class MainActivity : ComponentActivity() {
         setContent {
             CodysseyAccessTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    var isLoggedIn by remember { mutableStateOf(showModalFromAlarm) }
                     var activeAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
                     var isRingingOverlay by remember { mutableStateOf(showModalFromAlarm) }
-                    var liveScrapedData by remember { mutableStateOf(ScrapedAccessPayload(3764, 166, "12:56:44", true)) }
 
                     if (showModalFromAlarm) {
-                        LaunchedEffect(Unit) {
-                            playAlarmChime()
-                        }
+                        LaunchedEffect(Unit) { playAlarmChime() }
                     }
 
-                    if (!isLoggedIn) {
-                        HybridLoginScreen(
-                            onLoginSuccess = { isLoggedIn = true },
-                            onDataScraped = { payload -> liveScrapedData = payload }
-                        )
-                    } else {
-                        DashboardScreen(
-                            liveData = liveScrapedData,
-                            onSetAlarm = { durMins ->
-                                scheduleExactExitAlarm(durMins)
-                                val tgtMs = System.currentTimeMillis() + durMins * 60 * 1000L
-                                activeAlarm = AlarmConfig(true, tgtMs, durMins, liveScrapedData.lastEntryTimeStr)
-                                Toast.makeText(this@MainActivity, "⏰ 스마트 백그라운드 퇴실 알람이 설정되었습니다!", Toast.LENGTH_SHORT).show()
-                            },
-                            onCancelAlarm = {
-                                cancelExitAlarm()
-                                activeAlarm = null
-                                Toast.makeText(this@MainActivity, "알람이 해제되었습니다.", Toast.LENGTH_SHORT).show()
-                            },
-                            activeAlarm = activeAlarm,
-                            isRingingOverlay = isRingingOverlay,
-                            onDismissOverlay = {
-                                stopAlarmChime()
-                                isRingingOverlay = false
-                                activeAlarm = null
-                            },
-                            onReopenWebView = { isLoggedIn = false }
-                        )
-                    }
+                    MainHybridDashboardScreen(
+                        onSetAlarm = { durMins ->
+                            scheduleExactExitAlarm(durMins)
+                            val tgtMs = System.currentTimeMillis() + durMins * 60 * 1000L
+                            activeAlarm = AlarmConfig(true, tgtMs, durMins, "12:56:44")
+                            Toast.makeText(this@MainActivity, "⏰ 스마트 백그라운드 퇴실 알람이 설정되었습니다!", Toast.LENGTH_SHORT).show()
+                        },
+                        onCancelAlarm = {
+                            cancelExitAlarm()
+                            activeAlarm = null
+                            Toast.makeText(this@MainActivity, "알람이 해제되었습니다.", Toast.LENGTH_SHORT).show()
+                        },
+                        activeAlarm = activeAlarm,
+                        isRingingOverlay = isRingingOverlay,
+                        onDismissOverlay = {
+                            stopAlarmChime()
+                            isRingingOverlay = false
+                            activeAlarm = null
+                        }
+                    )
                 }
             }
         }
