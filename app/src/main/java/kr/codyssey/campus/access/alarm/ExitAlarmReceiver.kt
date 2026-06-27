@@ -35,17 +35,15 @@ class ExitAlarmReceiver : BroadcastReceiver() {
 
         // Show system notification
         val notifManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "Codyssey 퇴실 풀스크린 알람",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "퇴실 목표 시간 도달 시 화면 잠금 및 소리 알림"
-                enableVibration(true)
-            }
-            notifManager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "Codyssey 퇴실 풀스크린 알람",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "퇴실 목표 시간 도달 시 화면 잠금 및 소리 알림"
+            enableVibration(true)
         }
+        notifManager.createNotificationChannel(channel)
 
         val fullScreenIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP

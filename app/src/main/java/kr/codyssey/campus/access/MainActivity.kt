@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION.M && !Settings.canDrawOverlays(this)) {
+        if (!Settings.canDrawOverlays(this)) {
             val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
             startActivity(intent)
         }
@@ -102,16 +102,14 @@ class MainActivity : ComponentActivity() {
 
         val triggerTimeMs = System.currentTimeMillis() + durationMinutes * 60 * 1000L
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION.S) {
+        if (Build.VERSION.SDK_INT >= 31) {
             if (alarmManager.canScheduleExactAlarms()) {
                 alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTimeMs, pendingIntent)
             } else {
                 alarmManager.setWindow(AlarmManager.RTC_WAKEUP, triggerTimeMs, 60000L, pendingIntent)
             }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION.M) {
-            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTimeMs, pendingIntent)
         } else {
-            alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerTimeMs, pendingIntent)
+            alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerTimeMs, pendingIntent)
         }
     }
 
