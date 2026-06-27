@@ -36,7 +36,7 @@ fun MainHybridDashboardScreen(
     var liveData by remember { mutableStateOf(ScrapedAccessPayload(0, 0, "-", false)) }
     var inputHours by remember { mutableStateOf(4) }
     var inputMins by remember { mutableStateOf(0) }
-    var currentWebUrl by remember { mutableStateOf("https://usr.codyssey.kr/main/access-time?year=2026&month=06") }
+    var currentWebUrl by remember { mutableStateOf("https://codyssey.kr/loginForm") } // Official initial login target
     var webViewInstance: WebView? by remember { mutableStateOf(null) }
 
     var ticks by remember { mutableStateOf(0) }
@@ -64,21 +64,21 @@ fun MainHybridDashboardScreen(
                         Text("⛵", fontSize = 24.sp)
                         Spacer(Modifier.width(8.dp))
                         Column {
-                            Text("Codyssey 실제 공식 연동", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
-                            val statusText = if (liveData.isSuccessfullyScraped) "🟢 실제 라이브 DOM 연동 중" else "📡 로그인 및 데이터 감지 중..."
+                            Text("Codyssey 실제 계정 연동 중", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.onSurface)
+                            val statusText = if (liveData.isSuccessfullyScraped) "🟢 실제 라이브 출입데이터 연동 중" else "⚡ 자동 로그인 및 페이지 이동 중..."
                             Text(statusText, fontSize = 11.sp, color = if(liveData.isSuccessfullyScraped) Color(0xFF10B981) else Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
                         }
                     }
                     OutlinedButton(
-                        onClick = { webViewInstance?.loadUrl("https://usr.codyssey.kr/login") },
+                        onClick = { webViewInstance?.loadUrl("https://codyssey.kr/loginForm") },
                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
                     ) {
-                        Text("🌐 세션 로그인", fontSize = 11.sp)
+                        Text("🌐 로그인 폼", fontSize = 11.sp)
                     }
                 }
             }
 
-            // 2. Main Official Live WebView Viewport (User interacts directly with authentic Codyssey)
+            // 2. Main Official Live WebView Viewport (Auto logs in and loads real user site)
             Box(modifier = Modifier.weight(1f).fillMaxWidth().background(Color.White)) {
                 AndroidView(
                     factory = { ctx ->
@@ -100,58 +100,94 @@ fun MainHybridDashboardScreen(
                             webViewClient = object : WebViewClient() {
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
-                                    val scraperScript = """
-                                        javascript:(function() {
-                                            function parseKoreanMins(str) {
-                                                if(!str) return 0;
-                                                let tot = 0;
-                                                const h = str.match(/(\d+)\s*시간/); const m = str.match(/(\d+)\s*분/);
-                                                if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
-                                                return tot;
-                                            }
-                                            function scrapeRealCodyssey() {
-                                                let mRec = 0, dRec = 0, entryStr = "-", isInside = false;
-                                                const totalsDl = document.querySelector('.access-month-nav__totals');
-                                                if (totalsDl) {
-                                                    totalsDl.querySelectorAll('div, dl').forEach(el => {
-                                                        if (el.textContent.includes('총 반영시간') || el.textContent.includes('반영시간')) {
-                                                            const dd = el.querySelector('dd') || el;
-                                                            mRec = parseKoreanMins(dd.textContent);
-                                                        }
-                                                    });
+                                    
+                                    // 1. Auto Login injection for rlduq1993@gmail.com
+                                    if (url?.contains("login") == true || url?.contains("codyssey.kr") == true) {
+                                        val autoLoginScript = """
+                                            javascript:(function() {
+                                                const idEl = document.getElementById('userId') || document.querySelector('input[name="userId"]');
+                                                const pwEl = document.getElementById('password') || document.querySelector('input[name="password"]');
+                                                const formEl = document.getElementById('login') || document.querySelector('form');
+
+                                                if (idEl && pwEl && !window._codySubmitted) {
+                                                    window._codySubmitted = true;
+                                                    idEl.value = "rlduq1993@gmail.com";
+                                                    pwEl.value = "coddjaakwhgdk11!";
+                                                    
+                                                    idEl.dispatchEvent(new Event('input', { bubbles: true }));
+                                                    idEl.dispatchEvent(new Event('change', { bubbles: true }));
+                                                    pwEl.dispatchEvent(new Event('input', { bubbles: true }));
+                                                    pwEl.dispatchEvent(new Event('change', { bubbles: true }));
+
+                                                    const btn = document.querySelector('button[type="submit"]') || (formEl && formEl.querySelector('.btn-default'));
+                                                    if (btn) btn.click();
+                                                    else if (formEl) formEl.submit();
                                                 }
-                                                if (mRec === 0) {
-                                                    document.querySelectorAll('dt, span, div, p').forEach(el => {
-                                                        if (el.textContent.trim() === '총 반영시간' || el.textContent.trim() === '반영시간') {
-                                                            const next = el.nextElementSibling || el.parentElement.querySelector('dd, strong, span:last-child');
-                                                            if (next) mRec = parseKoreanMins(next.textContent);
-                                                        }
-                                                    });
+                                            })();
+                                        """.trimIndent()
+                                        view?.evaluateJavascript(autoLoginScript, null)
+                                    }
+
+                                    // 2. Redirect after login to access-time page
+                                    if (url != null && !url.contains("login") && !url.contains("access-time") && (url.contains("codyssey.kr") || url.contains("main"))) {
+                                        view?.loadUrl("https://usr.codyssey.kr/main/access-time?year=2026&month=06")
+                                    }
+
+                                    // 3. True Live DOM Scraper Loop
+                                    if (url?.contains("access-time") == true || url?.contains("main") == true) {
+                                        val scraperScript = """
+                                            javascript:(function() {
+                                                function parseKoreanMins(str) {
+                                                    if(!str) return 0;
+                                                    let tot = 0;
+                                                    const h = str.match(/(\d+)\s*시간/); const m = str.match(/(\d+)\s*분/);
+                                                    if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
+                                                    return tot;
                                                 }
-                                                const dayEl = document.querySelector('.access-detail__day-total');
-                                                if (dayEl) dRec = parseKoreanMins(dayEl.textContent);
-                                                else {
-                                                    document.querySelectorAll('header strong, .access-detail strong').forEach(el => {
-                                                        if (el.textContent.includes('시간') || el.textContent.includes('분')) dRec = parseKoreanMins(el.textContent);
-                                                    });
-                                                }
-                                                const rows = document.querySelectorAll('.access-detail__table tbody tr, table tbody tr');
-                                                if (rows && rows.length > 0) {
-                                                    const last = rows[rows.length - 1]; const tds = last.querySelectorAll('td');
-                                                    if (tds.length >= 2) {
-                                                        entryStr = tds[0].textContent.trim();
-                                                        const exitStr = tds[1].textContent.trim();
-                                                        if (exitStr === '-' || tds[1].classList.contains('is-placeholder') || exitStr.includes('진행')) isInside = true;
+                                                function scrapeRealCodyssey() {
+                                                    let mRec = 0, dRec = 0, entryStr = "-", isInside = false;
+                                                    const totalsDl = document.querySelector('.access-month-nav__totals');
+                                                    if (totalsDl) {
+                                                        totalsDl.querySelectorAll('div, dl').forEach(el => {
+                                                            if (el.textContent.includes('총 반영시간') || el.textContent.includes('반영시간')) {
+                                                                const dd = el.querySelector('dd') || el;
+                                                                mRec = parseKoreanMins(dd.textContent);
+                                                            }
+                                                        });
                                                     }
+                                                    if (mRec === 0) {
+                                                        document.querySelectorAll('dt, span, div, p').forEach(el => {
+                                                            if (el.textContent.trim() === '총 반영시간' || el.textContent.trim() === '반영시간') {
+                                                                const next = el.nextElementSibling || el.parentElement.querySelector('dd, strong, span:last-child');
+                                                                if (next) mRec = parseKoreanMins(next.textContent);
+                                                            }
+                                                        });
+                                                    }
+                                                    const dayEl = document.querySelector('.access-detail__day-total');
+                                                    if (dayEl) dRec = parseKoreanMins(dayEl.textContent);
+                                                    else {
+                                                        document.querySelectorAll('header strong, .access-detail strong').forEach(el => {
+                                                            if (el.textContent.includes('시간') || el.textContent.includes('분')) dRec = parseKoreanMins(el.textContent);
+                                                        });
+                                                    }
+                                                    const rows = document.querySelectorAll('.access-detail__table tbody tr, table tbody tr');
+                                                    if (rows && rows.length > 0) {
+                                                        const last = rows[rows.length - 1]; const tds = last.querySelectorAll('td');
+                                                        if (tds.length >= 2) {
+                                                            entryStr = tds[0].textContent.trim();
+                                                            const exitStr = tds[1].textContent.trim();
+                                                            if (exitStr === '-' || tds[1].classList.contains('is-placeholder') || exitStr.includes('진행')) isInside = true;
+                                                        }
+                                                    }
+                                                    const payload = JSON.stringify({ url: window.location.href, mRec, dRec, entryStr, isInside });
+                                                    AndroidBridge.onLiveDomScraped(payload);
                                                 }
-                                                const payload = JSON.stringify({ url: window.location.href, mRec, dRec, entryStr, isInside });
-                                                AndroidBridge.onLiveDomScraped(payload);
-                                            }
-                                            scrapeRealCodyssey();
-                                            setInterval(scrapeRealCodyssey, 1000);
-                                        })();
-                                    """.trimIndent()
-                                    view?.evaluateJavascript(scraperScript, null)
+                                                scrapeRealCodyssey();
+                                                setInterval(scrapeRealCodyssey, 1000);
+                                            })();
+                                        """.trimIndent()
+                                        view?.evaluateJavascript(scraperScript, null)
+                                    }
                                 }
                             }
                             loadUrl(currentWebUrl)
@@ -171,7 +207,7 @@ fun MainHybridDashboardScreen(
                 Column(Modifier.padding(16.dp)) {
                     if (!liveData.isSuccessfullyScraped) {
                         Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Color(0xFF0F172A)).border(1.dp, Color(0xFF38BDF8), RoundedCornerShape(10.dp)).padding(14.dp), contentAlignment = Alignment.Center) {
-                            Text("📡 실제 코디세이 웹 대시보드 로그인 대기 중...\n상단 웹뷰 창에서 본인의 실제 계정으로 로그인해주세요.", color = Color(0xFF38BDF8), fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 18.sp)
+                            Text("⚡ 이메일(rlduq1993@gmail.com) 자동 로그인 및 실제 페이지 데이터 스캔 중...\n잠시만 기다리시면 본인의 진짜 라이브 출입 시간이 컨트롤러에 연동됩니다.", color = Color(0xFF38BDF8), fontSize = 12.sp, textAlign = TextAlign.Center, lineHeight = 18.sp)
                         }
                     } else {
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -196,7 +232,7 @@ fun MainHybridDashboardScreen(
                             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primary.copy(alpha=0.15f)).padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("⏰ 실제 계정 연동 퇴실 알람 작동 중!", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
                                 Text("$hh:$mm:$ss", fontSize = 28.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
-                                Text("어떤 앱을 보고 있어도 풀스크린 팝업이 울립니다.", fontSize = 11.sp, color = Color.Gray)
+                                Text("다른 탭이나 앱을 보고 있어도 풀스크린 팝업이 울립니다.", fontSize = 11.sp, color = Color.Gray)
                                 Spacer(Modifier.height(10.dp))
                                 Button(onClick = onCancelAlarm, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)), modifier = Modifier.fillMaxWidth().height(42.dp)) {
                                     Text("알람 해제하기", fontWeight = FontWeight.Bold)
