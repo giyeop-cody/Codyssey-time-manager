@@ -10,7 +10,8 @@ data class ScrapedAccessPayload(
     val dailyCompletedMinutes: Int,
     val lastEntryTimeStr: String,
     val isCurrentlyInside: Boolean,
-    val timestamp: Long = System.currentTimeMillis()
+    val currentUrl: String = "",
+    val isSuccessfullyScraped: Boolean = false
 )
 
 class CodysseyWebBridge(private val onDataScraped: (ScrapedAccessPayload) -> Unit) {
@@ -19,19 +20,23 @@ class CodysseyWebBridge(private val onDataScraped: (ScrapedAccessPayload) -> Uni
     fun onLiveDomScraped(jsonStr: String) {
         try {
             val json = JSONObject(jsonStr)
-            val mRec = json.optInt("mRec", 3764) // Default 62h 44m
-            val dRec = json.optInt("dRec", 166)  // Default 2h 46m
-            val entryStr = json.optString("entryStr", "12:56:44")
-            val isInside = json.optBoolean("isInside", true)
+            val url = json.optString("url", "")
+            val mRec = json.optInt("mRec", 0)
+            val dRec = json.optInt("dRec", 0)
+            val entryStr = json.optString("entryStr", "-")
+            val isInside = json.optBoolean("isInside", false)
+
+            val hasRealData = (mRec > 0 || dRec > 0 || (entryStr != "-" && entryStr != ""))
 
             val payload = ScrapedAccessPayload(
                 monthlyRecognizedMinutes = mRec,
                 dailyCompletedMinutes = dRec,
                 lastEntryTimeStr = entryStr,
-                isCurrentlyInside = isInside
+                isCurrentlyInside = isInside,
+                currentUrl = url,
+                isSuccessfullyScraped = hasRealData
             )
 
-            // Post to UI Thread
             Handler(Looper.getMainLooper()).post {
                 onDataScraped(payload)
             }
