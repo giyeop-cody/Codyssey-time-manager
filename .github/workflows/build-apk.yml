@@ -21,16 +21,20 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Setup Gradle
-        uses: gradle/gradle-build-action@v2
-        with:
-          gradle-version: 8.5
+      - name: Download and setup Gradle
+        run: |
+          curl -L -o gradle.zip "https://services.gradle.org/distributions/gradle-8.5-bin.zip"
+          unzip -q gradle.zip
+          export PATH=$PWD/gradle-8.5/bin:$PATH
+          gradle --version
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon
+        run: |
+          export PATH=$PWD/gradle-8.5/bin:$PATH
+          gradle assembleDebug --no-daemon -p app
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
