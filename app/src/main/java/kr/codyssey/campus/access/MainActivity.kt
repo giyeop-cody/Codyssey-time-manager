@@ -22,6 +22,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -30,13 +31,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kr.codyssey.campus.access.alarm.ExitAlarmReceiver
 import kr.codyssey.campus.access.model.AlarmConfig
+import kr.codyssey.campus.access.model.formatMins
 import kr.codyssey.campus.access.ui.theme.CodysseyAccessTheme
 
 class MainActivity : ComponentActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private var activeAlarmState by mutableStateOf<AlarmConfig?>(null)
     private var isRingingState by mutableStateOf(false)
-    private var webViewRef: WebView? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -57,11 +58,10 @@ class MainActivity : ComponentActivity() {
             CodysseyAccessTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // 1. Full Screen Native WebView (Displays official Codyssey)
+                        // 1. Full Screen Native WebView (Displays real authentic Codyssey)
                         AndroidView(
                             factory = { ctx ->
                                 WebView(ctx).apply {
-                                    webViewRef = this
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
                                     settings.databaseEnabled = true
@@ -76,8 +76,9 @@ class MainActivity : ComponentActivity() {
                                             runOnUiThread {
                                                 scheduleExactExitAlarm(targetTimeMs)
                                                 activeAlarmState = AlarmConfig(true, targetTimeMs, durationMins, baseEntryStr)
-                                                webViewRef?.evaluateJavascript("javascript:if(window.setAlarmActiveUI)window.setAlarmActiveUI($targetTimeMs);", null)
-                                                Toast.makeText(ctx, "⏰ 백그라운드 물리 알람이 등록되었습니다! 화면을 꺼도 정해진 시각에 울립니다.", Toast.LENGTH_LONG).show()
+                                                // Notify web UI that alarm was set
+                                                evaluateJavascript("window.onAlarmSet && window.onAlarmSet();", null)
+                                                Toast.makeText(ctx, "⏰ 백그라운드 퇴실 알람이 등록되었습니다!", Toast.LENGTH_LONG).show()
                                             }
                                         }
 
@@ -86,9 +87,14 @@ class MainActivity : ComponentActivity() {
                                             runOnUiThread {
                                                 cancelExitAlarm()
                                                 activeAlarmState = null
-                                                webViewRef?.evaluateJavascript("javascript:if(window.clearAlarmActiveUI)window.clearAlarmActiveUI();", null)
-                                                Toast.makeText(ctx, "⚪ 알람 취소 감지: 예약된 퇴실 알람이 안전하게 해제되었습니다.", Toast.LENGTH_LONG).show()
+                                                // Notify web UI that alarm was cancelled
+                                                evaluateJavascript("window.onAlarmCancelled && window.onAlarmCancelled();", null)
                                             }
+                                        }
+
+                                        @JavascriptInterface
+                                        fun isAlarmActive(): Boolean {
+                                            return activeAlarmState != null
                                         }
                                     }, "AndroidBridge")
 
@@ -97,215 +103,247 @@ class MainActivity : ComponentActivity() {
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
 
-                                            // 1. Hide ALL external navigation UI (Search button, bell, notice, footer on login)
-                                            val hideNavigationCss = """
+                                            // Check if we're on the login page
+                                            val isLoginPage = url?.contains("loginForm") == true || url?.contains("login") == true
+
+                                            // 1. Hide ALL navigation UI elements and login page specific elements
+                                            val hideNavigationCss = if (isLoginPage) {
+                                                // Login page: hide footer, navigation, and alarm panel
+                                                """
                                                 javascript:(function() {
                                                     const styleEl = document.createElement('style');
                                                     styleEl.innerHTML = `
-                                                        #sidebar, #gnb, #footer, footer, .notice, .mobile-menu, .link-area, .btn-link-login, .btn-notification, button[aria-label*="검색"], button[aria-label*="알림"], .breadcrumb a { display: none !important; }
+                                                        #sidebar, #gnb, .notice, .mobile-menu, .link-area, .btn-link-login, .btn-notification, button[aria-label*="검색"], button[aria-label*="알림"], .breadcrumb a, #footer, #codyssey-ext-panel, .access-time-view { display: none !important; }
                                                         #header { padding-left: 16px !important; }
                                                         #content { max-width: 100% !important; width: 100% !important; padding: 16px !important; }
+                                                        body { overflow: hidden !important; }
+                                                    `;
+                                                    document.head.appendChild(styleEl);
+                                                })();
+                                                """.trimIndent()
+                                            } else {
+                                                // Access time page: hide header, navigation, and profile but keep alarm panel
+                                                """
+                                                javascript:(function() {
+                                                    const styleEl = document.createElement('style');
+                                                    styleEl.innerHTML = `
+                                                        #sidebar, #gnb, #header, .notice, .mobile-menu, .link-area, .btn-link-login, .btn-notification, button[aria-label*="검색"], button[aria-label*="알림"], .breadcrumb a, .profile { display: none !important; }
+                                                        #content { max-width: 100% !important; width: 100% !important; padding: 16px !important; margin-top: 0 !important; }
                                                         #codyssey-ext-panel { min-width: 320px !important; width: 100% !important; margin-top: 24px !important; }
                                                     `;
                                                     document.head.appendChild(styleEl);
                                                 })();
-                                            """.trimIndent()
+                                                """.trimIndent()
+                                            }
                                             view?.evaluateJavascript(hideNavigationCss, null)
 
-                                            // 2. SPA Polling DOM Panel Injection & Keep-Alive Heartbeat Loop
-                                            val masterHybridJs = """
+                                            // 3. Login success detection - redirect to access time page
+                                            val loginRedirectJs = """
                                                 javascript:(function() {
-                                                    if (window._codyAppMasterInit) return;
-                                                    window._codyAppMasterInit = true;
+                                                    if (window._loginRedirectInit) return;
+                                                    window._loginRedirectInit = true;
 
-                                                    const DAILY_MAX_MINUTES = 720;
-                                                    let state = { dailyCompletedMins: 0, lastEntryTimeStr: '-', isCurrentlyInside: false, inputHours: 4, inputMinutes: 0 };
-                                                    window._activeAlarmTargetMs = null;
-
-                                                    function parsePageData() {
-                                                        const dayTotalEl = document.querySelector('.access-detail__day-total');
-                                                        if (dayTotalEl) {
-                                                            const h = dayTotalEl.textContent.match(/(\d+)\s*시간/); const m = dayTotalEl.textContent.match(/(\d+)\s*분/);
-                                                            let tot = 0; if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
-                                                            state.dailyCompletedMins = tot;
+                                                    function checkAndRedirect() {
+                                                        const isLoginPage = window.location.href.includes('login');
+                                                        const hasPwInput = document.querySelector('input[type="password"]') !== null;
+                                                        if (isLoginPage && !hasPwInput && !window._redirected) {
+                                                            window._redirected = true;
+                                                            window.location.href = "https://usr.codyssey.kr/main/access-time?year=2026&month=06";
                                                         }
-                                                        const rows = document.querySelectorAll('.access-detail__table tbody tr');
-                                                        state.isCurrentlyInside = false;
-                                                        if (rows && rows.length > 0) {
-                                                            const last = rows[rows.length - 1]; const cells = last.querySelectorAll('td');
-                                                            if (cells.length >= 2) {
-                                                                state.lastEntryTimeStr = cells[0].textContent.trim();
-                                                                const ext = cells[1].textContent.trim();
-                                                                if (ext === '-' || cells[1].classList.contains('is-placeholder') || ext.includes('진행')) state.isCurrentlyInside = true;
+                                                    }
+
+                                                    // Check immediately
+                                                    checkAndRedirect();
+
+                                                    // Also check periodically in case of SPA navigation
+                                                    setInterval(checkAndRedirect, 2000);
+                                                })();
+                                            """.trimIndent()
+                                            view?.evaluateJavascript(loginRedirectJs, null)
+
+                                            // 2. SPA Polling DOM Panel Injection & Session Keep-Alive Heartbeat Loop (only on non-login pages)
+                                            if (!isLoginPage) {
+                                                val masterHybridJs = """
+                                                    javascript:(function() {
+                                                        if (window._codyAppMasterInit) return;
+                                                        window._codyAppMasterInit = true;
+
+                                                        const DAILY_MAX_MINUTES = 720;
+                                                        let state = { dailyCompletedMins: 0, lastEntryTimeStr: '-', isCurrentlyInside: false, inputHours: 4, inputMinutes: 0, isAlarmSet: false };
+
+                                                        // Callback when alarm is successfully set from Android
+                                                        window.onAlarmSet = function() {
+                                                            state.isAlarmSet = true;
+                                                            updateAlarmUI();
+                                                        };
+
+                                                        // Callback when alarm is cancelled
+                                                        window.onAlarmCancelled = function() {
+                                                            state.isAlarmSet = false;
+                                                            updateAlarmUI();
+                                                        };
+
+                                                        function parsePageData() {
+                                                            const dayTotalEl = document.querySelector('.access-detail__day-total');
+                                                            if (dayTotalEl) {
+                                                                const h = dayTotalEl.textContent.match(/(\d+)\s*시간/); const m = dayTotalEl.textContent.match(/(\d+)\s*분/);
+                                                                let tot = 0; if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
+                                                                state.dailyCompletedMins = tot;
+                                                            }
+                                                            const rows = document.querySelectorAll('.access-detail__table tbody tr');
+                                                            state.isCurrentlyInside = false;
+                                                            if (rows && rows.length > 0) {
+                                                                const last = rows[rows.length - 1]; const cells = last.querySelectorAll('td');
+                                                                if (cells.length >= 2) {
+                                                                    state.lastEntryTimeStr = cells[0].textContent.trim();
+                                                                    const ext = cells[1].textContent.trim();
+                                                                    if (ext === '-' || cells[1].classList.contains('is-placeholder') || ext.includes('진행')) state.isCurrentlyInside = true;
+                                                                }
                                                             }
                                                         }
-                                                    }
 
-                                                    function checkAndInjectPanel() {
-                                                        const isLoginPage = window.location.href.includes('login') || document.querySelector('.login-page') != null || document.querySelector('form[name="login"]') != null;
-                                                        if (isLoginPage) {
-                                                            const existingPanel = document.getElementById('codyssey-ext-panel');
-                                                            if (existingPanel) existingPanel.remove();
-                                                            return;
-                                                        }
+                                                        function checkAndInjectPanel() {
+                                                            const existing = document.getElementById('codyssey-ext-panel');
+                                                            if (existing) return; // Already present!
 
-                                                        const existing = document.getElementById('codyssey-ext-panel');
-                                                        if (existing) return;
+                                                            const accessView = document.querySelector('.access-time-view') || document.getElementById('content');
+                                                            if (!accessView) return; // Still hydrating React!
 
-                                                        const accessView = document.querySelector('.access-time-view') || (window.location.href.includes('access-time') && document.getElementById('content'));
-                                                        if (!accessView) return;
-
-                                                        const panel = document.createElement('div'); panel.id = 'codyssey-ext-panel';
-                                                        panel.style.cssText = 'background:#ffffff; border:2px solid #3b82f6; border-radius:16px; padding:20px; box-shadow:0 10px 25px rgba(59,130,246,0.15); color:#1e293b; font-family:sans-serif; margin-top:24px;';
-                                                        
-                                                        if (accessView.parentElement && accessView.parentElement.id == 'content') {
-                                                            accessView.parentElement.appendChild(panel);
-                                                        } else {
-                                                            accessView.appendChild(panel);
-                                                        }
-
-                                                        renderAlarmCard();
-                                                    }
-
-                                                    window.setAlarmActiveUI = function(tgtMs) {
-                                                        window._activeAlarmTargetMs = tgtMs;
-                                                        renderAlarmCard();
-                                                    };
-
-                                                    window.clearAlarmActiveUI = function() {
-                                                        window._activeAlarmTargetMs = null;
-                                                        renderAlarmCard();
-                                                    };
-
-                                                    function renderAlarmCard() {
-                                                        const panel = document.getElementById('codyssey-ext-panel');
-                                                        if (!panel) return;
-
-                                                        if (window._activeAlarmTargetMs != null) {
-                                                            panel.innerHTML = `
-                                                                <div style="background:#eff6ff; border:2px solid #3b82f6; border-radius:12px; padding:20px; text-align:center;">
-                                                                    <div style="font-size:14px; font-weight:bold; color:#1d4ed8; margin-bottom:8px;">⏰ 스마트 퇴실 알람 예약 완료!</div>
-                                                                    <div style="font-size:32px; font-weight:900; color:#2563eb; font-family:monospace; margin:12px 0;" id="cody-countdown">--:--:--</div>
-                                                                    <p style="font-size:12px; color:#64748b; margin:0 0 16px 0; line-height:1.5;">화면을 끄거나 다른 어플을 켜두어도 정해진 시각에 풀스크린 잠금 알람이 울립니다.</p>
-                                                                    <button type="button" id="btn-cancel-alarm" style="width:100%; background:#ef4444; color:white; border:none; padding:14px; border-radius:10px; font-size:15px; font-weight:bold; cursor:pointer; box-shadow:0 4px 12px rgba(239,68,68,0.3);">
-                                                                       🔕 예약된 퇴실 알람 해제하기
-                                                                    </button>
-                                                                </div>
-                                                            `;
-                                                            const cBtn = document.getElementById('btn-cancel-alarm');
-                                                            if(cBtn) cBtn.onclick = () => AndroidBridge.cancelAlarm();
-                                                        } else {
+                                                            const panel = document.createElement('div'); panel.id = 'codyssey-ext-panel';
+                                                            panel.style.cssText = 'background:#ffffff; border:2px solid #3b82f6; border-radius:16px; padding:20px; box-shadow:0 10px 25px rgba(59,130,246,0.15); color:#1e293b; font-family:sans-serif; margin-top:24px;';
                                                             panel.innerHTML = `
                                                                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;border-bottom:2px solid #f1f5f9;padding-bottom:12px;">
                                                                     <b style="font-size:16px;color:#0f172a;">⏰ 추가 체류 알람 매니저</b>
-                                                                    <span id="cody-badge" style="font-size:11px;padding:4px 8px;border-radius:999px;background:#eff6ff;color:#2563eb;font-weight:bold;">진행 중 🟢</span>
+                                                                    <span id="cody-badge" style="font-size:11px;padding:4px 8px;border-radius:999px;background:#eff6ff;color:#2563eb;font-weight:bold;">대기 중</span>
                                                                 </div>
-                                                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                                                                    <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (시간)</div><input type="number" id="in-h" value="4" min="0" max="12" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
-                                                                    <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (분)</div><input type="number" id="in-m" value="0" min="0" max="59" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
-                                                                </div>
-                                                                <div style="display:flex;gap:8px;margin-bottom:16px;">
-                                                                    <button type="button" id="btn-max12" style="flex:2;background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">🔥 최대 12시간 자동</button>
-                                                                    <button type="button" id="btn-30m" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+30분</button>
-                                                                    <button type="button" id="btn-1h" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+1시간</button>
+                                                                <div id="alarm-inputs">
+                                                                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                                                                        <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (시간)</div><input type="number" id="in-h" value="4" min="0" max="12" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
+                                                                        <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (분)</div><input type="number" id="in-m" value="0" min="0" max="59" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
+                                                                    </div>
+                                                                    <div style="display:flex;gap:8px;margin-bottom:16px;">
+                                                                        <button type="button" id="btn-max12" style="flex:2;background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">🔥 최대 12시간 자동</button>
+                                                                        <button type="button" id="btn-30m" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+30분</button>
+                                                                        <button type="button" id="btn-1h" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+1시간</button>
+                                                                    </div>
                                                                 </div>
                                                                 <div style="background:#0f172a;color:white;padding:12px;border-radius:10px;font-size:13px;margin-bottom:16px;">
                                                                     <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:#94a3b8;">예정 퇴실 시각:</span><b style="color:#38bdf8;" id="prev-time">-</b></div>
                                                                     <div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">퇴실 시 오늘 인정:</span><b style="color:#34d399;" id="prev-tot">-</b></div>
                                                                 </div>
-                                                                <button type="button" id="btn-set" style="width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(37,99,235,0.3);">⏰ 스마트 백그라운드 알람 맞추기</button>
+                                                                <div id="alarm-btn-container">
+                                                                    <button type="button" id="btn-set" style="width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(37,99,235,0.3);">⏰ 스마트 백그라운드 알람 맞추기</button>
+                                                                    <button type="button" id="btn-cancel" style="display:none;width:100%;background:linear-gradient(135deg,#ef4444,#dc2626);color:white;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(239,68,68,0.3);">🚫 알람 해제하기</button>
+                                                                </div>
                                                             `;
-                                                            bindSetupEvents();
-                                                        }
-                                                    }
+                                                            accessView.appendChild(panel);
 
-                                                    function bindSetupEvents() {
-                                                        const inH = document.getElementById('in-h'); const inM = document.getElementById('in-m');
-                                                        if(!inH || !inM) return;
-                                                        inH.oninput = () => { state.inputHours = parseInt(inH.value,10)||0; updatePrev(); };
-                                                        inM.oninput = () => { state.inputMinutes = parseInt(inM.value,10)||0; updatePrev(); };
-
-                                                        document.getElementById('btn-max12').onclick = () => {
-                                                            parsePageData();
-                                                            if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
-                                                            const needed = DAILY_MAX_MINUTES - state.dailyCompletedMins;
-                                                            if(needed <= 0) { alert('이미 오늘 12시간 달성 완료!'); return; }
-                                                            state.inputHours = Math.floor(needed/60); state.inputMinutes = needed % 60;
-                                                            inH.value = state.inputHours; inM.value = state.inputMinutes; updatePrev();
-                                                        };
-                                                        document.getElementById('btn-30m').onclick = () => { const tot = state.inputHours*60 + state.inputMinutes + 30; state.inputHours=Math.floor(tot/60); state.inputMinutes=tot%60; inH.value=state.inputHours; inM.value=state.inputMinutes; updatePrev(); };
-                                                        document.getElementById('btn-1h').onclick = () => { state.inputHours+=1; inH.value=state.inputHours; updatePrev(); };
-
-                                                        document.getElementById('btn-set').onclick = () => {
-                                                            parsePageData();
-                                                            if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
-                                                            const dur = state.inputHours*60 + state.inputMinutes;
-                                                            if(dur <= 0) { alert('1분 이상 설정해주세요.'); return; }
-                                                            const parts = state.lastEntryTimeStr.split(':');
-                                                            const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
-                                                            const targetTime = base.getTime() + dur*60*1000;
-                                                            if (targetTime <= Date.now()) { alert('예정 퇴실 시각이 이미 지났습니다!'); return; }
-                                                            AndroidBridge.setAlarm(targetTime, dur, state.lastEntryTimeStr);
-                                                        };
-                                                    }
-
-                                                    function updatePrev() {
-                                                        const timeEl = document.getElementById('prev-time'); const totEl = document.getElementById('prev-tot');
-                                                        if(!timeEl || !totEl) return;
-                                                        const dur = state.inputHours*60 + state.inputMinutes;
-                                                        const parts = state.lastEntryTimeStr.split(':');
-                                                        const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
-                                                        const tgtDate = new Date(base.getTime() + dur*60*1000);
-                                                        timeEl.textContent = tgtDate.toLocaleTimeString('ko-KR');
-                                                        totEl.textContent = Math.floor((state.dailyCompletedMins+dur)/60) + "시간 " + ((state.dailyCompletedMins+dur)%60) + "분 / 최대 12h";
-                                                    }
-
-                                                    function heartbeatAndScrapeLoop() {
-                                                        const isLoginPage = window.location.href.includes('login') || document.querySelector('.login-page') != null || document.querySelector('form[name="login"]') != null;
-                                                        const hasPwInput = (document.querySelector('input[type="password"]') != null);
-                                                        if (isLoginPage && !hasPwInput && !window._redirected) {
-                                                            window._redirected = true;
-                                                            window.location.href = "https://usr.codyssey.kr/main/access-time?year=2026&month=06";
-                                                        }
-
-                                                        const wasInside = state.isCurrentlyInside;
-                                                        parsePageData();
-                                                        checkAndInjectPanel();
-
-                                                        const badgeEl = document.getElementById('cody-badge');
-                                                        if(badgeEl) {
-                                                            badgeEl.textContent = state.isCurrentlyInside ? "🟢 입실 중" : "⚪ 퇴실 완료";
-                                                            badgeEl.style.color = state.isCurrentlyInside ? "#10b981" : "#f59e0b";
-                                                        }
-                                                        if(wasInside && !state.isCurrentlyInside) {
-                                                            AndroidBridge.cancelAlarm();
-                                                        }
-                                                        updatePrev();
-
-                                                        if (window._activeAlarmTargetMs != null) {
-                                                            const remainMs = window._activeAlarmTargetMs - Date.now();
-                                                            const countEl = document.getElementById('cody-countdown');
-                                                            if (countEl) {
-                                                                if (remainMs <= 0) countEl.textContent = "⏰ 알람 울리는 중!";
-                                                                else {
-                                                                    const sec = Math.floor(remainMs / 1000);
-                                                                    const hh = String(Math.floor(sec / 3600)).padStart(2, '0');
-                                                                    const mm = String(Math.floor((sec % 3600) / 60)).padStart(2, '0');
-                                                                    const ss = String(sec % 60).padStart(2, '0');
-                                                                    countEl.textContent = hh + ":" + mm + ":" + ss;
-                                                                }
+                                                            bindPanelEvents();
+                                                            // Check initial alarm state
+                                                            if (AndroidBridge.isAlarmActive()) {
+                                                                state.isAlarmSet = true;
+                                                                updateAlarmUI();
                                                             }
                                                         }
 
-                                                        window.dispatchEvent(new Event('mousemove', {bubbles:true}));
-                                                        window.dispatchEvent(new Event('keydown', {bubbles:true}));
-                                                        window.dispatchEvent(new Event('scroll', {bubbles:true}));
-                                                    }
+                                                        function updateAlarmUI() {
+                                                            const badge = document.getElementById('cody-badge');
+                                                            const inputs = document.getElementById('alarm-inputs');
+                                                            const btnSet = document.getElementById('btn-set');
+                                                            const btnCancel = document.getElementById('btn-cancel');
 
-                                                    parsePageData(); checkAndInjectPanel(); heartbeatAndScrapeLoop(); setInterval(heartbeatAndScrapeLoop, 800);
-                                                })();
-                                            """.trimIndent()
-                                            view?.evaluateJavascript(masterHybridJs, null)
+                                                            if (state.isAlarmSet) {
+                                                                // Alarm is active - show activated state
+                                                                if (badge) {
+                                                                    badge.textContent = '🔔 알람 설정됨';
+                                                                    badge.style.background = '#dcfce7';
+                                                                    badge.style.color = '#16a34a';
+                                                                }
+                                                                if (inputs) inputs.style.display = 'none';
+                                                                if (btnSet) btnSet.style.display = 'none';
+                                                                if (btnCancel) btnCancel.style.display = 'block';
+                                                            } else {
+                                                                // Alarm is not set - show default state
+                                                                if (badge) {
+                                                                    badge.textContent = state.isCurrentlyInside ? '🟢 입실 중' : '⚪ 대기 중';
+                                                                    badge.style.background = '#eff6ff';
+                                                                    badge.style.color = '#2563eb';
+                                                                }
+                                                                if (inputs) inputs.style.display = 'block';
+                                                                if (btnSet) btnSet.style.display = 'block';
+                                                                if (btnCancel) btnCancel.style.display = 'none';
+                                                            }
+                                                        }
+
+                                                        function bindPanelEvents() {
+                                                            const inH = document.getElementById('in-h'); const inM = document.getElementById('in-m');
+                                                            if(!inH || !inM) return;
+                                                            inH.oninput = () => { state.inputHours = parseInt(inH.value,10)||0; updatePrev(); };
+                                                            inM.oninput = () => { state.inputMinutes = parseInt(inM.value,10)||0; updatePrev(); };
+
+                                                            document.getElementById('btn-max12').onclick = () => {
+                                                                parsePageData();
+                                                                if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
+                                                                const needed = DAILY_MAX_MINUTES - state.dailyCompletedMins;
+                                                                if(needed <= 0) { alert('이미 오늘 12시간 달성 완료!'); return; }
+                                                                state.inputHours = Math.floor(needed/60); state.inputMinutes = needed % 60;
+                                                                inH.value = state.inputHours; inM.value = state.inputMinutes; updatePrev();
+                                                            };
+                                                            document.getElementById('btn-30m').onclick = () => { const tot = state.inputHours*60 + state.inputMinutes + 30; state.inputHours=Math.floor(tot/60); state.inputMinutes=tot%60; inH.value=state.inputHours; inM.value=state.inputMinutes; updatePrev(); };
+                                                            document.getElementById('btn-1h').onclick = () => { state.inputHours+=1; inH.value=state.inputHours; updatePrev(); };
+
+                                                            document.getElementById('btn-set').onclick = () => {
+                                                                parsePageData();
+                                                                if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
+                                                                const dur = state.inputHours*60 + state.inputMinutes;
+                                                                if(dur <= 0) { alert('1분 이상 설정해주세요.'); return; }
+                                                                const parts = state.lastEntryTimeStr.split(':');
+                                                                const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
+                                                                const targetTime = base.getTime() + dur*60*1000;
+                                                                if (targetTime <= Date.now()) { alert('예정 퇴실 시각이 이미 지났습니다!'); return; }
+                                                                AndroidBridge.setAlarm(targetTime, dur, state.lastEntryTimeStr);
+                                                            };
+
+                                                            document.getElementById('btn-cancel').onclick = () => {
+                                                                if (confirm('알람을 해제하시겠습니까?')) {
+                                                                    AndroidBridge.cancelAlarm();
+                                                                }
+                                                            };
+                                                        }
+
+                                                        function updatePrev() {
+                                                            const timeEl = document.getElementById('prev-time'); const totEl = document.getElementById('prev-tot');
+                                                            if(!timeEl) return;
+                                                            const dur = state.inputHours*60 + state.inputMinutes;
+                                                            const parts = state.lastEntryTimeStr.split(':');
+                                                            const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
+                                                            const tgtDate = new Date(base.getTime() + dur*60*1000);
+                                                            timeEl.textContent = tgtDate.toLocaleTimeString('ko-KR');
+                                                            totEl.textContent = Math.floor((state.dailyCompletedMins+dur)/60) + "시간 " + ((state.dailyCompletedMins+dur)%60) + "분 / 최대 12h";
+                                                        }
+
+                                                        function heartbeatAndScrapeLoop() {
+                                                            const wasInside = state.isCurrentlyInside;
+                                                            parsePageData();
+                                                            checkAndInjectPanel();
+
+                                                            // Auto-cancel when user leaves (exit detected)
+                                                            if(wasInside && !state.isCurrentlyInside && state.isAlarmSet) {
+                                                                AndroidBridge.cancelAlarm();
+                                                            }
+                                                            updatePrev();
+
+                                                            // 3. Keep-alive heartbeat simulation (dispatches virtual user activity events)
+                                                            window.dispatchEvent(new Event('mousemove', {bubbles:true}));
+                                                            window.dispatchEvent(new Event('keydown', {bubbles:true}));
+                                                            window.dispatchEvent(new Event('scroll', {bubbles:true}));
+                                                        }
+
+                                                        parsePageData(); checkAndInjectPanel(); heartbeatAndScrapeLoop(); setInterval(heartbeatAndScrapeLoop, 1000);
+                                                    })();
+                                                """.trimIndent()
+                                                view?.evaluateJavascript(masterHybridJs, null)
+                                            }
                                         }
                                     }
                                     loadUrl("https://usr.codyssey.kr/main/access-time?year=2026&month=06")
