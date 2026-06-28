@@ -38,7 +38,7 @@ fun DashboardScreen(
 ) {
     var selectedDay by remember { mutableStateOf(27) }
     var devModeOverrideInside by remember { mutableStateOf(false) }
-    var calcMode by remember { mutableStateOf("ADD") } // 'ADD' vs 'GOAL'
+    var isMax12Mode by remember { mutableStateOf(false) }
     var inputHours by remember { mutableStateOf(4) }
     var inputMins by remember { mutableStateOf(0) }
 
@@ -254,66 +254,57 @@ fun DashboardScreen(
                                 }
                             }
                         } else {
-                            // Click-clack Mode Toggle
-                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.background).padding(4.dp)) {
-                                Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if(calcMode=="ADD") MaterialTheme.colorScheme.primary else Color.Transparent).clickable { calcMode="ADD"; inputHours=4; inputMins=0 }.padding(8.dp), contentAlignment = Alignment.Center) {
-                                    Text("➕ 추가 체류 설정", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if(calcMode=="ADD") Color.White else Color.Gray)
-                                }
-                                Box(Modifier.weight(1f).clip(RoundedCornerShape(8.dp)).background(if(calcMode=="GOAL") MaterialTheme.colorScheme.primary else Color.Transparent).clickable { calcMode="GOAL"; inputHours=8; inputMins=0 }.padding(8.dp), contentAlignment = Alignment.Center) {
-                                    Text("🎯 일일 목표 설정", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if(calcMode=="GOAL") Color.White else Color.Gray)
-                                }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    isMax12Mode = true
+                                    val needed = (720 - liveData.dailyCompletedMinutes).coerceAtLeast(0)
+                                    inputHours = needed / 60; inputMins = needed % 60
+                                },
+                                modifier = Modifier.weight(2f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
+                            ) {
+                                Text("🔥 최대 12h 자동", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
+                            OutlinedButton(onClick = { isMax12Mode = false; inputMins += 30; if (inputMins >= 60) { inputHours += inputMins / 60; inputMins %= 60 } }, Modifier.weight(1f)) { Text("+30분", fontSize = 12.sp) }
+                            OutlinedButton(onClick = { isMax12Mode = false; inputHours += 1 }, Modifier.weight(1f)) { Text("+1시간", fontSize = 12.sp) }
+                        }
 
-                            Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(10.dp))
 
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Button(
-                                    onClick = {
-                                        if (calcMode == "ADD") {
-                                            val rem = (720 - curDaily).coerceAtLeast(0)
-                                            inputHours = rem / 60
-                                            inputMins = rem % 60
-                                        } else {
-                                            inputHours = 12; inputMins = 0
-                                        }
-                                    },
-                                    modifier = Modifier.weight(2f),
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f))
-                                ) {
-                                    Text("🔥 최대 12h 자동", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                }
-                                OutlinedButton(onClick = { inputMins += 30; if (inputMins >= 60) { inputHours += inputMins / 60; inputMins %= 60 } }, Modifier.weight(1f)) { Text("+30분", fontSize = 12.sp) }
-                                OutlinedButton(onClick = { inputHours += 1 }, Modifier.weight(1f)) { Text("+1시간", fontSize = 12.sp) }
-                            }
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            OutlinedTextField(value = inputHours.toString(), onValueChange = { isMax12Mode = false; inputHours = it.toIntOrNull() ?: 0 }, label = { Text("추가 체류(시간)") }, modifier = Modifier.weight(1f))
+                            OutlinedTextField(value = inputMins.toString(), onValueChange = { isMax12Mode = false; inputMins = it.toIntOrNull() ?: 0 }, label = { Text("추가 체류(분)") }, modifier = Modifier.weight(1f))
+                        }
 
-                            Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(10.dp))
 
-                            val lblH = if (calcMode == "ADD") "추가 체류(시간)" else "일일 목표(시간)"
-                            val lblM = if (calcMode == "ADD") "추가 체류(분)" else "일일 목표(분)"
+                        val configuredMins = inputHours * 60 + inputMins
+                        var targetMs = 0L
+                        var proj = 0
+                        if (isMax12Mode) {
+                            val needed = (720 - liveData.dailyCompletedMinutes).coerceAtLeast(0)
+                            val baseMs = try { SimpleDateFormat("HH:mm:ss", Locale.KOREA).parse(liveData.lastEntryTimeStr)?.time ?: System.currentTimeMillis() } catch(e:Exception){ System.currentTimeMillis() }
+                            targetMs = System.currentTimeMillis() + needed * 60 * 1000L
+                            proj = 720
+                        } else {
+                            targetMs = System.currentTimeMillis() + configuredMins * 60 * 1000L
+                            proj = (curDaily + configuredMins).coerceAtMost(720)
+                        }
+                        val durMins = ((targetMs - System.currentTimeMillis())/60000L).toInt().coerceAtLeast(1)
+                        val exitDate = remember(targetMs) { Date(targetMs) }
+                        val timeFormat = remember { SimpleDateFormat("a h:mm:ss", Locale.KOREA) }
 
-                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                OutlinedTextField(value = inputHours.toString(), onValueChange = { inputHours = it.toIntOrNull() ?: 0 }, label = { Text(lblH) }, modifier = Modifier.weight(1f))
-                                OutlinedTextField(value = inputMins.toString(), onValueChange = { inputMins = it.toIntOrNull() ?: 0 }, label = { Text(lblM) }, modifier = Modifier.weight(1f))
-                            }
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.background).padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("예정 퇴실 시각: ${timeFormat.format(exitDate)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
+                            Text("오늘 총 인정: ${formatMins(proj)}", fontSize = 12.sp, color = Color.Gray)
+                        }
 
-                            Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
 
-                            val configuredMins = inputHours * 60 + inputMins
-                            val durMins = if (calcMode == "ADD") configuredMins else (configuredMins - curDaily).coerceAtLeast(1)
-                            val exitDate = remember(durMins) { Date(System.currentTimeMillis() + durMins * 60 * 1000L) }
-                            val timeFormat = remember { SimpleDateFormat("a h:mm:ss", Locale.KOREA) }
-                            val projDaily = if (calcMode == "ADD") (curDaily + durMins).coerceAtMost(720) else configuredMins
-
-                            Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(MaterialTheme.colorScheme.background).padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                                Text("예정 퇴실 시각: ${timeFormat.format(exitDate)}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.tertiary)
-                                Text("오늘 총 인정: ${formatMins(projDaily)}", fontSize = 12.sp, color = Color.Gray)
-                            }
-
-                            Spacer(Modifier.height(12.dp))
-
-                            Button(onClick = { onSetAlarm(durMins) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
-                                Text("⏰ 스마트 백그라운드 알람 맞추기", fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                            }
+                        Button(onClick = { onSetAlarm(durMins) }, modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(12.dp)) {
+                            Text("⏰ 스마트 백그라운드 알람 맞추기", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        }
                         }
                     }
                 }
