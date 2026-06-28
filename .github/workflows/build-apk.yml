@@ -1,4 +1,4 @@
-name: Codyssey Android APK Auto Builder
+name: Codyssey NativeUI APK Auto Builder
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    name: Compile APK
+    name: Compile NativeCards APK
     runs-on: ubuntu-latest
 
     steps:
@@ -28,9 +28,9 @@ jobs:
       - name: Compile Debug APK
         run: gradle assembleDebug --no-daemon
 
-      - name: Upload Compiled APK Artifact
+      - name: Upload NativeCards APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Codyssey-Campus-Access-APK
+          name: Codyssey-NativeCards-APK
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 14
