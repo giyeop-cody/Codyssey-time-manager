@@ -140,7 +140,7 @@ class MainActivity : ComponentActivity() {
 
                     if (!isLoggedIn) {
                         NativeLoginScreen { enteredId, enteredPw ->
-                            // Inject manual credentials to hidden WebView
+                            isLoggedIn = true // 로그인 누르는 즉시 대시보드 화면 전환!
                             val loginScript = """
                                 javascript:(function() {
                                     const idEl = document.getElementById('userId') || document.querySelector('input[name="userId"]');
@@ -155,7 +155,7 @@ class MainActivity : ComponentActivity() {
                                 })();
                             """.trimIndent()
                             webViewInstance?.evaluateJavascript(loginScript, null)
-                            Toast.makeText(this@MainActivity, "⛵ 백그라운드 웹뷰에서 공식 로그인 연동을 전송했습니다.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "⛵ 출입시간 현황 대시보드 진입 (실시간 세션 동기화 중)", Toast.LENGTH_SHORT).show()
                         }
                     } else {
                         DashboardScreen(

@@ -20,8 +20,8 @@ import androidx.compose.ui.unit.sp
 fun NativeLoginScreen(
     onDoLogin: (String, String) -> Unit
 ) {
-    var userId by remember { mutableStateOf("rlduq1993@gmail.com") }
-    var password by remember { mutableStateOf("coddjaakwhgdk11!") }
+    var userId by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier
