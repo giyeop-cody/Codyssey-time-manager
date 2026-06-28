@@ -191,17 +191,21 @@ class MainActivity : ComponentActivity() {
                                                                 if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
                                                                 const dur = state.inputHours*60 + state.inputMinutes;
                                                                 if(dur <= 0) { alert('1분 이상 설정해주세요.'); return; }
-                                                                const now = Date.now();
-                                                                const targetTime = now + dur*60*1000;
+                                                                const parts = state.lastEntryTimeStr.split(':');
+                                                                const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
+                                                                const targetTime = base.getTime() + dur*60*1000;
+                                                                if (targetTime <= Date.now()) { alert('예정 퇴실 시각이 이미 지났습니다!'); return; }
                                                                 AndroidBridge.setAlarm(targetTime, dur, state.lastEntryTimeStr);
                                                             };
                                                         }
 
                                                         function updatePrev() {
                                                             const dur = state.inputHours*60 + state.inputMinutes;
-                                                            const tgtDate = new Date(Date.now() + dur*60*1000);
+                                                            const parts = state.lastEntryTimeStr.split(':');
+                                                            const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
+                                                            const tgtDate = new Date(base.getTime() + dur*60*1000);
                                                             document.getElementById('prev-time').textContent = tgtDate.toLocaleTimeString('ko-KR');
-                                                            document.getElementById('prev-tot').textContent = `${Math.floor((state.dailyCompletedMins+dur)/60)}시간 ${((state.dailyCompletedMins+dur)%60)}분 / 최대 12h`;
+                                                            document.getElementById('prev-tot').textContent = Math.floor((state.dailyCompletedMins+dur)/60) + "시간 " + ((state.dailyCompletedMins+dur)%60) + "분 / 최대 12h";
                                                         }
 
                                                         function loop() {
