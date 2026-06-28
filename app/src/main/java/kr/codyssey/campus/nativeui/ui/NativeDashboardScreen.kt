@@ -52,8 +52,8 @@ fun NativeDashboardScreen(
                             Text("🟢 라이브 웹뷰 세션 다크 렌더링 중", fontSize = 11.sp, color = MaterialTheme.colorScheme.tertiary, fontWeight = FontWeight.Bold)
                         }
                     }
-                    Badge(containerColor = if(dataState.isInside) Color(0xFF10B981) else Color(0xFFF59E0B)) {
-                        Text(if(dataState.isInside) "입실 중 🟢" else "퇴실 완료 ⚪", color = Color.White, modifier = Modifier.padding(4.dp))
+                    Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(if(dataState.isInside) Color(0xFF10B981) else Color(0xFFF59E0B)).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                        Text(if(dataState.isInside) "입실 중 🟢" else "퇴실 완료 ⚪", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
