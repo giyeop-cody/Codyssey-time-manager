@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "CodysseyCampusNativeUi"
+rootProject.name = "CodysseyCampusAccess"
 include(":app")

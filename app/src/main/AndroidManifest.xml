@@ -13,7 +13,7 @@
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
-        android:label="Codyssey NativeCards"
+        android:label="Codyssey 출입관리"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
@@ -32,7 +32,7 @@
         </activity>
 
         <receiver
-            android:name=".alarm.AlarmReceiver"
+            android:name=".alarm.ExitAlarmReceiver"
             android:exported="false" />
 
     </application>
