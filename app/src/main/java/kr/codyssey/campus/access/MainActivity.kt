@@ -58,7 +58,7 @@ class MainActivity : ComponentActivity() {
             CodysseyAccessTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     Box(modifier = Modifier.fillMaxSize()) {
-                        // 1. Full Screen Native WebView (Shows real official Codyssey login & access page)
+                        // 1. Full Screen Native WebView (Displays real authentic Codyssey)
                         AndroidView(
                             factory = { ctx ->
                                 WebView(ctx).apply {
@@ -70,14 +70,13 @@ class MainActivity : ComponentActivity() {
                                     CookieManager.getInstance().setAcceptCookie(true)
                                     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
 
-                                    // Bridge for injected DOM panel to schedule Android physical alarms
                                     addJavascriptInterface(object {
                                         @JavascriptInterface
                                         fun setAlarm(targetTimeMs: Long, durationMins: Int, baseEntryStr: String) {
                                             runOnUiThread {
                                                 scheduleExactExitAlarm(targetTimeMs)
                                                 activeAlarmState = AlarmConfig(true, targetTimeMs, durationMins, baseEntryStr)
-                                                Toast.makeText(ctx, "⏰ 폰 물리 알람이 맞추어졌습니다! 앱을 끄거나 화면을 꺼도 알람이 울립니다.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(ctx, "⏰ 백그라운드 퇴실 알람이 등록되었습니다! 화면을 끄거나 앱을 내려도 울립니다.", Toast.LENGTH_LONG).show()
                                             }
                                         }
 
@@ -86,7 +85,7 @@ class MainActivity : ComponentActivity() {
                                             runOnUiThread {
                                                 cancelExitAlarm()
                                                 activeAlarmState = null
-                                                Toast.makeText(ctx, "⚪ 퇴실 처리 감지: 예약된 퇴실 알람이 자동 종료되었습니다.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(ctx, "⚪ 퇴실 완료 감지: 예약된 퇴실 알람이 자동 취소되었습니다.", Toast.LENGTH_LONG).show()
                                             }
                                         }
                                     }, "AndroidBridge")
@@ -96,137 +95,149 @@ class MainActivity : ComponentActivity() {
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
 
-                                            if (url?.contains("access-time") == true || url?.contains("main") == true) {
-                                                // 1. Hide Codyssey navigation UI that allows leaving to other pages
-                                                val hideUiCss = """
-                                                    javascript:(function() {
-                                                        const style = document.createElement('style');
-                                                        style.innerHTML = `
-                                                            #sidebar, #gnb, .notice, .mobile-menu, .link-area, .btn-link-login { display: none !important; }
-                                                            #header { padding-left: 20px !important; }
-                                                            #content { max-width: 100% !important; width: 100% !important; padding: 16px !important; }
-                                                            #codyssey-ext-panel { min-width: 320px !important; width: 100% !important; margin-top: 20px !important; }
+                                            // 1. Hide ALL navigation UI elements (Search button, bell, notice, link-area on login)
+                                            val hideNavigationCss = """
+                                                javascript:(function() {
+                                                    const styleEl = document.createElement('style');
+                                                    styleEl.innerHTML = `
+                                                        #sidebar, #gnb, .notice, .mobile-menu, .link-area, .btn-link-login, .btn-notification, button[aria-label*="검색"], button[aria-label*="알림"], .breadcrumb a { display: none !important; }
+                                                        #header { padding-left: 16px !important; }
+                                                        #content { max-width: 100% !important; width: 100% !important; padding: 16px !important; }
+                                                        #codyssey-ext-panel { min-width: 320px !important; width: 100% !important; margin-top: 24px !important; }
+                                                    `;
+                                                    document.head.appendChild(styleEl);
+                                                })();
+                                            """.trimIndent()
+                                            view?.evaluateJavascript(hideNavigationCss, null)
+
+                                            // 2. SPA Polling DOM Panel Injection & Session Keep-Alive Heartbeat Loop
+                                            val masterHybridJs = """
+                                                javascript:(function() {
+                                                    if (window._codyAppMasterInit) return;
+                                                    window._codyAppMasterInit = true;
+
+                                                    const DAILY_MAX_MINUTES = 720;
+                                                    let state = { dailyCompletedMins: 0, lastEntryTimeStr: '-', isCurrentlyInside: false, inputHours: 4, inputMinutes: 0 };
+
+                                                    function parsePageData() {
+                                                        const dayTotalEl = document.querySelector('.access-detail__day-total');
+                                                        if (dayTotalEl) {
+                                                            const h = dayTotalEl.textContent.match(/(\d+)\s*시간/); const m = dayTotalEl.textContent.match(/(\d+)\s*분/);
+                                                            let tot = 0; if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
+                                                            state.dailyCompletedMins = tot;
+                                                        }
+                                                        const rows = document.querySelectorAll('.access-detail__table tbody tr');
+                                                        state.isCurrentlyInside = false;
+                                                        if (rows && rows.length > 0) {
+                                                            const last = rows[rows.length - 1]; const cells = last.querySelectorAll('td');
+                                                            if (cells.length >= 2) {
+                                                                state.lastEntryTimeStr = cells[0].textContent.trim();
+                                                                const ext = cells[1].textContent.trim();
+                                                                if (ext === '-' || cells[1].classList.contains('is-placeholder') || ext.includes('진행')) state.isCurrentlyInside = true;
+                                                            }
+                                                        }
+                                                    }
+
+                                                    function checkAndInjectPanel() {
+                                                        const existing = document.getElementById('codyssey-ext-panel');
+                                                        if (existing) return; // Already present!
+
+                                                        const accessView = document.querySelector('.access-time-view') || document.getElementById('content');
+                                                        if (!accessView) return; // Still hydrating React!
+
+                                                        const panel = document.createElement('div'); panel.id = 'codyssey-ext-panel';
+                                                        panel.style.cssText = 'background:#ffffff; border:2px solid #3b82f6; border-radius:16px; padding:20px; box-shadow:0 10px 25px rgba(59,130,246,0.15); color:#1e293b; font-family:sans-serif; margin-top:24px;';
+                                                        panel.innerHTML = `
+                                                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;border-bottom:2px solid #f1f5f9;padding-bottom:12px;">
+                                                                <b style="font-size:16px;color:#0f172a;">⏰ 추가 체류 알람 매니저</b>
+                                                                <span id="cody-badge" style="font-size:11px;padding:4px 8px;border-radius:999px;background:#eff6ff;color:#2563eb;font-weight:bold;">진행 중 🟢</span>
+                                                            </div>
+                                                            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+                                                                <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (시간)</div><input type="number" id="in-h" value="4" min="0" max="12" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
+                                                                <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (분)</div><input type="number" id="in-m" value="0" min="0" max="59" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
+                                                            </div>
+                                                            <div style="display:flex;gap:8px;margin-bottom:16px;">
+                                                                <button type="button" id="btn-max12" style="flex:2;background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">🔥 최대 12시간 자동</button>
+                                                                <button type="button" id="btn-30m" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+30분</button>
+                                                                <button type="button" id="btn-1h" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+1시간</button>
+                                                            </div>
+                                                            <div style="background:#0f172a;color:white;padding:12px;border-radius:10px;font-size:13px;margin-bottom:16px;">
+                                                                <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:#94a3b8;">예정 퇴실 시각:</span><b style="color:#38bdf8;" id="prev-time">-</b></div>
+                                                                <div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">퇴실 시 오늘 인정:</span><b style="color:#34d399;" id="prev-tot">-</b></div>
+                                                            </div>
+                                                            <button type="button" id="btn-set" style="width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(37,99,235,0.3);">⏰ 스마트 백그라운드 알람 맞추기</button>
                                                         `;
-                                                        document.head.appendChild(style);
-                                                    })();
-                                                """.trimIndent()
-                                                view?.evaluateJavascript(hideUiCss, null)
+                                                        accessView.appendChild(panel);
 
-                                                // 2. Inject Chrome Extension DOM Helper Panel inside WebView
-                                                val injectPanelJs = """
-                                                    javascript:(function() {
-                                                        if (window._panelInjected) return;
-                                                        window._panelInjected = true;
+                                                        bindPanelEvents();
+                                                    }
 
-                                                        const DAILY_MAX_MINUTES = 720;
-                                                        let state = { dailyCompletedMins: 0, lastEntryTimeStr: '-', isCurrentlyInside: false, inputHours: 4, inputMinutes: 0 };
+                                                    function bindPanelEvents() {
+                                                        const inH = document.getElementById('in-h'); const inM = document.getElementById('in-m');
+                                                        if(!inH || !inM) return;
+                                                        inH.oninput = () => { state.inputHours = parseInt(inH.value,10)||0; updatePrev(); };
+                                                        inM.oninput = () => { state.inputMinutes = parseInt(inM.value,10)||0; updatePrev(); };
 
-                                                        function parsePageData() {
-                                                            const dayTotalEl = document.querySelector('.access-detail__day-total');
-                                                            if (dayTotalEl) {
-                                                                const h = dayTotalEl.textContent.match(/(\d+)\s*시간/); const m = dayTotalEl.textContent.match(/(\d+)\s*분/);
-                                                                let tot = 0; if(h) tot += parseInt(h[1],10)*60; if(m) tot += parseInt(m[1],10);
-                                                                state.dailyCompletedMins = tot;
-                                                            }
-                                                            const rows = document.querySelectorAll('.access-detail__table tbody tr');
-                                                            state.isCurrentlyInside = false;
-                                                            if (rows && rows.length > 0) {
-                                                                const last = rows[rows.length - 1]; const cells = last.querySelectorAll('td');
-                                                                if (cells.length >= 2) {
-                                                                    state.lastEntryTimeStr = cells[0].textContent.trim();
-                                                                    const ext = cells[1].textContent.trim();
-                                                                    if (ext === '-' || cells[1].classList.contains('is-placeholder') || ext.includes('진행')) state.isCurrentlyInside = true;
-                                                                }
-                                                            }
-                                                        }
+                                                        document.getElementById('btn-max12').onclick = () => {
+                                                            parsePageData();
+                                                            if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
+                                                            const needed = DAILY_MAX_MINUTES - state.dailyCompletedMins;
+                                                            if(needed <= 0) { alert('이미 오늘 12시간 달성 완료!'); return; }
+                                                            state.inputHours = Math.floor(needed/60); state.inputMinutes = needed % 60;
+                                                            inH.value = state.inputHours; inM.value = state.inputMinutes; updatePrev();
+                                                        };
+                                                        document.getElementById('btn-30m').onclick = () => { const tot = state.inputHours*60 + state.inputMinutes + 30; state.inputHours=Math.floor(tot/60); state.inputMinutes=tot%60; inH.value=state.inputHours; inM.value=state.inputMinutes; updatePrev(); };
+                                                        document.getElementById('btn-1h').onclick = () => { state.inputHours+=1; inH.value=state.inputHours; updatePrev(); };
 
-                                                        function createUI() {
-                                                            const existing = document.getElementById('codyssey-ext-panel'); if(existing) existing.remove();
-                                                            const panel = document.createElement('div'); panel.id = 'codyssey-ext-panel';
-                                                            panel.style.cssText = 'background:#ffffff; border:2px solid #3b82f6; border-radius:16px; padding:20px; box-shadow:0 10px 25px rgba(59,130,246,0.15); color:#1e293b; font-family:sans-serif;';
-                                                            panel.innerHTML = `
-                                                                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;border-bottom:2px solid #f1f5f9;padding-bottom:12px;">
-                                                                    <b style="font-size:16px;color:#0f172a;">⏰ 스마트 추가 체류 알람 매니저</b>
-                                                                    <span id="cody-badge" style="font-size:11px;padding:4px 8px;border-radius:999px;background:#eff6ff;color:#2563eb;font-weight:bold;">진행 중 🟢</span>
-                                                                </div>
-                                                                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-                                                                    <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (시간)</div><input type="number" id="in-h" value="4" min="0" max="12" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
-                                                                    <div><div style="font-size:11px;color:#64748b;margin-bottom:4px;font-weight:bold;">추가 체류 (분)</div><input type="number" id="in-m" value="0" min="0" max="59" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:8px;text-align:center;font-size:16px;font-weight:bold;"></div>
-                                                                </div>
-                                                                <div style="display:flex;gap:8px;margin-bottom:16px;">
-                                                                    <button type="button" id="btn-max12" style="flex:2;background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">🔥 최대 12시간 자동</button>
-                                                                    <button type="button" id="btn-30m" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+30분</button>
-                                                                    <button type="button" id="btn-1h" style="flex:1;background:#f1f5f9;border:1px solid #cbd5e1;color:#334155;padding:10px;border-radius:8px;font-size:12px;font-weight:bold;cursor:pointer;">+1시간</button>
-                                                                </div>
-                                                                <div style="background:#0f172a;color:white;padding:12px;border-radius:10px;font-size:13px;margin-bottom:16px;">
-                                                                    <div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:#94a3b8;">예정 퇴실 시각:</span><b style="color:#38bdf8;" id="prev-time">-</b></div>
-                                                                    <div style="display:flex;justify-content:space-between;"><span style="color:#94a3b8;">퇴실 시 오늘 인정:</span><b style="color:#34d399;" id="prev-tot">-</b></div>
-                                                                </div>
-                                                                <button type="button" id="btn-set" style="width:100%;background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;border:none;padding:14px;border-radius:10px;font-size:15px;font-weight:bold;cursor:pointer;box-shadow:0 4px 12px rgba(37,99,235,0.3);">⏰ 스마트 백그라운드 알람 맞추기</button>
-                                                            `;
-                                                            const container = document.querySelector('.access-time-view') || document.getElementById('content');
-                                                            if(container) container.appendChild(panel);
-
-                                                            bindEvents();
-                                                        }
-
-                                                        function bindEvents() {
-                                                            const inH = document.getElementById('in-h'); const inM = document.getElementById('in-m');
-                                                            inH.oninput = () => { state.inputHours = parseInt(inH.value,10)||0; updatePrev(); };
-                                                            inM.oninput = () => { state.inputMinutes = parseInt(inM.value,10)||0; updatePrev(); };
-
-                                                            document.getElementById('btn-max12').onclick = () => {
-                                                                parsePageData();
-                                                                if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
-                                                                const needed = DAILY_MAX_MINUTES - state.dailyCompletedMins;
-                                                                if(needed <= 0) { alert('이미 오늘 12시간 달성 완료!'); return; }
-                                                                state.inputHours = Math.floor(needed/60); state.inputMinutes = needed % 60;
-                                                                inH.value = state.inputHours; inM.value = state.inputMinutes; updatePrev();
-                                                            };
-                                                            document.getElementById('btn-30m').onclick = () => { const tot = state.inputHours*60 + state.inputMinutes + 30; state.inputHours=Math.floor(tot/60); state.inputMinutes=tot%60; inH.value=state.inputHours; inM.value=state.inputMinutes; updatePrev(); };
-                                                            document.getElementById('btn-1h').onclick = () => { state.inputHours+=1; inH.value=state.inputHours; updatePrev(); };
-
-                                                            document.getElementById('btn-set').onclick = () => {
-                                                                parsePageData();
-                                                                if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
-                                                                const dur = state.inputHours*60 + state.inputMinutes;
-                                                                if(dur <= 0) { alert('1분 이상 설정해주세요.'); return; }
-                                                                const parts = state.lastEntryTimeStr.split(':');
-                                                                const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
-                                                                const targetTime = base.getTime() + dur*60*1000;
-                                                                if (targetTime <= Date.now()) { alert('예정 퇴실 시각이 이미 지났습니다!'); return; }
-                                                                AndroidBridge.setAlarm(targetTime, dur, state.lastEntryTimeStr);
-                                                            };
-                                                        }
-
-                                                        function updatePrev() {
+                                                        document.getElementById('btn-set').onclick = () => {
+                                                            parsePageData();
+                                                            if(!state.isCurrentlyInside) { alert('퇴실 완료 상태입니다.'); return; }
                                                             const dur = state.inputHours*60 + state.inputMinutes;
+                                                            if(dur <= 0) { alert('1분 이상 설정해주세요.'); return; }
                                                             const parts = state.lastEntryTimeStr.split(':');
                                                             const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
-                                                            const tgtDate = new Date(base.getTime() + dur*60*1000);
-                                                            document.getElementById('prev-time').textContent = tgtDate.toLocaleTimeString('ko-KR');
-                                                            document.getElementById('prev-tot').textContent = Math.floor((state.dailyCompletedMins+dur)/60) + "시간 " + ((state.dailyCompletedMins+dur)%60) + "분 / 최대 12h";
-                                                        }
+                                                            const targetTime = base.getTime() + dur*60*1000;
+                                                            if (targetTime <= Date.now()) { alert('예정 퇴실 시각이 이미 지났습니다!'); return; }
+                                                            AndroidBridge.setAlarm(targetTime, dur, state.lastEntryTimeStr);
+                                                        };
+                                                    }
 
-                                                        function loop() {
-                                                            const wasInside = state.isCurrentlyInside;
-                                                            parsePageData();
-                                                            const b = document.getElementById('cody-badge');
-                                                            if(b) {
-                                                                b.textContent = state.isCurrentlyInside ? "🟢 입실 중" : "⚪ 퇴실 완료";
-                                                                b.style.color = state.isCurrentlyInside ? "#10b981" : "#f59e0b";
-                                                            }
-                                                            if(wasInside && !state.isCurrentlyInside) {
-                                                                AndroidBridge.cancelAlarm();
-                                                            }
-                                                            updatePrev();
-                                                        }
+                                                    function updatePrev() {
+                                                        const timeEl = document.getElementById('prev-time'); const totEl = document.getElementById('prev-tot');
+                                                        if(!timeEl) return;
+                                                        const dur = state.inputHours*60 + state.inputMinutes;
+                                                        const parts = state.lastEntryTimeStr.split(':');
+                                                        const base = new Date(); base.setHours(parseInt(parts[0],10)||0, parseInt(parts[1],10)||0, parseInt(parts[2],10)||0, 0);
+                                                        const tgtDate = new Date(base.getTime() + dur*60*1000);
+                                                        timeEl.textContent = tgtDate.toLocaleTimeString('ko-KR');
+                                                        totEl.textContent = Math.floor((state.dailyCompletedMins+dur)/60) + "시간 " + ((state.dailyCompletedMins+dur)%60) + "분 / 최대 12h";
+                                                    }
 
-                                                        parsePageData(); createUI(); loop(); setInterval(loop, 1000);
-                                                    })();
-                                                """.trimIndent()
-                                                view?.evaluateJavascript(injectPanelJs, null)
-                                            }
+                                                    function heartbeatAndScrapeLoop() {
+                                                        const wasInside = state.isCurrentlyInside;
+                                                        parsePageData();
+                                                        checkAndInjectPanel();
+
+                                                        const badgeEl = document.getElementById('cody-badge');
+                                                        if(badgeEl) {
+                                                            badgeEl.textContent = state.isCurrentlyInside ? "🟢 입실 중" : "⚪ 퇴실 완료";
+                                                            badgeEl.style.color = state.isCurrentlyInside ? "#10b981" : "#f59e0b";
+                                                        }
+                                                        if(wasInside && !state.isCurrentlyInside) {
+                                                            AndroidBridge.cancelAlarm();
+                                                        }
+                                                        updatePrev();
+
+                                                        // 3. Keep-alive heartbeat simulation (dispatches virtual user activity events)
+                                                        window.dispatchEvent(new Event('mousemove', {bubbles:true}));
+                                                        window.dispatchEvent(new Event('keydown', {bubbles:true}));
+                                                        window.dispatchEvent(new Event('scroll', {bubbles:true}));
+                                                    }
+
+                                                    parsePageData(); checkAndInjectPanel(); heartbeatAndScrapeLoop(); setInterval(heartbeatAndScrapeLoop, 1000);
+                                                })();
+                                            """.trimIndent()
+                                            view?.evaluateJavascript(masterHybridJs, null)
                                         }
                                     }
                                     loadUrl("https://usr.codyssey.kr/main/access-time?year=2026&month=06")
