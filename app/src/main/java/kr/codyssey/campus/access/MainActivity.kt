@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
             CodysseyAccessTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     var isLoggedIn by remember { mutableStateOf(showModalFromAlarm) }
+                    var isLoggingIn by remember { mutableStateOf(false) }
                     var activeAlarm by remember { mutableStateOf<AlarmConfig?>(null) }
                     var isRingingOverlay by remember { mutableStateOf(showModalFromAlarm) }
                     var liveScrapedData by remember { mutableStateOf(ScrapedAccessPayload(0, 0, "-", false)) }
@@ -56,7 +57,7 @@ class MainActivity : ComponentActivity() {
                         LaunchedEffect(Unit) { playAlarmChime() }
                     }
 
-                    // Headless Permanent Background WebView (Scrapes data 24/7)
+                    // Headless Permanent Background WebView (Hidden 1dp size)
                     Box(modifier = Modifier.size(1.dp)) {
                         AndroidView(
                             factory = { ctx ->
@@ -73,6 +74,7 @@ class MainActivity : ComponentActivity() {
                                     addJavascriptInterface(CodysseyWebBridge { payload ->
                                         liveScrapedData = payload
                                         if (payload.isSuccessfullyScraped && !isLoggedIn) {
+                                            isLoggingIn = false
                                             isLoggedIn = true
                                         }
                                     }, "AndroidBridge")
@@ -81,23 +83,13 @@ class MainActivity : ComponentActivity() {
                                     webViewClient = object : WebViewClient() {
                                         override fun onPageFinished(view: WebView?, url: String?) {
                                             super.onPageFinished(view, url)
-                                            if (url?.contains("login") == true || url?.contains("codyssey.kr") == true) {
-                                                val prefill = """
-                                                    javascript:(function() {
-                                                        const idEl = document.getElementById('userId') || document.querySelector('input[name="userId"]');
-                                                        const pwEl = document.getElementById('password') || document.querySelector('input[name="password"]');
-                                                        const formEl = document.getElementById('login') || document.querySelector('form');
-                                                        if (idEl && pwEl && !window._sub) {
-                                                            window._sub = true;
-                                                            idEl.value = "rlduq1993@gmail.com"; pwEl.value = "coddjaakwhgdk11!";
-                                                            idEl.dispatchEvent(new Event('input', {bubbles:true}));
-                                                            pwEl.dispatchEvent(new Event('input', {bubbles:true}));
-                                                            const b = document.querySelector('button[type="submit"]') || (formEl && formEl.querySelector('.btn-default'));
-                                                            if(b) b.click(); else if(formEl) formEl.submit();
-                                                        }
-                                                    })();
-                                                """.trimIndent()
-                                                view?.evaluateJavascript(prefill, null)
+                                            
+                                            // Once official login succeeds and redirects to internal campus site
+                                            if (url != null && !url.contains("login") && (url.contains("codyssey.kr") || url.contains("main") || url.contains("access-time"))) {
+                                                if (!isLoggedIn) {
+                                                    isLoggingIn = false
+                                                    isLoggedIn = true // 공식 로그인 완료 확인! 출입시간 현황 화면 전환!
+                                                }
                                             }
 
                                             if (url != null && !url.contains("login") && !url.contains("access-time") && (url.contains("codyssey.kr") || url.contains("main"))) {
@@ -139,8 +131,8 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (!isLoggedIn) {
-                        NativeLoginScreen { enteredId, enteredPw ->
-                            isLoggedIn = true // 로그인 누르는 즉시 대시보드 화면 전환!
+                        NativeLoginScreen(isLoggingIn = isLoggingIn) { enteredId, enteredPw ->
+                            isLoggingIn = true // 홀딩: 백그라운드 웹뷰에서 공식 로그인 인증 완료될 때까지 대기!
                             val loginScript = """
                                 javascript:(function() {
                                     const idEl = document.getElementById('userId') || document.querySelector('input[name="userId"]');
@@ -155,7 +147,6 @@ class MainActivity : ComponentActivity() {
                                 })();
                             """.trimIndent()
                             webViewInstance?.evaluateJavascript(loginScript, null)
-                            Toast.makeText(this@MainActivity, "⛵ 출입시간 현황 대시보드 진입 (실시간 세션 동기화 중)", Toast.LENGTH_SHORT).show()
                         }
                     } else {
                         DashboardScreen(

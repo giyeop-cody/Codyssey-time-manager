@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun NativeLoginScreen(
+    isLoggingIn: Boolean,
     onDoLogin: (String, String) -> Unit
 ) {
     var userId by remember { mutableStateOf("") }
@@ -50,7 +51,7 @@ fun NativeLoginScreen(
             color = MaterialTheme.colorScheme.onBackground
         )
         Text(
-            text = "AI 올인원 마리너 출입 매니저",
+            text = "공식 마리너 출입 매니저",
             fontSize = 14.sp,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold
@@ -58,46 +59,57 @@ fun NativeLoginScreen(
 
         Spacer(modifier = Modifier.height(36.dp))
 
-        OutlinedTextField(
-            value = userId,
-            onValueChange = { userId = it },
-            label = { Text("이메일 아이디") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("비밀번호") },
-            singleLine = true,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp)
-        )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Button(
-            onClick = { onDoLogin(userId, password) },
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp),
-            shape = RoundedCornerShape(12.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.primary
+        if (isLoggingIn) {
+            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
+                Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(14.dp))
+                    Text("⏳ 백그라운드 웹뷰에서 공식 로그인 인증 처리 중...", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                    Text("로그인이 완료되면 자동으로 출입현황 대시보드로 이동합니다.", fontSize = 11.sp, color = Color.Gray, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
+        } else {
+            OutlinedTextField(
+                value = userId,
+                onValueChange = { userId = it },
+                label = { Text("이메일 아이디") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
             )
-        ) {
-            Text(
-                text = "로그인",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimary
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("비밀번호") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp)
             )
+
+            Spacer(modifier = Modifier.height(32.dp))
+
+            Button(
+                onClick = { onDoLogin(userId, password) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary
+                )
+            ) {
+                Text(
+                    text = "로그인",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
         }
     }
 }
