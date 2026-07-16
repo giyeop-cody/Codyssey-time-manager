@@ -27,6 +27,15 @@ public class MainActivity extends BridgeActivity {
 
         super.onCreate(savedInstanceState);
 
+        // L7: 알림 탭으로 앱이 열린 경우 alarmId를 보관 — WebView 로드 후 JS로 전달
+        String alarmId = getIntent() != null ? getIntent().getStringExtra("alarmId") : null;
+        if (alarmId != null) {
+            final String id = alarmId;
+            // 브리지 초기화를 기다려 이벤트 전달 (약간의 지연 후 전송)
+            getBridge().getWebView().postDelayed(
+                    () -> emitNativeEvent("ALARM_TRIGGERED", "알림에서 열기", id), 1500);
+        }
+
         // WebView 디버깅은 디버그 빌드에서만 허용
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
 
@@ -50,6 +59,15 @@ public class MainActivity extends BridgeActivity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         // Mixed content / 임의 권한 허용은 보안상 설정하지 않음(기본값 유지)
+    }
+
+    @Override
+    public void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        // L7: singleTask이므로 백그라운드 복귀(onNewIntent) 경로의 알림 탭도 처리
+        if (intent != null && intent.getStringExtra("alarmId") != null) {
+            emitNativeEvent("ALARM_TRIGGERED", "알림에서 열기", intent.getStringExtra("alarmId"));
+        }
     }
 
     @Override

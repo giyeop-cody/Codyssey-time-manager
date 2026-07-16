@@ -69,6 +69,9 @@ jobs:
 
       - name: Build Debug APK
         working-directory: ./android
+        env:
+          # L12: 태그 빌드 시 태그명을 versionName으로 (예: v1.2.0 → 1.2.0)
+          VERSION_NAME: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload Debug APK
@@ -97,6 +100,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          VERSION_NAME: ${{ github.ref_name }}  # L12: 태그명을 versionName으로
         run: ./gradlew bundleRelease --no-daemon
 
       - name: Upload Release AAB

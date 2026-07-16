@@ -31,10 +31,12 @@ public class CookieManager {
                 }
                 int responseCode = conn.getResponseCode(); // 응답 본문은 불필요
 
-                // Set-Cookie가 오면 세션 갱신으로 간주하고 저장
-                String setCookie = conn.getHeaderField("Set-Cookie");
-                if (setCookie != null) {
-                    cookieManager.setCookie(API_BASE, setCookie);
+                // Set-Cookie 전체 순회 — 다중 쿠키 손실 방지 (L9 연계)
+                java.util.List<String> setCookies = conn.getHeaderFields().get("Set-Cookie");
+                if (setCookies != null) {
+                    for (String cookie : setCookies) {
+                        cookieManager.setCookie(API_BASE, cookie);
+                    }
                     cookieManager.flush();
                 }
             } finally {

@@ -221,23 +221,16 @@ public class NetworkPlugin extends Plugin {
     }
 
     private void addCookies(HttpURLConnection conn) {
-        // 요청 호스트가 codyssey 도메인일 때만 세션 쿠키 첨부 (외부 유출 방지 — N5)
-        if (!isAllowedHost(conn.getURL().getHost())) {
+        // L9: 요청 호스트와 정확히 일치하는 origin의 쿠키만 첨부
+        // (codyssey 계열 전체에 API/AMS 쿠키를 병합 첨부하던 방식은 과다 공유)
+        String host = conn.getURL().getHost();
+        if (!isAllowedHost(host)) {
             return;
         }
-        String cookies = CookieManager.getInstance().getCookie(API_BASE);
+        String origin = conn.getURL().getProtocol() + "://" + host;
+        String cookies = CookieManager.getInstance().getCookie(origin);
         if (cookies != null && !cookies.isEmpty()) {
             conn.setRequestProperty("Cookie", cookies);
-        }
-        // AMS 쿠키도 추가
-        String amsCookies = CookieManager.getInstance().getCookie(AMS_BASE);
-        if (amsCookies != null && !amsCookies.isEmpty()) {
-            String existing = conn.getRequestProperty("Cookie");
-            if (existing != null) {
-                conn.setRequestProperty("Cookie", existing + "; " + amsCookies);
-            } else {
-                conn.setRequestProperty("Cookie", amsCookies);
-            }
         }
     }
 
@@ -246,12 +239,14 @@ public class NetworkPlugin extends Plugin {
     private JSObject readResponse(HttpURLConnection conn) throws Exception {
         int responseCode = conn.getResponseCode();
 
-        // Set-Cookie는 "응답한 호스트" 기준으로만 저장
-        String setCookie = conn.getHeaderField("Set-Cookie");
-        if (setCookie != null) {
+        // L9: Set-Cookie 헤더 전체 순회 (첫 헤더만 읽으면 다중 쿠키 설정 시 손실)
+        java.util.List<String> setCookies = conn.getHeaderFields().get("Set-Cookie");
+        if (setCookies != null) {
             String origin = conn.getURL().getProtocol() + "://" + conn.getURL().getHost();
             CookieManager cookieManager = CookieManager.getInstance();
-            cookieManager.setCookie(origin, setCookie);
+            for (String cookie : setCookies) {
+                cookieManager.setCookie(origin, cookie);
+            }
             cookieManager.flush();
         }
 

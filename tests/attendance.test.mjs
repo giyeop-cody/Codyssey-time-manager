@@ -17,7 +17,12 @@ import {
   projectedMonthly,
   parseAttendance,
   applyOvernightFromPrevMonth,
-  getTodayString
+  getTodayString,
+  buildAlarmName,
+  legacyAlarmName,
+  parseAlarmName,
+  ALARM_PREFIX,
+  LEGACY_ALARM_PREFIX
 } from '../web/js/shared-attendance.js';
 
 // ===== 픽스처 헬퍼 (오늘 날짜 기준으로 동적 생성 → 날짜 독립적) =====
@@ -244,4 +249,38 @@ test('applyOvernightFromPrevMonth: 전월에 미퇴실 없으면 미적용', () 
   const prevData = { detail_list: [dayEntry(`${PM_Y}-${PM_M}-28`, '08:00:00', [session('09:00', '17:00')])] };
   assert.equal(applyOvernightFromPrevMonth(parsed, prevData), false);
   assert.equal(parsed.isCurrentlyIn, false);
+});
+
+// ===== 알람 이름 유틸 (L11/N3 연계 — 구형 호환 포함) =====
+test('buildAlarmName/parseAlarmName: 신형 라운드트립', () => {
+  const name = buildAlarmName('12345', 'exit', 1080);
+  assert.equal(name, `${ALARM_PREFIX}12345_exit_1080`);
+  assert.deepEqual(parseAlarmName(name), { memberId: '12345', type: 'exit', endMinutes: 1080 });
+});
+
+test('parseAlarmName: goal 타입', () => {
+  const name = buildAlarmName('999', 'goal', 600);
+  assert.deepEqual(parseAlarmName(name), { memberId: '999', type: 'goal', endMinutes: 600 });
+});
+
+test('parseAlarmName: 구형(codyssey_exit_*) 호환 → exit 타입으로 정규화', () => {
+  const legacy = legacyAlarmName('12345', 1080);
+  assert.equal(legacy, `${LEGACY_ALARM_PREFIX}12345_1080`);
+  assert.deepEqual(parseAlarmName(legacy), { memberId: '12345', type: 'exit', endMinutes: 1080 });
+});
+
+test('parseAlarmName: 잘못된 입력은 null', () => {
+  assert.equal(parseAlarmName(''), null);
+  assert.equal(parseAlarmName(null), null);
+  assert.equal(parseAlarmName('random_string'), null);
+  assert.equal(parseAlarmName('codyssey_alarm__exit_abc'), null); // endMinutes 비숫자
+  assert.equal(parseAlarmName('codyssey_exit_123'), null); // 필드 부족
+});
+
+test('신형 이름은 구형과 다르게 생성됨 (마이그레이션 대상 판별 가능)', () => {
+  const legacy = legacyAlarmName('12345', 1080);
+  const modern = buildAlarmName('12345', 'exit', 1080);
+  assert.notEqual(legacy, modern);
+  // 둘 다 같은 의미로 파싱됨
+  assert.deepEqual(parseAlarmName(legacy), parseAlarmName(modern));
 });

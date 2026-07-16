@@ -1,13 +1,12 @@
 package kr.codyssey.attendance.plugin;
 
 import android.app.AlarmManager;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.app.PendingIntent;
 import android.os.Build;
-import android.os.Bundle;
+import android.provider.Settings;
 
-import androidx.annotation.NonNull;
 import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.OneTimeWorkRequest;
@@ -29,6 +28,7 @@ import kr.codyssey.attendance.worker.SyncWorker;
 @CapacitorPlugin(name = "AlarmPlugin")
 public class AlarmPlugin extends Plugin {
 
+    // 공통 태그로 모든 알람 작업을 묶고(cancelAll 가능), id 태그로 개별 취소
     private static final String WORK_TAG_ALARM = "codyssey_alarm_";
     private static final String WORK_TAG_PERIODIC = "codyssey_periodic_sync";
 
@@ -49,33 +49,32 @@ public class AlarmPlugin extends Plugin {
             return;
         }
 
-        long delay = triggerTimeMillis - now;
+        // M2 개선: AlarmManager와 WorkManager를 동시에 등록하면 알람이 두 번 울림.
+        // 상호배타 원칙 — 정확 알람 가능하면 AlarmManager만, 불가하면 WorkManager만 사용.
+        boolean exact = canScheduleExact();
 
-        // WorkManager로 정확한 알림 예약 (Doze 모드 대응)
-        Data inputData = new Data.Builder()
-                .putString("label", label)
-                .putString("id", id)
-                .putLong("triggerTime", triggerTimeMillis)
-                .build();
-
-        OneTimeWorkRequest alarmWork = new OneTimeWorkRequest.Builder(AlarmWorker.class)
-                .setInputData(inputData)
-                .setInitialDelay(delay, TimeUnit.MILLISECONDS)
-                .addTag(WORK_TAG_ALARM + id)
-                .build();
-
-        WorkManager.getInstance(getContext()).enqueue(alarmWork);
-
-        // 정확한 시간 보장을 위해 AlarmManager도 병행 (Android 12+ exact alarm 권한 필요)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        if (exact) {
             scheduleExactAlarm(triggerTimeMillis, id, label);
+        } else {
+            enqueueAlarmWork(triggerTimeMillis - now, id, label, triggerTimeMillis);
         }
 
         JSObject result = new JSObject();
         result.put("success", true);
         result.put("id", id);
         result.put("triggerTime", triggerTimeMillis);
+        result.put("exact", exact); // M5: JS가 부정확 알람 여부를 알 수 있도록
         call.resolve(result);
+    }
+
+    // 현재 정확 알람 사용 가능 여부 (M5 처리의 기준)
+    private boolean canScheduleExact() {
+        AlarmManager alarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+        if (alarmManager == null) return false;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return alarmManager.canScheduleExactAlarms();
+        }
+        return true; // S 미만은 별도 권한 없이 정확 알람 가능
     }
 
     @PluginMethod
@@ -87,8 +86,6 @@ public class AlarmPlugin extends Plugin {
         }
 
         WorkManager.getInstance(getContext()).cancelAllWorkByTag(WORK_TAG_ALARM + id);
-
-        // AlarmManager 취소
         cancelExactAlarm(id);
 
         JSObject result = new JSObject();
@@ -98,7 +95,9 @@ public class AlarmPlugin extends Plugin {
 
     @PluginMethod
     public void cancelAll(PluginCall call) {
+        // 공통 태그로 한번에 취소 (예약 시 WORK_TAG_ALARM을 항상 추가함)
         WorkManager.getInstance(getContext()).cancelAllWorkByTag(WORK_TAG_ALARM);
+        // AlarmManager 쪽은 id별 PendingIntent라 모륵 없음 — 스토리지 목록 순회는 JS(LOGOUT)에서 처리
         call.resolve();
     }
 
@@ -130,6 +129,48 @@ public class AlarmPlugin extends Plugin {
         call.resolve();
     }
 
+    // M5: 정확 알람 권한 설정 화면으로 유도 (Android 12+ 전용)
+    @PluginMethod
+    public void requestExactAlarmPermission(PluginCall call) {
+        boolean granted = canScheduleExact();
+        if (!granted && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                Intent intent = new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                getContext().startActivity(intent);
+            } catch (Exception e) {
+                // 일부 기기에서 인텐트 미지원 — 알람 설정 화면으로 폼백
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                    fallback.putExtra(Settings.EXTRA_APP_PACKAGE, getContext().getPackageName());
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    getContext().startActivity(fallback);
+                } catch (Exception ignored) { /* 무시 */ }
+            }
+        }
+        JSObject result = new JSObject();
+        result.put("granted", canScheduleExact());
+        call.resolve(result);
+    }
+
+    // WorkManager 경로 (정확 알람 불가 시의 폼백)
+    private void enqueueAlarmWork(long delayMillis, String id, String label, long triggerTimeMillis) {
+        Data inputData = new Data.Builder()
+                .putString("label", label)
+                .putString("id", id)
+                .putLong("triggerTime", triggerTimeMillis)
+                .build();
+
+        OneTimeWorkRequest alarmWork = new OneTimeWorkRequest.Builder(AlarmWorker.class)
+                .setInputData(inputData)
+                .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
+                .addTag(WORK_TAG_ALARM)          // 공통 태그 (cancelAll용)
+                .addTag(WORK_TAG_ALARM + id)     // 개별 태그 (cancel용)
+                .build();
+
+        WorkManager.getInstance(getContext()).enqueue(alarmWork);
+    }
+
     private void scheduleExactAlarm(long triggerTimeMillis, String id, String label) {
         AlarmManager alarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) return;
@@ -137,7 +178,7 @@ public class AlarmPlugin extends Plugin {
         Intent intent = new Intent(getContext(), AlarmReceiver.class);
         intent.putExtra("label", label);
         intent.putExtra("id", id);
-        intent.setAction("kr.codyssey.attendance.ALARM_TRIGGER");
+        intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 getContext(),
@@ -146,15 +187,7 @@ public class AlarmPlugin extends Plugin {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (alarmManager.canScheduleExactAlarms()) {
-                alarmManager.setExactAndAllowWhileIdle(
-                        AlarmManager.RTC_WAKEUP,
-                        triggerTimeMillis,
-                        pendingIntent
-                );
-            }
-        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             alarmManager.setExactAndAllowWhileIdle(
                     AlarmManager.RTC_WAKEUP,
                     triggerTimeMillis,
@@ -174,7 +207,7 @@ public class AlarmPlugin extends Plugin {
         if (alarmManager == null) return;
 
         Intent intent = new Intent(getContext(), AlarmReceiver.class);
-        intent.setAction("kr.codyssey.attendance.ALARM_TRIGGER");
+        intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 getContext(),

@@ -7,7 +7,11 @@
 // 공통 출입 로직 (단일 소스 — capacitor-adapter.js와 공유)
 import {
   parseAttendance,
-  applyOvernightFromPrevMonth
+  applyOvernightFromPrevMonth,
+  buildAlarmName,
+  legacyAlarmName,
+  parseAlarmName,
+  minutesToHHMM
 } from './shared-attendance.js';
 
 const CONFIG = {
@@ -33,42 +37,6 @@ const DEFAULT_SETTINGS = {
   refreshInterval: 30, // 분
   keepAliveEnabled: false // 세션 무한 연장 방지 — 사용자가 명시적으로 켜는 opt-in
 };
-
-// 알람 이름 프리픽스
-const ALARM_PREFIX = 'codyssey_alarm_';
-
-// ===== 유틸리티 =====
-function timeToMinutes(timeStr) {
-  if (!timeStr) return 0;
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + m;
-}
-
-function minutesToTimeStr(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return `${h}시간 ${m}분`;
-}
-
-function minutesToHHMM(minutes) {
-  const h = String(Math.floor(minutes / 60)).padStart(2, '0');
-  const m = String(minutes % 60).padStart(2, '0');
-  return `${h}:${m}`;
-}
-
-function getCurrentMinutes() {
-  const now = new Date();
-  return now.getHours() * 60 + now.getMinutes();
-}
-
-function getTodayString() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-
-function getMonthString(date = new Date()) {
-  return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
-}
 
 // ===== 스토리지 =====
 async function getStorage(keys) {
@@ -226,24 +194,7 @@ async function fetchAttendance(memberId, year, month) {
   return data;
 }
 
-// ===== 알람 관리 =====
-function buildAlarmName(memberId, type, endMinutes) {
-  return `${ALARM_PREFIX}${memberId}_${type}_${endMinutes}`;
-}
-
-// 알람 이름 파싱 (신형 codyssey_alarm_{memberId}_{type}_{endMinutes} + 구형 호환)
-function parseAlarmName(name) {
-  const parts = name.split('_');
-  if (parts[1] === 'alarm' && parts.length >= 5) {
-    return { memberId: parts[2], type: parts[3], endMinutes: parseInt(parts[4]) };
-  }
-  // 구형 codyssey_exit_{memberId}_{endMinutes}
-  if (parts[1] === 'exit' && parts.length >= 4) {
-    return { memberId: parts[2], type: 'exit', endMinutes: parseInt(parts[3]) };
-  }
-  return null;
-}
-
+// ===== 알람 관리 (이름 생성/파싱은 shared-attendance.js 단일 소스 사용) =====
 async function scheduleExitAlarm(memberId, endMinutes, label = '퇴실 시간', type = 'exit') {
   const now = Date.now();
   const target = new Date();
@@ -273,10 +224,6 @@ async function scheduleExitAlarm(memberId, endMinutes, label = '퇴실 시간', 
   await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: alarmList });
 
   return { success: true, alarmName, triggerTime: target.getTime() };
-}
-
-function legacyAlarmName(memberId, endMinutes) {
-  return `codyssey_exit_${memberId}_${endMinutes}`;
 }
 
 async function cancelExitAlarm(memberId, endMinutes, type = 'exit') {
@@ -378,8 +325,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1);
           const parsed = parseAttendance(data, now);
 
-          // 월 경계 입실(R2): 이달 데이터에서 입실 중이 아니고 월초(1~3일)이면 전월 데이터 확인
-          if (!parsed.isCurrentlyIn && now.getDate() <= 3) {
+          // 월 경계 입실(R2/L4): 이달 데이터에서 입실 중이 아니면 전월 말 데이터 확인
+          // (월초 3일 제한 제거 — 월 어느 날짜든 전월 말 API 1회로 안전하게 판정)
+          if (!parsed.isCurrentlyIn) {
             try {
               const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
               const prevData = await fetchAttendance(memberId, prev.getFullYear(), prev.getMonth() + 1);
@@ -409,12 +357,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } catch (e) {
             sendResponse({ success: false, error: e.message });
           }
-          break;
-        }
-
-        // --- 로그인 ---
-        case 'LOGIN': {
-          sendResponse({ success: true });
           break;
         }
 
@@ -457,44 +399,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
-        // --- 목표 계산 ---
-        case 'CALCULATE_TARGET': {
-          let memberId = await getMemberId();
-          if (!memberId) {
-            sendResponse({ success: false, error: 'NOT_LOGGED_IN' });
-            return;
-          }
-          const { extraMinutes } = message;
-          const now = new Date();
-          const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1);
-          const parsed = parseAttendance(data, now);
-          const settings = await getSettings();
-          
-          const monthlyReq = settings.monthlyRequiredHours * 60;
-          const dailyMax = settings.dailyMaxHours * 60;
-          const nowMin = getCurrentMinutes();
-          const endMin = nowMin + extraMinutes;
-          
-          const newMonthly = parsed.monthlyTotal + extraMinutes;
-          const newDaily = parsed.dailyTotal + extraMinutes;
-          const newMonthlyRemain = Math.max(0, monthlyReq - newMonthly);
-          const newDailyRemain = Math.max(0, dailyMax - newDaily);
-          
-          sendResponse({
-            success: true,
-            endMinutes: endMin,
-            endTimeStr: minutesToHHMM(endMin),
-            newMonthlyTotal: newMonthly,
-            newMonthlyRemain,
-            newDailyTotal: newDaily,
-            newDailyRemain,
-            dailyOver: newDaily > dailyMax,
-            monthlyOver: newMonthly > monthlyReq
-          });
-          break;
-        }
-
-        // --- 알람 설정 ---
         case 'SET_ALARM': {
           const memberId = await getMemberId();
           if (!memberId) {
@@ -555,11 +459,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // --- 로그아웃 ---
         case 'LOGOUT': {
+          const memberIdForLogout = await getMemberId();
           await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
           const all = await getStorage(null);
           const keysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.CACHE));
           if (keysToRemove.length) {
             await chrome.storage.local.remove(keysToRemove);
+          }
+          // M3: 예약된 알람도 전부 정리 (chrome 알람 + 저장 목록)
+          if (memberIdForLogout) {
+            const alarmsKey = CONFIG.STORAGE_KEYS.ALARMS + memberIdForLogout;
+            const stored = all[alarmsKey] || [];
+            for (const a of stored) {
+              if (a && a.name) {
+                try { await chrome.alarms.clear(a.name); } catch (e) { /* 무시 */ }
+              }
+            }
+            await chrome.storage.local.remove(alarmsKey);
           }
           // 서버 세션 쿠키(JSESSIONID 등)도 함께 삭제 — 로그아웃 후 자동 재로그인 방지
           try {
@@ -612,7 +528,58 @@ chrome.runtime.onInstalled.addListener(async (details) => {
     await saveSettings(DEFAULT_SETTINGS);
     console.log('코디세이 출입기록 익스텐션 설치됨');
   }
+  // L8: 구형 알람(codyssey_exit_*)을 신형으로 1회 마이그레이션
+  await migrateLegacyAlarms();
 });
+
+// 구형 알람 마이그레이션: 저장소 항목과 실제 chrome 알람을 신형 이름으로 변환 (L8)
+async function migrateLegacyAlarms() {
+  try {
+    const all = await getStorage(null);
+    const alarmKeys = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.ALARMS));
+
+    for (const key of alarmKeys) {
+      const list = all[key] || [];
+      let changed = false;
+      for (const alarm of list) {
+        if (!alarm || typeof alarm.name !== 'string') continue;
+        const parsed = parseAlarmName(alarm.name);
+        if (!parsed) continue;
+        const newName = buildAlarmName(parsed.memberId, parsed.type, parsed.endMinutes);
+        if (alarm.name !== newName) {
+          const scheduledTime = alarm.time;
+          await chrome.alarms.clear(alarm.name);
+          // 남은 시간이 있으면 신형 이름으로 재등록
+          if (scheduledTime && scheduledTime > Date.now()) {
+            await chrome.alarms.create(newName, { when: scheduledTime });
+          }
+          alarm.name = newName;
+          alarm.type = parsed.type;
+          changed = true;
+        }
+      }
+      if (changed) {
+        await setStorage({ [key]: list });
+      }
+    }
+
+    // 저장소에 없는 구형 chrome 알람도 스캔해 정리/변환
+    const chromeAlarms = await chrome.alarms.getAll();
+    for (const ca of chromeAlarms) {
+      if (!ca.name.startsWith('codyssey_')) continue;
+      const parsed = parseAlarmName(ca.name);
+      if (parsed) {
+        const newName = buildAlarmName(parsed.memberId, parsed.type, parsed.endMinutes);
+        if (ca.name !== newName) {
+          await chrome.alarms.clear(ca.name);
+          await chrome.alarms.create(newName, { when: ca.scheduledTime });
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('구형 알람 마이그레이션 실패:', e);
+  }
+}
 
 // 주기적 백그라운드 동기화 (캐시 무효화)
 chrome.alarms.create('periodic_sync', { periodInMinutes: 30 });

@@ -60,11 +60,26 @@ public class NotificationPlugin extends Plugin {
         call.resolve(result);
     }
 
+    // M7: 알람 id의 hashCode 충돌로 다른 알림을 덮어쓰는 문제 방지 — id별 고유 int 매핑 유지
+    private static int notificationIdFor(Context context, String key) {
+        android.content.SharedPreferences prefs =
+                context.getSharedPreferences("codyssey_notif_ids", Context.MODE_PRIVATE);
+        int existing = prefs.getInt("map_" + key, -1);
+        if (existing >= 0) return existing;
+        int next = prefs.getInt("counter", NOTIFICATION_ID_BASE) + 1;
+        if (next < 0) next = NOTIFICATION_ID_BASE; // 오버플로우 방어
+        prefs.edit()
+                .putInt("counter", next)
+                .putInt("map_" + key, next)
+                .apply();
+        return next;
+    }
+
     public static void showNotification(Context context, String title, String body, String id) {
         createNotificationChannel(context);
 
         String notifIdKey = id != null ? id : "default";
-        int notificationId = notifIdKey.hashCode() & 0x7FFFFFFF;
+        int notificationId = notificationIdFor(context, notifIdKey);
 
         // 앱 실행 인텐트 (설치 직후 등으로 런처 인텐트가 없으면 MainActivity 직접 지정)
         Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());

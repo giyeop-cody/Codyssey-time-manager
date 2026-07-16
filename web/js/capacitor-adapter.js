@@ -23,8 +23,10 @@ import {
     MEMBER_ID: 'member_id',
     SETTINGS: 'settings',
     ALARMS: 'codyssey_alarms',
-    CACHE_PREFIX: 'cache_attendance_'
+    // M4: 캐시 키는 memberId 포함 (계정 전환 시 타인 데이터 노출 방지)
+    cachePrefix: (memberId) => `cache_attendance_${memberId}_`
   };
+  const CACHE_PREFIX_ANY = 'cache_attendance_';
 
   const DEFAULT_SETTINGS = {
     monthlyRequiredHours: 80,
@@ -188,8 +190,8 @@ import {
 
         const parsed = result.parsed;
 
-        // 월 경계 입실(R2): 이달 데이터에 입실 중이 없고 월초이면 전월 확인
-        if (!parsed.isCurrentlyIn && now.getDate() <= 3) {
+        // 월 경계 입실(R2/L4): 이달 데이터에 입실 중이 없으면 전월 말 확인 (월초 제한 제거)
+        if (!parsed.isCurrentlyIn) {
           const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
           const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1);
           if (prevResult.raw) applyOvernightFromPrevMonth(parsed, prevResult.raw);
@@ -274,7 +276,7 @@ import {
         const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
         const alarmName = `codyssey_alarm_${memberId}_${type}_${endMinutes}`;
 
-        await Plugins.AlarmPlugin.schedule({
+        const scheduleResult = await Plugins.AlarmPlugin.schedule({
           triggerTimeMillis: target.getTime(),
           label,
           id: alarmName
@@ -293,7 +295,13 @@ import {
         });
         await setPrefs(STORE_KEYS.ALARMS, filtered);
 
-        return { success: true, alarmName, triggerTime: target.getTime() };
+        // M5: 정확 알람 권한이 없어 부정확 경로(WorkManager)로 예약된 경우 플래그 전달
+        return {
+          success: true,
+          alarmName,
+          triggerTime: target.getTime(),
+          exact: scheduleResult.exact !== false
+        };
       }
 
       case 'CANCEL_ALARM': {
@@ -334,6 +342,16 @@ import {
       }
 
       case 'LOGOUT': {
+        // M3: 네이티브 예약 알람(WorkManager/AlarmManager)을 개별 취소 후 목록 비움
+        const storedAlarms = await getStoredAlarms();
+        if (Plugins.AlarmPlugin) {
+          for (const a of storedAlarms) {
+            if (a && a.name) {
+              try { await Plugins.AlarmPlugin.cancel({ id: a.name }); } catch (e) { /* 무시 */ }
+            }
+          }
+          try { await Plugins.AlarmPlugin.cancelAll({}); } catch (e) { /* 무시 */ }
+        }
         await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID });
         await Plugins.Preferences.remove({ key: STORE_KEYS.ALARMS });
         await clearAttendanceCaches();
@@ -408,22 +426,22 @@ import {
     } catch (e) { /* 무시 */ }
   }
 
-  // ===== 응답 캐시 (N8: 크롬 5분 캐시와 동일) =====
-  async function getCachedAttendance(year, month) {
-    const cached = await getPrefs(STORE_KEYS.CACHE_PREFIX + year + '_' + month);
+  // ===== 응답 캐시 (N8: 크롬 5분 캐시와 동일, M4: memberId 포함 키) =====
+  async function getCachedAttendance(memberId, year, month) {
+    const cached = await getPrefs(STORE_KEYS.cachePrefix(memberId) + year + '_' + month);
     if (cached && cached.timestamp && Date.now() - cached.timestamp < CACHE_TTL_MS) {
       return cached.data;
     }
     return null;
   }
 
-  async function setCachedAttendance(year, month, data) {
-    await setPrefs(STORE_KEYS.CACHE_PREFIX + year + '_' + month, { data, timestamp: Date.now() });
+  async function setCachedAttendance(memberId, year, month, data) {
+    await setPrefs(STORE_KEYS.cachePrefix(memberId) + year + '_' + month, { data, timestamp: Date.now() });
   }
 
   async function clearAttendanceCaches() {
     const all = await Plugins.Preferences.keys();
-    const keys = (all.keys || []).filter(k => k.startsWith(STORE_KEYS.CACHE_PREFIX));
+    const keys = (all.keys || []).filter(k => k.startsWith(CACHE_PREFIX_ANY));
     await Promise.all(keys.map(k => Plugins.Preferences.remove({ key: k })));
   }
 
@@ -453,7 +471,7 @@ import {
 
   // 원본 JSON 조회 (N8 캐시 적용). { raw } 또는 { error }
   async function getAttendanceRaw(memberId, year, month) {
-    const cached = await getCachedAttendance(year, month);
+    const cached = await getCachedAttendance(memberId, year, month);
     if (cached) return { raw: cached };
 
     if (!Plugins.NetworkPlugin) return { error: 'NETWORK_PLUGIN_UNAVAILABLE' };
@@ -477,7 +495,7 @@ import {
       return { error: 'ATTENDANCE_PARSE_ERROR' };
     }
 
-    await setCachedAttendance(year, month, raw);
+    await setCachedAttendance(memberId, year, month, raw);
     return { raw };
   }
 
@@ -516,6 +534,14 @@ import {
       if (!this.isNative) throw new Error('NATIVE_NOT_AVAILABLE');
       const res = await Plugins.NetworkPlugin.authenticate({ userId, password, from: from || '' });
       return { status: res.status || 0, body: res.json || safeJson(res.data) || {} };
+    },
+    // M5: 정확 알람 권한 설정 화면 열기 (Android 12+)
+    requestExactAlarmPermission: async function() {
+      if (!Plugins.AlarmPlugin || !Plugins.AlarmPlugin.requestExactAlarmPermission) {
+        return { granted: true };
+      }
+      const res = await Plugins.AlarmPlugin.requestExactAlarmPermission({});
+      return { granted: res.granted !== false };
     }
   };
 

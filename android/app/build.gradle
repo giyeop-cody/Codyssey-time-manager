@@ -10,8 +10,10 @@ android {
         applicationId "kr.codyssey.attendance"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0.0"
+        // L12: CI에서는 GITHUB_RUN_NUMBER로 versionCode 자동 증가 (로컬은 1)
+        // VERSION_NAME은 태그명에서 전달 (v1.2.0 → 1.2.0으로 v 접두어 제거)
+        versionCode (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
+        versionName (System.getenv('VERSION_NAME') ?: '1.0.0').replaceFirst(/^v/, '')
     }
     buildFeatures {
         buildConfig true

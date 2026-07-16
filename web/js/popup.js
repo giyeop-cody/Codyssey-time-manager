@@ -8,28 +8,13 @@ import {
   recognizedToday,
   recognizedMonthly,
   projectedMonthly,
+  minutesToTimeStr,
+  minutesToHHMM,
+  getTodayString,
   SERVER_DAILY_CAP_MINUTES
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
-function timeToMinutes(timeStr) {
-  if (!timeStr) return 0;
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + m;
-}
-
-function minutesToTimeStr(minutes) {
-  const h = Math.floor(minutes / 60);
-  const m = minutes % 60;
-  return `${h}시간 ${m}분`;
-}
-
-function minutesToHHMM(minutes) {
-  const h = String(Math.floor(minutes / 60)).padStart(2, '0');
-  const m = String(minutes % 60).padStart(2, '0');
-  return `${h}:${m}`;
-}
-
 function getCurrentMinutes() {
   const now = new Date();
   return now.getHours() * 60 + now.getMinutes();
@@ -41,11 +26,6 @@ function formatTime(date) {
 
 function formatMonth(date) {
   return `${date.getFullYear()}년 ${date.getMonth()+1}월`;
-}
-
-function getTodayString() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
 
 // DOM 요소들
@@ -990,6 +970,15 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
     if (response.success) {
       onSuccess();
       showNotification('알람 설정 완료', `${timeStr}에 ${label}이 울립니다.`);
+      // M5: 정확 알람 권한이 없어 부정확 경로로 예약된 경우 안내
+      if (response.exact === false) {
+        setTimeout(() => {
+          alert('정확한 알람 권한이 꺼져 있어 알림 시각이 몇 분 늦어질 수 있습니다.\n알림 권한 설정에서 "정확한 알람"을 허용해주세요.');
+          if (window.CodysseyNative && window.CodysseyNative.isNative) {
+            window.CodysseyNative.requestExactAlarmPermission().catch(() => {});
+          }
+        }, 300);
+      }
     }
   } catch (error) {
     console.error('Set alarm error:', error);
@@ -1137,6 +1126,14 @@ async function performLogin(email, password) {
     if (auth.status >= 400) {
       throw new Error(auth.body?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
     }
+    // L1: 네트워크는 성공이어도 본문의 실패 코드 확인 (서버가 200+에러 JSON 반환 대응)
+    if (auth.body && typeof auth.body === 'object') {
+      const failed = auth.body.success === false
+        || (typeof auth.body.code === 'number' && auth.body.code >= 400);
+      if (failed) {
+        throw new Error(auth.body.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+      }
+    }
     return;
   }
 
@@ -1175,13 +1172,37 @@ async function performLogin(email, password) {
     body: formData.toString()
   });
 
-  // 로그인 성공 시 리다이렉트(302) 또는 JSON 응답 처리
-  if (loginResponse.ok || loginResponse.status === 302 || loginResponse.redirected) {
-    return;
+  // L1/M8 개선: status 외에 응답 본문 + 최종 URL까지 확인.
+  // (redirect:'follow'라 302는 도달 불가 — status만 복면 자격증명 오류를 성공으로 오인 가능)
+  const bodyText = await loginResponse.text().catch(() => '');
+  const finalUrl = loginResponse.url || '';
+
+  // 최종 URL이 로그인 페이지로 되돌아왔거나 본문이 로그인 폼 HTML이면 인증 실패
+  if (/login/i.test(finalUrl) && !/authenticate/i.test(finalUrl)) {
+    throw new Error('로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+  }
+  if (/<!doctype html|<html[\s>]/i.test(bodyText) && /login|로그인/i.test(bodyText)) {
+    throw new Error('로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
   }
 
-  const errorData = await loginResponse.json().catch(() => ({}));
-  throw new Error(errorData.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+  // JSON 응답이면 실패 코드/메시지 확인
+  let bodyJson = null;
+  try { bodyJson = JSON.parse(bodyText); } catch { /* JSON 아님 */ }
+  if (bodyJson) {
+    const failed = bodyJson.success === false
+      || (typeof bodyJson.code === 'number' && bodyJson.code >= 400)
+      || (typeof bodyJson.code === 'string' && /^[45]\d\d/.test(bodyJson.code))
+      || (bodyJson.error && !bodyJson.result);
+    if (failed) {
+      throw new Error(bodyJson.message || bodyJson.errorMessage || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+    }
+  }
+
+  if (!loginResponse.ok && loginResponse.status >= 400) {
+    throw new Error(bodyJson?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+  }
+
+  // 여기까지 통과 = 성공 (redirect 포함 2xx, 또는 에러 없는 JSON)
 }
 
 // ===== 로그아웃 =====

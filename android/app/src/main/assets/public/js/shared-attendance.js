@@ -172,8 +172,7 @@ export function parseAttendance(data, targetDate = new Date()) {
 
 // 전월 데이터에서 미퇴실 세션 감지 (월 경계 입실 — R2)
 // parsed에 입실 중 세션이 없을 때만 적용. 변경 시 true 반환.
-export function applyOvernightFromPrevMonth(parsed, prevMonthData) {
-  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
+export function applyOvernightFromPrevMonth(parsed, prevMonthData) {  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
   const detailList = prevMonthData.detail_list || prevMonthData.result || prevMonthData.data || [];
 
   // 뒤에서부터(최근 날짜 우선) 퇴실 누락 세션 탐색
@@ -193,4 +192,34 @@ export function applyOvernightFromPrevMonth(parsed, prevMonthData) {
     }
   }
   return false;
+}
+
+// ===== 알람 이름 유틸 (background.js와 공유 — L11 중복 제거) =====
+export const ALARM_PREFIX = 'codyssey_alarm_';
+export const LEGACY_ALARM_PREFIX = 'codyssey_exit_';
+
+export function buildAlarmName(memberId, type, endMinutes) {
+  return `${ALARM_PREFIX}${memberId}_${type}_${endMinutes}`;
+}
+
+export function legacyAlarmName(memberId, endMinutes) {
+  return `${LEGACY_ALARM_PREFIX}${memberId}_${endMinutes}`;
+}
+
+// 알람 이름 파싱 (신형 codyssey_alarm_{memberId}_{type}_{endMinutes} + 구형 호환)
+export function parseAlarmName(name) {
+  if (!name || typeof name !== 'string') return null;
+  const parts = name.split('_');
+  if (parts[1] === 'alarm' && parts.length >= 5) {
+    const endMinutes = parseInt(parts[4]);
+    if (isNaN(endMinutes)) return null;
+    return { memberId: parts[2], type: parts[3], endMinutes };
+  }
+  // 구형 codyssey_exit_{memberId}_{endMinutes}
+  if (parts[1] === 'exit' && parts.length >= 4) {
+    const endMinutes = parseInt(parts[3]);
+    if (isNaN(endMinutes)) return null;
+    return { memberId: parts[2], type: 'exit', endMinutes };
+  }
+  return null;
 }
