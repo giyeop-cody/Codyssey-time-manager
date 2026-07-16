@@ -25,11 +25,11 @@ const DEFAULT_SETTINGS = {
   soundEnabled: true,
   autoRefresh: true,
   refreshInterval: 30, // 분
-  keepAliveEnabled: true // 로그인 유지 자동 실행
+  keepAliveEnabled: false // 세션 무한 연장 방지 — 사용자가 명시적으로 켜는 opt-in
 };
 
 // 알람 이름 프리픽스
-const ALARM_PREFIX = 'codyssey_exit_';
+const ALARM_PREFIX = 'codyssey_alarm_';
 
 // ===== 유틸리티 =====
 function timeToMinutes(timeStr) {
@@ -112,6 +112,7 @@ async function setCache(key, data) {
 async function fetchWithAuth(url, options = {}) {
   const defaultOptions = {
     credentials: 'include', // 중요: 세션 쿠키(JSESSIONID) 자동 포함
+    redirect: 'manual', // 302를 직접 감지하기 위해 자동 팔로우 방지
     headers: {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
@@ -119,7 +120,30 @@ async function fetchWithAuth(url, options = {}) {
     }
   };
   const res = await fetch(url, { ...defaultOptions, ...options });
+
+  // 세션 만료 감지: 302 리다이렉트, 401, 로그인 페이지로의 리다이렉트
+  if (res.type === 'opaqueredirect' || res.status === 302 || res.status === 301 || res.status === 401) {
+    throw new Error('AUTH_REQUIRED');
+  }
+  if (res.url && /login/i.test(res.url)) {
+    throw new Error('AUTH_REQUIRED');
+  }
   return res;
+}
+
+// JSON 응답 검증 후 파싱 (로그인 페이지 HTML이 반환되는 경우 인증 오류로 분류)
+async function readJsonResponse(res, apiName) {
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('application/json')) {
+    const text = await res.text().catch(() => '');
+    if (/login|로그인/i.test(text)) throw new Error('AUTH_REQUIRED');
+    throw new Error(`${apiName}_PARSE_ERROR`);
+  }
+  try {
+    return await res.json();
+  } catch (e) {
+    throw new Error(`${apiName}_PARSE_ERROR`);
+  }
 }
 
 // --- 1. 멤버 정보 조회 (mbrId 획득) ---
@@ -127,15 +151,11 @@ async function fetchMemberInfo() {
   const url = `${CONFIG.API_BASE}/rest/user/info/detail`;
   const res = await fetchWithAuth(url);
 
-  if (res.status === 302 || res.status === 401) {
-    throw new Error('AUTH_REQUIRED');
-  }
   if (!res.ok) {
     throw new Error(`MEMBER_INFO_API_ERROR_${res.status}`);
   }
 
-  const data = await res.json();
-  return data;
+  return await readJsonResponse(res, 'MEMBER_INFO');
 }
 
 // mbrId 추출 (응답 구조에 따라 조정 필요)
@@ -164,14 +184,11 @@ async function fetchAttendance(memberId, year, month) {
   const url = `${CONFIG.API_BASE}/rest/secom/detail?mbrId=${memberId}&year=${year}&month=${String(month).padStart(2,'0')}`;
   const res = await fetchWithAuth(url);
 
-  if (res.status === 302 || res.status === 401) {
-    throw new Error('AUTH_REQUIRED');
-  }
   if (!res.ok) {
     throw new Error(`ATTENDANCE_API_ERROR_${res.status}`);
   }
 
-  const data = await res.json();
+  const data = await readJsonResponse(res, 'ATTENDANCE');
   await setCache(cacheKey, data);
   return data;
 }
@@ -183,19 +200,21 @@ function parseAttendance(data, targetDate = new Date()) {
   const year = targetDate.getFullYear();
   const month = targetDate.getMonth() + 1;
   const todayStr = getTodayString();
-  const nowMin = getCurrentMinutes();
 
   let monthlyTotal = 0;
   let dailyTotal = 0;
   let lastInTime = null;
   let lastOutTime = null;
   let isCurrentlyIn = false;
+  let entryTimestamp = null; // 자정 경계 처리를 위한 실제 입실 시각(밀리초)
+  let hasMissingEntry = false; // 입실 누락 이상 데이터 플래그
   const dailyBreakdown = {};
 
   // HH:MM:SS 또는 HH:MM 형식을 분으로 변환
   function durationToMinutes(durationStr) {
     if (!durationStr) return 0;
     const parts = durationStr.split(':').map(Number);
+    if (parts.some(isNaN)) return 0;
     if (parts.length === 3) {
       return parts[0] * 60 + parts[1] + Math.round(parts[2] / 60);
     } else if (parts.length === 2) {
@@ -208,10 +227,18 @@ function parseAttendance(data, targetDate = new Date()) {
   function timeStrToMinutes(timeStr) {
     if (!timeStr) return null;
     const parts = timeStr.split(':').map(Number);
-    if (parts.length >= 2) {
+    if (parts.length >= 2 && !parts.some(isNaN)) {
       return parts[0] * 60 + parts[1];
     }
     return null;
+  }
+
+  // 날짜 + 시각 → 로컬 타임스탬프(밀리초)
+  function parseEntryTimestamp(dateStr, entryTime) {
+    if (!dateStr || !entryTime) return null;
+    const time = entryTime.length === 5 ? `${entryTime}:00` : entryTime;
+    const ts = new Date(`${dateStr}T${time}`).getTime();
+    return isNaN(ts) ? null : ts;
   }
 
   for (const day of detailList) {
@@ -223,32 +250,39 @@ function parseAttendance(data, targetDate = new Date()) {
     const dailyTotalMinutes = durationToMinutes(day.daily_total_duration);
     
     monthlyTotal += dailyTotalMinutes;
-    if (!dailyBreakdown[dateStr]) dailyBreakdown[dateStr] = 0;
-    dailyBreakdown[dateStr] = dailyTotalMinutes; // 중복 세션 합산 방지
+    dailyBreakdown[dateStr] = dailyTotalMinutes;
 
-    // 오늘인 경우 상세 계산
+    // 세션을 입실 시각 순으로 정렬해 상태 판정 (순서 뒤집힌 응답 대응)
+    const sessions = (day.sessions || []).slice().sort((a, b) => {
+      const ta = timeStrToMinutes(a.entry_time);
+      const tb = timeStrToMinutes(b.entry_time);
+      return (ta === null ? 0 : ta) - (tb === null ? 0 : tb);
+    });
+
+    for (const session of sessions) {
+      const entryMin = timeStrToMinutes(session.entry_time);
+      const exitMin = timeStrToMinutes(session.exit_time);
+      const isMissing = session.is_missing === true;
+      const missingType = session.missing_type;
+
+      // 퇴실 누락 세션 = 현재 입실 중 (오늘만이 아니라 전날 입실 미퇴실도 감지 — 자정 경계)
+      if (isMissing && missingType === 'exit' && entryMin !== null) {
+        isCurrentlyIn = true;
+        lastInTime = entryMin;
+        lastOutTime = null;
+        entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
+      } else if (isMissing && missingType === 'entry') {
+        hasMissingEntry = true;
+      } else if (entryMin !== null && exitMin !== null && dateStr === todayStr) {
+        // 오늘의 정상 퇴실 세션
+        lastInTime = entryMin;
+        lastOutTime = exitMin;
+      }
+    }
+
+    // 오늘인 경우 일일 총 시간 별도 저장
     if (dateStr === todayStr) {
       dailyTotal = dailyTotalMinutes;
-      
-      // 세션들 순회하며 현재 상태 확인
-      const sessions = day.sessions || [];
-      for (const session of sessions) {
-        const entryMin = timeStrToMinutes(session.entry_time);
-        const exitMin = timeStrToMinutes(session.exit_time);
-        const isMissing = session.is_missing === true;
-        const missingType = session.missing_type;
-
-        // 퇴실 누락된 세션이 있으면 현재 입실 중
-        if (isMissing && missingType === 'exit' && entryMin !== null) {
-          isCurrentlyIn = true;
-          lastInTime = entryMin;
-          lastOutTime = null;
-        } else if (entryMin !== null && exitMin !== null) {
-          // 정상 퇴실한 세션
-          lastInTime = entryMin;
-          lastOutTime = exitMin;
-        }
-      }
     }
   }
 
@@ -258,6 +292,8 @@ function parseAttendance(data, targetDate = new Date()) {
     lastInTime,
     lastOutTime,
     isCurrentlyIn,
+    entryTimestamp,
+    hasMissingEntry,
     dailyBreakdown,
     // 캘린더용 원본 데이터도 포함
     rawDetailList: detailList
@@ -265,34 +301,59 @@ function parseAttendance(data, targetDate = new Date()) {
 }
 
 // ===== 알람 관리 =====
-async function scheduleExitAlarm(memberId, endMinutes, label = '퇴실 시간') {
+function buildAlarmName(memberId, type, endMinutes) {
+  return `${ALARM_PREFIX}${memberId}_${type}_${endMinutes}`;
+}
+
+// 알람 이름 파싱 (신형 codyssey_alarm_{memberId}_{type}_{endMinutes} + 구형 호환)
+function parseAlarmName(name) {
+  const parts = name.split('_');
+  if (parts[1] === 'alarm' && parts.length >= 5) {
+    return { memberId: parts[2], type: parts[3], endMinutes: parseInt(parts[4]) };
+  }
+  // 구형 codyssey_exit_{memberId}_{endMinutes}
+  if (parts[1] === 'exit' && parts.length >= 4) {
+    return { memberId: parts[2], type: 'exit', endMinutes: parseInt(parts[3]) };
+  }
+  return null;
+}
+
+async function scheduleExitAlarm(memberId, endMinutes, label = '퇴실 시간', type = 'exit') {
   const now = Date.now();
   const target = new Date();
-  target.setHours(Math.floor(endMinutes / 60), endMinutes % 60, 0, 0);
+  target.setHours(0, 0, 0, 0);
+  target.setTime(target.getTime() + endMinutes * 60000); // 24시간 초과분은 자동으로 다음 날
   const delay = target.getTime() - now;
 
   if (delay <= 0) return { success: false, reason: 'past' };
 
-  const alarmName = `${ALARM_PREFIX}${memberId}_${endMinutes}`;
+  const alarmName = buildAlarmName(memberId, type, endMinutes);
   
-  // 기존 알람 제거
+  // 기존 알람 제거 후 재생성 (알람 목록에서도 중복 제거)
   await chrome.alarms.clear(alarmName);
-  
-  // 새 알람 생성
   await chrome.alarms.create(alarmName, { when: target.getTime() });
   
-  // 알람 정보 저장
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
-  const alarmList = alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
-  alarmList.push({ name: alarmName, time: target.getTime(), label, endMinutes });
+  const alarmList = (alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [])
+    .filter(a => a.name !== alarmName);
+  alarmList.push({
+    name: alarmName,
+    time: target.getTime(),
+    label,
+    endMinutes,
+    type,
+    createdAt: now
+  });
   await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: alarmList });
 
   return { success: true, alarmName, triggerTime: target.getTime() };
 }
 
-async function cancelExitAlarm(memberId, endMinutes) {
-  const alarmName = `${ALARM_PREFIX}${memberId}_${endMinutes}`;
+async function cancelExitAlarm(memberId, endMinutes, type = 'exit') {
+  const alarmName = buildAlarmName(memberId, type, endMinutes);
   await chrome.alarms.clear(alarmName);
+  // 구형 이름으로 저장된 경우도 함께 정리
+  await chrome.alarms.clear(`${ALARM_PREFIX.replace('alarm', 'exit')}${memberId}_${endMinutes}`);
   
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
   const alarmList = (alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || []).filter(a => a.name !== alarmName);
@@ -325,19 +386,23 @@ async function showNotification(title, body, memberId) {
 
 // 알람 리스너
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (!alarm.name.startsWith(ALARM_PREFIX)) return;
+  const parsedName = parseAlarmName(alarm.name);
+  if (!parsedName) return;
 
-  const parts = alarm.name.split('_');
-  const memberId = parts[1];
-  const endMinutes = parseInt(parts[2]);
+  const { memberId, type, endMinutes } = parsedName;
+  const what = type === 'goal' ? '목표 달성 시간' : '퇴실 시간';
 
-  await showNotification('⏰ 코디세이 출입 알림', `설정한 ${minutesToHHMM(endMinutes)} 퇴실 시간이 되었습니다.`, memberId);
+  await showNotification(
+    '⏰ 코디세이 출입 알림',
+    `설정한 ${minutesToHHMM(endMinutes % 1440)} ${what}이 되었습니다.`,
+    memberId
+  );
   
   // 알람 울린 후 정리
-  await cancelExitAlarm(memberId, endMinutes);
+  await cancelExitAlarm(memberId, endMinutes, type);
   
   // 팝업이 열려있으면 업데이트 알림
-  chrome.runtime.sendMessage({ type: 'ALARM_TRIGGERED', memberId, endMinutes });
+  chrome.runtime.sendMessage({ type: 'ALARM_TRIGGERED', memberId, endMinutes, alarmType: type }).catch(() => {});
 });
 
 // ===== 메시지 핸들러 =====
@@ -486,8 +551,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: false, error: 'NOT_LOGGED_IN' });
             return;
           }
-          const { endMinutes, label } = message;
-          const result = await scheduleExitAlarm(memberId, endMinutes, label);
+          const { endMinutes, label, alarmType } = message;
+          const result = await scheduleExitAlarm(memberId, endMinutes, label, alarmType || 'exit');
           sendResponse(result);
           break;
         }
@@ -499,8 +564,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: false, error: 'NOT_LOGGED_IN' });
             return;
           }
-          const { endMinutes } = message;
-          await cancelExitAlarm(memberId, endMinutes);
+          const { endMinutes, alarmType } = message;
+          await cancelExitAlarm(memberId, endMinutes, alarmType || 'exit');
+          sendResponse({ success: true });
+          break;
+        }
+
+        // --- 팝업 발신 로컬 알림 (chrome.notifications로 라우팅) ---
+        case 'LOCAL_NOTIFY': {
+          await showNotification(message.title || '알림', message.body || '', null);
           sendResponse({ success: true });
           break;
         }
@@ -539,6 +611,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           if (keysToRemove.length) {
             await chrome.storage.local.remove(keysToRemove);
           }
+          // 서버 세션 쿠키(JSESSIONID 등)도 함께 삭제 — 로그아웃 후 자동 재로그인 방지
+          try {
+            const cookies = await chrome.cookies.getAll({ domain: 'codyssey.kr' });
+            await Promise.all(cookies.map(c =>
+              chrome.cookies.remove({
+                url: `https://${c.domain.replace(/^\./, '')}${c.path}`,
+                name: c.name
+              }).catch(() => {})
+            ));
+          } catch (e) {
+            console.warn('세션 쿠키 삭제 실패:', e);
+          }
           sendResponse({ success: true });
           break;
         }
@@ -559,7 +643,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // --- 캘린더 열기 ---
         case 'OPEN_CALENDAR': {
-          chrome.tabs.create({ url: chrome.runtime.getURL('html/calendar.html') });
+          chrome.tabs.create({ url: chrome.runtime.getURL('calendar.html') });
           sendResponse({ success: true });
           break;
         }

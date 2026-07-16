@@ -1,5 +1,8 @@
 apply plugin: 'com.android.application'
 
+// 릴리스 서명 키스토어 (CI 태그 빌드 시 secrets로부터 복호화됨)
+def releaseKeystore = file('keystore.jks')
+
 android {
     namespace 'kr.codyssey.attendance'
     compileSdk rootProject.ext.compileSdkVersion
@@ -10,8 +13,24 @@ android {
         versionCode 1
         versionName "1.0.0"
     }
+    buildFeatures {
+        buildConfig true
+    }
+    signingConfigs {
+        release {
+            if (releaseKeystore.exists()) {
+                storeFile releaseKeystore
+                storePassword System.getenv('STORE_PASSWORD') ?: ''
+                keyAlias System.getenv('KEY_ALIAS') ?: ''
+                keyPassword System.getenv('KEY_PASSWORD') ?: ''
+            }
+        }
+    }
     buildTypes {
         release {
+            if (releaseKeystore.exists()) {
+                signingConfig signingConfigs.release
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }

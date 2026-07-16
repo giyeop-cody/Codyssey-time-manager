@@ -218,24 +218,34 @@ public class NetworkPlugin extends Plugin {
         }
     }
 
+    private static final int MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2MB
+
     private JSObject readResponse(HttpURLConnection conn) throws Exception {
         int responseCode = conn.getResponseCode();
 
-        // 응답 쿠키 저장
+        // Set-Cookie는 "응답한 호스트" 기준으로만 저장
         String setCookie = conn.getHeaderField("Set-Cookie");
         if (setCookie != null) {
+            String origin = conn.getURL().getProtocol() + "://" + conn.getURL().getHost();
             CookieManager cookieManager = CookieManager.getInstance();
-            cookieManager.setCookie(API_BASE, setCookie);
-            cookieManager.setCookie("https://api.ams.codyssey.kr", setCookie);
+            cookieManager.setCookie(origin, setCookie);
             cookieManager.flush();
         }
 
         StringBuilder response = new StringBuilder();
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(responseCode >= 400 ? conn.getErrorStream() : conn.getInputStream()))) {
-            String line;
-            while ((line = reader.readLine()) != null) {
-                response.append(line);
+        java.io.InputStream in = responseCode >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        if (in != null) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+                char[] buffer = new char[4096];
+                int total = 0;
+                int read;
+                while ((read = reader.read(buffer)) != -1) {
+                    total += read;
+                    if (total > MAX_RESPONSE_BYTES) {
+                        throw new java.io.IOException("Response body too large");
+                    }
+                    response.append(buffer, 0, read);
+                }
             }
         }
 

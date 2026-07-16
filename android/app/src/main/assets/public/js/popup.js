@@ -231,9 +231,27 @@ async function loadDashboard() {
     showDashboard();
   } catch (error) {
     console.error('Dashboard load error:', error);
-    showLoginError('데이터를 불러오는데 실패했습니다. 다시 시도해주세요.');
+    showLoginError(describeError(error));
     showLoginScreen();
   }
+}
+
+// 오류 코드를 사용자 친화적 메시지로 변환 (관측 가능성 개선)
+function describeError(error) {
+  const code = (error && error.message) || '';
+  if (code.includes('AUTH') || code.includes('NOT_LOGGED_IN')) {
+    return '로그인이 필요합니다. 다시 로그인해주세요.';
+  }
+  if (code.includes('PARSE')) {
+    return '출입 데이터 형식이 예상과 다릅니다. 앱 업데이트가 필요할 수 있습니다.';
+  }
+  if (code.includes('API_ERROR') || code.includes('ATTENDANCE') || code.includes('MEMBER_INFO')) {
+    return '코디세이 서버에서 오류를 반환했습니다. 잠시 후 다시 시도해주세요.';
+  }
+  if (code.includes('Failed to fetch') || code.includes('NetworkError') || code.includes('Network')) {
+    return '네트워크 연결을 확인해주세요.';
+  }
+  return '데이터를 불러오는데 실패했습니다. 다시 시도해주세요.';
 }
 
 function updateDashboardUI() {
@@ -317,10 +335,23 @@ function getMonthlySoFar(parsed = currentParsed) {
 }
 
 // 마지막 입실 시간부터 현재까지 경과 분 (입실 중이 아니면 0)
+// entryTimestamp(밀리초) 기준으로 계산해 자정 경계(전날 입실)에서도 정확함
 function getElapsedSinceEntry(parsed = currentParsed) {
-  if (!parsed || !parsed.isCurrentlyIn || parsed.lastInTime === null) return 0;
+  if (!parsed || !parsed.isCurrentlyIn) return 0;
+  if (parsed.entryTimestamp) {
+    return Math.max(0, Math.floor((Date.now() - parsed.entryTimestamp) / 60000));
+  }
+  if (parsed.lastInTime === null) return 0;
   const nowMin = getCurrentMinutes();
   return Math.max(0, nowMin - parsed.lastInTime);
+}
+
+// endMinutes(오늘 자정부터 분) 표시 — 24시간 초과 시 'N일 후 HH:MM'
+function formatEndMinutes(m) {
+  if (m === null || m === undefined || isNaN(m)) return '--:--';
+  if (m < 1440) return minutesToHHMM(m);
+  const days = Math.floor(m / 1440);
+  return `${days}일 후 ${minutesToHHMM(m % 1440)}`;
 }
 
 // 실시간 월 누적 인정 시간 계산 (일일 상한 적용)
@@ -442,7 +473,7 @@ function updateGoalCalculationLive() {
   const monthlyRemain = Math.max(0, monthlyReq - projectedMonthlyTotal);
   const dailyRemain = Math.max(0, dailyMax - recognizedDaily);
   
-  els.goalEndTime.textContent = minutesToHHMM(goalAlarmEndMinutes);
+  els.goalEndTime.textContent = formatEndMinutes(goalAlarmEndMinutes);
   els.goalDailyTotal.textContent = minutesToTimeStr(recognizedDaily);
   els.goalDailyRemain.textContent = minutesToTimeStr(dailyRemain);
   els.goalDailyRemain.className = `calculator-result-value ${dailyRemain > 0 ? 'remain' : 'ok'}`;
@@ -479,22 +510,25 @@ function renderAlarms(alarms) {
   const now = Date.now();
   els.alarmsList.innerHTML = alarms.map(alarm => {
     const isPast = alarm.time < now;
-    const timeStr = minutesToHHMM(alarm.endMinutes);
+    const timeStr = formatEndMinutes(alarm.endMinutes);
     const label = alarm.label || '알람';
-    const type = label.includes('퇴실') ? 'exit' : 'goal';
+    const type = alarm.type || (label.includes('퇴실') ? 'exit' : 'goal');
     const remainingMs = alarm.time - now;
     const remainingMin = Math.max(0, Math.ceil(remainingMs / 60000));
     const remainingStr = remainingMin > 0 ? ` (${remainingMin}분 후)` : ' (시간 지남)';
-    
+    const createdStr = alarm.createdAt
+      ? new Date(alarm.createdAt).toLocaleString()
+      : new Date(alarm.time).toLocaleString();
+
     return `
-      <div class="alarm-item ${type}" data-end-minutes="${alarm.endMinutes}">
+      <div class="alarm-item ${type}" data-end-minutes="${alarm.endMinutes}" data-alarm-type="${type}">
         <div class="alarm-info">
           <div class="alarm-label">${label}</div>
           <div class="alarm-time">${timeStr}${remainingStr}</div>
-          <div class="alarm-meta">설정: ${new Date(alarm.time - (remainingMin * 60000)).toLocaleTimeString()}</div>
+          <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
         <div class="alarm-actions">
-          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList(${alarm.endMinutes})">해제</button>
+          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList(${alarm.endMinutes}, '${type}')">해제</button>
         </div>
       </div>
     `;
@@ -502,9 +536,9 @@ function renderAlarms(alarms) {
 }
 
 // 전역 함수로 노출 (onclick에서 호출하기 위해)
-window.cancelAlarmFromList = async function(endMinutes) {
+window.cancelAlarmFromList = async function(endMinutes, alarmType = 'exit') {
   try {
-    await sendMessage('CANCEL_ALARM', { endMinutes });
+    await sendMessage('CANCEL_ALARM', { endMinutes, alarmType });
     showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
     await loadAndRenderAlarms();
     // 계산기 버튼 상태도 동기화
@@ -523,7 +557,7 @@ async function syncAlarmButtons() {
     const alarms = alarmsResponse.alarms;
     
     if (exitAlarmEndMinutes !== null) {
-      const existing = alarms.find(a => a.endMinutes === exitAlarmEndMinutes);
+      const existing = alarms.find(a => a.endMinutes === exitAlarmEndMinutes && (a.type || 'exit') === 'exit');
       if (existing) {
         els.btnSetExitAlarm.style.display = 'none';
         els.btnCancelExitAlarm.style.display = 'block';
@@ -533,7 +567,7 @@ async function syncAlarmButtons() {
       }
     }
     if (goalAlarmEndMinutes !== null) {
-      const existing = alarms.find(a => a.endMinutes === goalAlarmEndMinutes);
+      const existing = alarms.find(a => a.endMinutes === goalAlarmEndMinutes && (a.type || 'exit') === 'goal');
       if (existing) {
         els.btnSetGoalAlarm.style.display = 'none';
         els.btnCancelGoalAlarm.style.display = 'block';
@@ -815,7 +849,7 @@ async function calculateExitTime() {
     // 기존 알람 확인
     const alarmsResponse = await sendMessage('GET_ALARMS');
     if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === exitAlarmEndMinutes);
+      const existing = alarmsResponse.alarms.find(a => a.endMinutes === exitAlarmEndMinutes && (a.type || 'exit') === 'exit');
       if (existing) {
         els.btnSetExitAlarm.style.display = 'none';
         els.btnCancelExitAlarm.style.display = 'block';
@@ -868,7 +902,7 @@ async function calculateGoalTime() {
     goalAlarmEndMinutes = endMin;
     
     // 결과 표시
-    els.goalEndTime.textContent = minutesToHHMM(endMin);
+    els.goalEndTime.textContent = formatEndMinutes(endMin);
     els.goalDailyTotal.textContent = minutesToTimeStr(recognizedDaily);
     els.goalDailyRemain.textContent = minutesToTimeStr(dailyRemain);
     els.goalDailyRemain.className = `calculator-result-value ${dailyRemain > 0 ? 'remain' : 'ok'}`;
@@ -892,7 +926,7 @@ async function calculateGoalTime() {
     // 기존 알람 확인
     const alarmsResponse = await sendMessage('GET_ALARMS');
     if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === goalAlarmEndMinutes);
+      const existing = alarmsResponse.alarms.find(a => a.endMinutes === goalAlarmEndMinutes && (a.type || 'exit') === 'goal');
       if (existing) {
         els.btnSetGoalAlarm.style.display = 'none';
         els.btnCancelGoalAlarm.style.display = 'block';
@@ -924,7 +958,7 @@ function resetAllCalculations() {
 // ===== 알람 설정/해제 =====
 async function setExitAlarm() {
   if (exitAlarmEndMinutes === null) return;
-  await setGenericAlarm(exitAlarmEndMinutes, '퇴실 알림', () => {
+  await setGenericAlarm(exitAlarmEndMinutes, 'exit', '퇴실 알림', () => {
     els.btnSetExitAlarm.style.display = 'none';
     els.btnCancelExitAlarm.style.display = 'block';
   });
@@ -932,7 +966,7 @@ async function setExitAlarm() {
 
 async function cancelExitAlarm() {
   if (exitAlarmEndMinutes === null) return;
-  await cancelGenericAlarm(exitAlarmEndMinutes, () => {
+  await cancelGenericAlarm(exitAlarmEndMinutes, 'exit', () => {
     els.btnSetExitAlarm.style.display = 'block';
     els.btnCancelExitAlarm.style.display = 'none';
   });
@@ -940,7 +974,7 @@ async function cancelExitAlarm() {
 
 async function setGoalAlarm() {
   if (goalAlarmEndMinutes === null) return;
-  await setGenericAlarm(goalAlarmEndMinutes, '목표 달성 알림', () => {
+  await setGenericAlarm(goalAlarmEndMinutes, 'goal', '목표 달성 알림', () => {
     els.btnSetGoalAlarm.style.display = 'none';
     els.btnCancelGoalAlarm.style.display = 'block';
   });
@@ -948,25 +982,27 @@ async function setGoalAlarm() {
 
 async function cancelGoalAlarm() {
   if (goalAlarmEndMinutes === null) return;
-  await cancelGenericAlarm(goalAlarmEndMinutes, () => {
+  await cancelGenericAlarm(goalAlarmEndMinutes, 'goal', () => {
     els.btnSetGoalAlarm.style.display = 'block';
     els.btnCancelGoalAlarm.style.display = 'none';
   });
 }
 
-async function setGenericAlarm(endMinutes, label, onSuccess) {
+async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
   const hasPerm = await requestNotificationPermission();
   if (!hasPerm) return;
 
   try {
+    const timeStr = formatEndMinutes(endMinutes);
     const response = await sendMessage('SET_ALARM', { 
       endMinutes,
-      label: `${label} (${minutesToHHMM(endMinutes)})`
+      alarmType,
+      label: `${label} (${timeStr})`
     });
     
     if (response.success) {
       onSuccess();
-      showNotification('알람 설정 완료', `${minutesToHHMM(endMinutes)}에 ${label}이 울립니다.`);
+      showNotification('알람 설정 완료', `${timeStr}에 ${label}이 울립니다.`);
     }
   } catch (error) {
     console.error('Set alarm error:', error);
@@ -974,9 +1010,9 @@ async function setGenericAlarm(endMinutes, label, onSuccess) {
   }
 }
 
-async function cancelGenericAlarm(endMinutes, onSuccess) {
+async function cancelGenericAlarm(endMinutes, alarmType, onSuccess) {
   try {
-    await sendMessage('CANCEL_ALARM', { endMinutes });
+    await sendMessage('CANCEL_ALARM', { endMinutes, alarmType });
     onSuccess();
     showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
   } catch (error) {
@@ -984,10 +1020,12 @@ async function cancelGenericAlarm(endMinutes, onSuccess) {
   }
 }
 
-// ===== 알림 표시 (로컬) =====
+// ===== 알림 표시 (백그라운드/네이티브 경유 — 팝업 Notification 생성자 대신) =====
 function showNotification(title, body) {
-  if (Notification.permission === 'granted') {
-    new Notification(title, { body, icon: 'icons/icon48.png' });
+  try {
+    sendMessage('LOCAL_NOTIFY', { title, body });
+  } catch (e) {
+    console.warn('알림 표시 실패:', e);
   }
 }
 
@@ -1100,6 +1138,65 @@ async function saveSettings() {
   }
 }
 
+// ===== 로그인 수행 (Android는 네이티브 HTTP로 CORS 우회, 웹/익스텐션은 직접 fetch) =====
+async function performLogin(email, password) {
+  // 1. Android (Capacitor 네이티브) 경로
+  if (window.CodysseyNative && window.CodysseyNative.isNative) {
+    const pre = await window.CodysseyNative.preCheckLogin(email);
+    if (pre.status >= 400) throw new Error('사전 인증 실패');
+    const fromValue = pre.body?.result?.from || '';
+
+    const auth = await window.CodysseyNative.authenticate(email, password, fromValue);
+    if (auth.status >= 400) {
+      throw new Error(auth.body?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+    }
+    return;
+  }
+
+  // 2. 크롬 익스텐션/웹 경로 (host_permissions로 CORS 허용됨)
+  const preCheckResponse = await fetch('https://api.ams.codyssey.kr/rest/login/pre-check', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({ userId: email })
+  });
+
+  if (!preCheckResponse.ok) {
+    throw new Error('사전 인증 실패');
+  }
+
+  const preCheckData = await preCheckResponse.json();
+  const fromValue = preCheckData.result?.from || '';
+
+  const formData = new URLSearchParams();
+  formData.append('userId', email);
+  formData.append('password', password);
+  formData.append('from', fromValue);
+
+  const loginResponse = await fetch('https://api.ams.codyssey.kr/authenticate', {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json',
+      'Origin': 'https://ams.codyssey.kr',
+      'Referer': 'https://ams.codyssey.kr/',
+    },
+    body: formData.toString()
+  });
+
+  // 로그인 성공 시 리다이렉트(302) 또는 JSON 응답 처리
+  if (loginResponse.ok || loginResponse.status === 302 || loginResponse.redirected) {
+    return;
+  }
+
+  const errorData = await loginResponse.json().catch(() => ({}));
+  throw new Error(errorData.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+}
+
 // ===== 로그아웃 =====
 async function logout() {
   try {
@@ -1155,65 +1252,24 @@ function setupEventListeners() {
     showLoginLoading();
 
     try {
-      // 1단계: pre-check로 from 값 획득
-      const preCheckResponse = await fetch('https://api.ams.codyssey.kr/rest/login/pre-check', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: JSON.stringify({ userId: email })
-      });
+      await performLogin(email, password);
 
-      if (!preCheckResponse.ok) {
-        throw new Error('사전 인증 실패');
-      }
-
-      const preCheckData = await preCheckResponse.json();
-      const fromValue = preCheckData.result?.from || '';
-
-      // 2단계: 실제 로그인 (/authenticate)
-      const formData = new URLSearchParams();
-      formData.append('userId', email);
-      formData.append('password', password);
-      formData.append('from', fromValue);
-
-      const loginResponse = await fetch('https://api.ams.codyssey.kr/authenticate', {
-        method: 'POST',
-        credentials: 'include',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-          'Origin': 'https://ams.codyssey.kr',
-          'Referer': 'https://ams.codyssey.kr/',
-        },
-        body: formData.toString()
-      });
-
-      // 로그인 성공 시 리다이렉트(302) 또는 JSON 응답 처리
-      if (loginResponse.ok || loginResponse.status === 302 || loginResponse.redirected) {
-        // 로그인 성공 - 대시보드 로드
-        const response = await sendMessage('GET_STATUS');
-        if (response.success) {
-          currentMemberId = response.memberId;
-          currentParsed = response.parsed;
-          currentSettings = response.settings;
-          updateDashboardUI();
-          checkNotificationPermission();
-          updateLastUpdateTime();
-          updateKeepAliveUI();
-          startAutoRefresh();
-          renderCalendar();
-          showDashboard();
-        } else {
-          showLoginError('로그인 후 데이터를 불러오는데 실패했습니다.');
-        }
+      // 로그인 성공 - 대시보드 로드
+      const response = await sendMessage('GET_STATUS');
+      if (response.success) {
+        currentMemberId = response.memberId;
+        currentParsed = response.parsed;
+        currentSettings = response.settings;
+        updateDashboardUI();
+        checkNotificationPermission();
+        updateLastUpdateTime();
+        updateKeepAliveUI();
+        startAutoRefresh();
+        renderCalendar();
+        showDashboard();
       } else {
-        const errorData = await loginResponse.json().catch(() => ({}));
-        throw new Error(errorData.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+        showLoginError('로그인 후 데이터를 불러오는데 실패했습니다.');
       }
-      
     } catch (error) {
       console.error('Login error:', error);
       showLoginError(error.message || '로그인 처리 중 오류가 발생했습니다.');
@@ -1324,7 +1380,8 @@ async function checkExistingSession() {
 document.addEventListener('DOMContentLoaded', init);
 
 window.addEventListener('focus', () => {
-  if (currentMemberId && els.loginScreen.style.display === 'none') {
+  const loginVisible = els.loginScreen && window.getComputedStyle(els.loginScreen).display !== 'none';
+  if (currentMemberId && !loginVisible) {
     loadDashboard();
   }
 });
