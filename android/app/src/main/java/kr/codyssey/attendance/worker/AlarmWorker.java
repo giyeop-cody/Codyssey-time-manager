@@ -23,8 +23,8 @@ public class AlarmWorker extends Worker {
         String id = getInputData().getString("id");
         long triggerTime = getInputData().getLong("triggerTime", 0);
 
-        // 알림 표시
-        NotificationPlugin.showNotification(getApplicationContext(), label, id);
+        // 알림 표시 (title, body, id)
+        NotificationPlugin.showNotification(getApplicationContext(), "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
 
         // AlarmReceiver도 호출 (웹뷰 이벤트용)
         Intent intent = new Intent(getApplicationContext(), AlarmReceiver.class);

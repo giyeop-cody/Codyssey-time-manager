@@ -22,6 +22,10 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 
 import java.util.concurrent.TimeUnit;
 
+import kr.codyssey.attendance.receiver.AlarmReceiver;
+import kr.codyssey.attendance.worker.AlarmWorker;
+import kr.codyssey.attendance.worker.SyncWorker;
+
 @CapacitorPlugin(name = "AlarmPlugin")
 public class AlarmPlugin extends Plugin {
 

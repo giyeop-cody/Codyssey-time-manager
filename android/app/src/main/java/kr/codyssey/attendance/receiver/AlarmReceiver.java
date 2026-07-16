@@ -17,8 +17,8 @@ public class AlarmReceiver extends BroadcastReceiver {
         String label = intent.getStringExtra("label");
         String id = intent.getStringExtra("id");
 
-        // 알림 표시
-        NotificationPlugin.showNotification(context, label != null ? label : "알림", id);
+        // 알림 표시 (title, body, id)
+        NotificationPlugin.showNotification(context, "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
 
         // 웹뷰에 알람 트리거 이벤트 전달
         Intent webIntent = new Intent("kr.codyssey.attendance.ALARM_TRIGGERED");

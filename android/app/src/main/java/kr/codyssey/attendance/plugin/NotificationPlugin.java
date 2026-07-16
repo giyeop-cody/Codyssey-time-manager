@@ -63,13 +63,16 @@ public class NotificationPlugin extends Plugin {
     public static void showNotification(Context context, String title, String body, String id) {
         createNotificationChannel(context);
 
-        int notificationId = id.hashCode() & 0x7FFFFFFF;
+        String notifIdKey = id != null ? id : "default";
+        int notificationId = notifIdKey.hashCode() & 0x7FFFFFFF;
 
-        Intent intent = new Intent(context, context.getPackageManager()
-                .getLaunchIntentForPackage(context.getPackageName())
-                .getComponent().getClassName());
+        // 앱 실행 인텐트 (설치 직후 등으로 런처 인텐트가 없으면 MainActivity 직접 지정)
+        Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        if (intent == null) {
+            intent = new Intent(context, kr.codyssey.attendance.MainActivity.class);
+        }
         intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        intent.putExtra("alarmId", id);
+        intent.putExtra("alarmId", notifIdKey);
 
         PendingIntent pendingIntent = PendingIntent.getActivity(
                 context,

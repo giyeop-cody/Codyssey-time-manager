@@ -1,7 +1,6 @@
 package kr.codyssey.attendance.util;
 
 import android.content.Context;
-import android.webkit.CookieManager;
 import android.webkit.WebView;
 
 import java.util.HashMap;

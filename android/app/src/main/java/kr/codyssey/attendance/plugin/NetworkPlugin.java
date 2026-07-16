@@ -17,6 +17,7 @@ import java.io.DataOutputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.Iterator;
 import java.util.Map;
 
 @CapacitorPlugin(name = "NetworkPlugin")
@@ -167,7 +168,9 @@ public class NetworkPlugin extends Plugin {
 
         // 커스텀 헤더
         if (headers != null) {
-            for (String key : headers.keys()) {
+            Iterator<String> keys = headers.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
                 conn.setRequestProperty(key, headers.getString(key));
             }
         }
