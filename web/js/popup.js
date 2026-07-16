@@ -285,22 +285,35 @@ function updateDashboardUI() {
   loadAndRenderAlarms();
 }
 
-// 실시간 인정 시간 계산 (오늘 누적 + 입실~현재 경과)
+// 실시간 인정 시간 계산 (오늘 누적 + 입실~현재 경과, 일일 상한 적용)
 function calculateRealtimeRecognized() {
   if (!currentParsed) return 0;
   return getTodaySoFar(currentParsed);
 }
 
-// 오늘 실시간 인정 시간 (서버 오늘 누적 + 입실~현재 경과)
+// 일일 최대 인정 시간(분). 서버는 12시간까지만 인정
+function getDailyMaxMinutes() {
+  return (currentSettings?.dailyMaxHours || 12) * 60;
+}
+
+// 오늘 실시간 인정 시간 (서버 오늘 누적 + 입실~현재 경과, 일일 상한 적용)
+// 일일 최대치를 초과하면 초과분은 합산하지 않음
 function getTodaySoFar(parsed = currentParsed) {
   if (!parsed) return 0;
-  return parsed.dailyTotal + getElapsedSinceEntry(parsed);
+  const dailyMax = getDailyMaxMinutes();
+  return Math.min(parsed.dailyTotal + getElapsedSinceEntry(parsed), dailyMax);
 }
 
 // 월 누적 실시간 인정 시간 (서버 월 누적 + 입실~현재 경과)
+// 진행 중 세션의 경과분은 오늘 일일 상한까지만 월 누적에 합산
 function getMonthlySoFar(parsed = currentParsed) {
   if (!parsed) return 0;
-  return parsed.monthlyTotal + getElapsedSinceEntry(parsed);
+  const dailyMax = getDailyMaxMinutes();
+  const effectiveElapsed = Math.min(
+    getElapsedSinceEntry(parsed),
+    Math.max(0, dailyMax - parsed.dailyTotal)
+  );
+  return parsed.monthlyTotal + effectiveElapsed;
 }
 
 // 마지막 입실 시간부터 현재까지 경과 분 (입실 중이 아니면 0)
@@ -310,9 +323,19 @@ function getElapsedSinceEntry(parsed = currentParsed) {
   return Math.max(0, nowMin - parsed.lastInTime);
 }
 
-// 실시간 월 누적 인정 시간 계산
+// 실시간 월 누적 인정 시간 계산 (일일 상한 적용)
 function calculateRealtimeMonthly() {
   return getMonthlySoFar(currentParsed);
+}
+
+// 추가 시간 반영 시 예상 월 누적 (오늘분은 일일 상한까지 합산)
+// 서버 규칙: 일별 인정 시간은 12시간 캡 후 월 누적에 합산됨
+function getProjectedMonthly(additionalMinutes, parsed = currentParsed) {
+  if (!parsed) return 0;
+  const dailyMax = getDailyMaxMinutes();
+  const todayUncapped = parsed.dailyTotal + getElapsedSinceEntry(parsed) + Math.max(0, additionalMinutes);
+  const todayCapped = Math.min(todayUncapped, dailyMax);
+  return (parsed.monthlyTotal - parsed.dailyTotal) + todayCapped;
 }
 
 // 실시간 업데이트 (1초마다)
@@ -383,7 +406,7 @@ function updateExitCalculationLive() {
   const dailyMax = currentSettings.dailyMaxHours * 60;
   const recognizedDaily = Math.min(projectedDailyTotal, dailyMax);
   
-  const projectedMonthlyTotal = getMonthlySoFar(currentParsed) + additionalMinutes;
+  const projectedMonthlyTotal = getProjectedMonthly(additionalMinutes);
   const monthlyReq = currentSettings.monthlyRequiredHours * 60;
   const monthlyRemain = Math.max(0, monthlyReq - projectedMonthlyTotal);
   const dailyRemain = Math.max(0, dailyMax - recognizedDaily);
@@ -414,7 +437,7 @@ function updateGoalCalculationLive() {
   const dailyMax = currentSettings.dailyMaxHours * 60;
   const recognizedDaily = Math.min(projectedDailyTotal, dailyMax);
   
-  const projectedMonthlyTotal = getMonthlySoFar(currentParsed) + remainingToGoal;
+  const projectedMonthlyTotal = getProjectedMonthly(remainingToGoal);
   const monthlyReq = currentSettings.monthlyRequiredHours * 60;
   const monthlyRemain = Math.max(0, monthlyReq - projectedMonthlyTotal);
   const dailyRemain = Math.max(0, dailyMax - recognizedDaily);
@@ -753,15 +776,14 @@ async function calculateExitTime() {
       return;
     }
     
-    // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산
+    // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산 (일일 상한 적용)
     const todayTotalSoFar = getTodaySoFar(currentParsed);
-    const monthlyTotalSoFar = getMonthlySoFar(currentParsed);
     const additionalMinutes = exitMin - nowMin;
     const projectedDailyTotal = todayTotalSoFar + additionalMinutes;
     const dailyMax = currentSettings.dailyMaxHours * 60;
     const recognizedDaily = Math.min(projectedDailyTotal, dailyMax);
     
-    const projectedMonthlyTotal = monthlyTotalSoFar + additionalMinutes;
+    const projectedMonthlyTotal = getProjectedMonthly(additionalMinutes);
     const monthlyReq = currentSettings.monthlyRequiredHours * 60;
     const monthlyRemain = Math.max(0, monthlyReq - projectedMonthlyTotal);
     const dailyRemain = Math.max(0, dailyMax - recognizedDaily);
@@ -824,9 +846,8 @@ async function calculateGoalTime() {
       return;
     }
     
-    // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산
+    // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산 (일일 상한 적용)
     const todayTotalSoFar = getTodaySoFar(currentParsed);
-    const monthlyTotalSoFar = getMonthlySoFar(currentParsed);
     const remainingToGoal = goalMinutes - todayTotalSoFar;
     
     if (remainingToGoal <= 0) {
@@ -839,7 +860,7 @@ async function calculateGoalTime() {
     const projectedDailyTotal = todayTotalSoFar + remainingToGoal;
     const recognizedDaily = Math.min(projectedDailyTotal, dailyMax);
     
-    const projectedMonthlyTotal = monthlyTotalSoFar + remainingToGoal;
+    const projectedMonthlyTotal = getProjectedMonthly(remainingToGoal);
     const monthlyReq = currentSettings.monthlyRequiredHours * 60;
     const monthlyRemain = Math.max(0, monthlyReq - projectedMonthlyTotal);
     const dailyRemain = Math.max(0, dailyMax - recognizedDaily);
