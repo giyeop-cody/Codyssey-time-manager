@@ -10,15 +10,18 @@ import com.getcapacitor.BridgeActivity;
 import kr.codyssey.attendance.plugin.AlarmPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
 import kr.codyssey.attendance.plugin.NotificationPlugin;
-import kr.codyssey.attendance.plugin.StoragePlugin;
 
 public class MainActivity extends BridgeActivity {
 
+    // 알림 발화 등 네이티브 → JS 브릿지용 현재 활성 인스턴스
+    private static MainActivity instance;
+
     @Override
     public void onCreate(Bundle savedInstanceState) {
+        instance = this;
+
         // 커스텀 Capacitor 플러그인 등록 (반드시 super.onCreate 전에 호출)
         registerPlugin(NetworkPlugin.class);
-        registerPlugin(StoragePlugin.class);
         registerPlugin(AlarmPlugin.class);
         registerPlugin(NotificationPlugin.class);
 
@@ -54,5 +57,37 @@ public class MainActivity extends BridgeActivity {
         super.onPause();
         // 세션 쿠키 영속화 (브리지 클라이언트를 교체하지 않고도 쿠키 플러시)
         CookieManager.getInstance().flush();
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        if (instance == this) {
+            instance = null;
+        }
+    }
+
+    /**
+     * 네이티브 이벤트를 WebView JS로 전달 (R8: 알림 발화 시 화면 자동 갱신).
+     * capacitor-adapter.js가 'CodysseyNativeEvent'를 수신해 chrome.runtime.onMessage 리스너로 디스패치한다.
+     */
+    public static void emitNativeEvent(String type, String label, String id) {
+        final MainActivity activity = instance;
+        if (activity == null || activity.getBridge() == null || activity.getBridge().getWebView() == null) {
+            return; // 앱이 백그라운드/종료 상태면 네이티브 알림만으로 충분
+        }
+        activity.getBridge().getWebView().post(() -> {
+            String js = "window.dispatchEvent(new CustomEvent('CodysseyNativeEvent', { detail: {"
+                    + "type: " + jsQuote(type) + ","
+                    + "label: " + jsQuote(label) + ","
+                    + "id: " + jsQuote(id)
+                    + " } }))";
+            activity.getBridge().getWebView().evaluateJavascript(js, null);
+        });
+    }
+
+    private static String jsQuote(String s) {
+        if (s == null) return "null";
+        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'";
     }
 }

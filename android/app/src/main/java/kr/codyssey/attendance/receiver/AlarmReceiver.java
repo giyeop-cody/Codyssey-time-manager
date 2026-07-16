@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 
+import kr.codyssey.attendance.MainActivity;
 import kr.codyssey.attendance.plugin.NotificationPlugin;
 
 public class AlarmReceiver extends BroadcastReceiver {
@@ -20,10 +21,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         // 알림 표시 (title, body, id)
         NotificationPlugin.showNotification(context, "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
 
-        // 웹뷰에 알람 트리거 이벤트 전달
-        Intent webIntent = new Intent("kr.codyssey.attendance.ALARM_TRIGGERED");
-        webIntent.putExtra("label", label);
-        webIntent.putExtra("id", id);
-        context.sendBroadcast(webIntent);
+        // R8: 앱이 살아있으면 WebView JS로 이벤트 전달 (화면 자동 갱신)
+        MainActivity.emitNativeEvent("ALARM_TRIGGERED", label, id);
     }
 }

@@ -38,6 +38,18 @@ public class NetworkPlugin extends Plugin {
             return;
         }
 
+        // 허용 도메인 화이트리스트 (세션 쿠키 유출 방지 — N5)
+        try {
+            String host = new URL(url).getHost();
+            if (!isAllowedHost(host)) {
+                call.reject("URL not allowed: " + host);
+                return;
+            }
+        } catch (Exception e) {
+            call.reject("Invalid URL");
+            return;
+        }
+
         // 백그라운드 스레드에서 네트워크 요청
         getBridge().execute(() -> {
             try {
@@ -198,10 +210,21 @@ public class NetworkPlugin extends Plugin {
         conn.setConnectTimeout(10000);
         conn.setReadTimeout(15000);
         conn.setUseCaches(false);
+        // 리다이렉트 자동 추적 비활성화 — 302(세션 만료)를 직접 감지하기 위함 (N4)
+        conn.setInstanceFollowRedirects(false);
         return conn;
     }
 
+    // 세션 쿠키 첨부 허용 도메인 (codyssey 계엧만 — N5)
+    private static boolean isAllowedHost(String host) {
+        return host != null && host.endsWith("codyssey.kr");
+    }
+
     private void addCookies(HttpURLConnection conn) {
+        // 요청 호스트가 codyssey 도메인일 때만 세션 쿠키 첨부 (외부 유출 방지 — N5)
+        if (!isAllowedHost(conn.getURL().getHost())) {
+            return;
+        }
         String cookies = CookieManager.getInstance().getCookie(API_BASE);
         if (cookies != null && !cookies.isEmpty()) {
             conn.setRequestProperty("Cookie", cookies);

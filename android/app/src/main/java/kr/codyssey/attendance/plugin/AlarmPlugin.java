@@ -114,7 +114,7 @@ public class AlarmPlugin extends Plugin {
         WorkManager.getInstance(getContext())
                 .enqueueUniquePeriodicWork(
                         WORK_TAG_PERIODIC,
-                        ExistingPeriodicWorkPolicy.REPLACE,
+                        ExistingPeriodicWorkPolicy.UPDATE, // 이미 예약된 주기는 유지 (팝업 열 때마다 리셋 방지)
                         syncWork
                 );
 
