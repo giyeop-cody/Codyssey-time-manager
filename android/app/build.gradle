@@ -17,6 +17,17 @@ android {
         buildConfig true
     }
     signingConfigs {
+        // N1 개선: 저장소에 커밋된 고정 디버그 키스토어 사용 (공개 표준 자격증명).
+        // CI 러너의 ~/.android/debug.keystore 는 매 실행마다 재생성되어
+        // 서명이 달라지고, 기기에서 APK 덮어쓰기(업데이트) 설치가 불가능했음.
+        // androiddebugkey/android 는 Android SDK 기본 디버그 자격증명으로 공개 값이며,
+        // 프로덕션 키가 아니므로 저장소 포함이 공식 권장 패턴임.
+        debug {
+            storeFile file('debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
         release {
             if (releaseKeystore.exists()) {
                 storeFile releaseKeystore
@@ -36,6 +47,7 @@ android {
         }
         debug {
             debuggable true
+            signingConfig signingConfigs.debug
         }
     }
 }

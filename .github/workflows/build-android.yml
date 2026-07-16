@@ -8,7 +8,8 @@ on:
   workflow_dispatch:  # 수동 실행 가능
 
 permissions:
-  contents: read
+  # N2 개선: 태그 릴리스 시 action-gh-release가 Release를 생성하려면 쓰기 권한 필요
+  contents: write
 
 jobs:
   build:
@@ -38,6 +39,9 @@ jobs:
 
       - name: Check JS syntax
         run: npm run check:js
+
+      - name: Run JS unit tests
+        run: npm run test:js
 
       - name: Sync Capacitor Android project
         run: npx cap sync android

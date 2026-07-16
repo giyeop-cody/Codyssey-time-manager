@@ -5,6 +5,7 @@
   "scripts": {
     "build": "cap sync android",
     "check:js": "node scripts/check-js.js",
+    "test:js": "node --test tests/",
     "android": "cap open android",
     "run:android": "cap run android",
     "dev": "cap run android --livereload --external"

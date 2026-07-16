@@ -56,18 +56,25 @@ git push origin v1.0.0
 
 ## 🔧 로컬에서 키스토어 설정 (개발용)
 
+릴리스 서명 정보는 코드에 하드코딩하지 않고 **환경 변수**로 주입합니다
+(`android/app/build.gradle`이 `System.getenv(...)`로 읽도록 이미 설정됨).
+
 ```bash
-# android/app/build.gradle에 추가 (이미 설정됨)
-android {
-    signingConfigs {
-        release {
-            storeFile file("keystore.jks")
-            storePassword "STORE_PASSWORD"
-            keyAlias "KEY_ALIAS"
-            keyPassword "KEY_PASSWORD"
-        }
-    }
-}
+export STORE_PASSWORD="스토어 비밀번호"
+export KEY_PASSWORD="키 비밀번호"
+export KEY_ALIAS="codyssey"
+# keystore.jks 파일을 android/app/ 폼더에 복사 후
+cd android && ./gradlew bundleRelease
 ```
 
-> **주의**: 로컬 개발 시 `keystore.jks` 파일을 `android/app/` 폴더에 복사해야 함
+> **주의**: `keystore.jks`는 저장소에 커밋하지 않습니다 (CI에서는
+> `KEYSTORE_BASE64` 시크릿에서 복호화됨).
+
+---
+
+## 🐛 디버그 빌드 서명 (자동)
+
+디버그 APK는 저장소에 커밋된 고정 키스토어(`android/app/debug.keystore`,
+공개 표준 자격증명 `androiddebugkey`/`android`)로 서명됩니다.
+CI 러너의 임시 키스토어를 쓰지 않으므로 **빌드마다 서명이 동일**하고,
+기기에서 이전 APK 위에 덮어쓰기 설치(업데이트)가 가능합니다.
