@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>코디세이 출입 현황 알리미 - 캘린더</title>
+<link rel="stylesheet" href="../css/popup.css">
+<!-- Capacitor Adapter - Chrome Extension API를 Capacitor 플러그인으로 변환 -->
+<script src="../js/capacitor-adapter.js"></script>
+<style>
+  .calendar-page { padding: 16px; max-width: 100%; }
+  .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .calendar-title { font-size: 18px; font-weight: 700; }
+  .calendar-nav { display: flex; gap: 4px; }
+  .calendar-nav .btn { padding: 8px 12px; }
+  
+  .month-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 16px; }
+  .month-summary-card { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px; text-align: center; }
+  .month-summary-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .month-summary-value { font-size: 20px; font-weight: 700; }
+  .month-summary-value.total { color: var(--accent-teal); }
+  .month-summary-value.avg { color: var(--accent-gold); }
+  .month-summary-value.remain { color: var(--accent-red); }
+  .month-summary-value.ok { color: var(--accent-green); }
+  
+  .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+  .calendar-day-header { text-align: center; padding: 8px 0; font-size: 11px; color: var(--text-muted); font-weight: 600; }
+  .calendar-day { aspect-ratio: 1; background: var(--bg-card); border-radius: var(--radius-sm); padding: 8px; display: flex; flex-direction: column; gap: 3px; cursor: pointer; transition: var(--transition); position: relative; min-height: 80px; }
+  .calendar-day:hover { background: var(--bg-tertiary); transform: scale(1.02); z-index: 1; box-shadow: var(--shadow); }
+  .calendar-day.other-month { opacity: 0.3; }
+  .calendar-day.today { border: 2px solid var(--accent-teal); }
+  .calendar-day.has-record { background: rgba(78,201,176,0.05); }
+  .calendar-day.has-over { background: rgba(244,67,54,0.05); border: 1px solid rgba(244,67,54,0.3); }
+  .calendar-day-number { font-size: 14px; font-weight: 600; }
+  .calendar-day.today .calendar-day-number { color: var(--accent-teal); }
+  .calendar-day.other-month .calendar-day-number { color: var(--text-muted); }
+  .calendar-day-records { display: flex; flex-direction: column; gap: 2px; flex: 1; overflow: hidden; }
+  .calendar-record { font-size: 9px; padding: 2px 6px; border-radius: 3px; background: rgba(78,201,176,0.2); color: var(--accent-teal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.3; }
+  .calendar-record.over { background: rgba(244,67,54,0.2); color: var(--accent-red); }
+  .calendar-record.current { background: rgba(255,213,79,0.3); color: #b89600; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
+  .calendar-more { font-size: 8px; color: var(--text-muted); text-align: center; margin-top: 2px; }
+  
+  .calendar-legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--text-secondary); justify-content: center; padding-top: 16px; border-top: 1px solid var(--border-color); margin-top: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-color { width: 14px; height: 14px; border-radius: 3px; }
+  .legend-color.normal { background: linear-gradient(135deg, var(--accent-teal), var(--accent-teal-dark)); }
+  .legend-color.over { background: var(--accent-red); }
+  .legend-color.current { background: var(--accent-gold); }
+  .legend-color.other { background: var(--border-light); }
+  
+  .day-detail-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+  .day-detail-modal.show { display: flex; }
+  .day-detail-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 24px; width: 100%; max-width: 380px; max-height: 80vh; overflow-y: auto; }
+  .day-detail-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .day-detail-close { background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; }
+  .day-detail-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+  .day-detail-card { background: var(--bg-tertiary); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px; }
+  .day-detail-label { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; }
+  .day-detail-value { font-size: 18px; font-weight: 700; }
+  .day-detail-value.normal { color: var(--accent-teal); }
+  .day-detail-value.over { color: var(--accent-red); }
+  .day-detail-records { margin-top: 16px; }
+  .day-detail-record { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: var(--bg-card); border-radius: var(--radius-sm); margin-bottom: 8px; }
+  .day-detail-record-time { font-family: monospace; font-size: 13px; }
+  .day-detail-record-duration { color: var(--accent-teal); font-weight: 600; }
+  .day-detail-record-duration.over { color: var(--accent-red); }
+  .day-detail-empty { text-align: center; color: var(--text-muted); padding: 20px; font-size: 13px; }
+  
+  .loading-overlay { position: fixed; inset: 0; background: rgba(18,18,18,0.95); display: flex; align-items: center; justify-content: center; z-index: 999; flex-direction: column; gap: 12px; }
+  .loading-overlay.hidden { display: none; }
+  .loading-spinner { width: 40px; height: 40px; border: 3px solid var(--border-light); border-top-color: var(--accent-teal); border-radius: 50%; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="loading-overlay" id="loading-overlay">
+  <div class="loading-spinner"></div>
+  <span id="loading-text">데이터 불러오는 중...</span>
+</div>
+
+<div class="calendar-page" id="calendar-page" style="display:none;">
+  <div class="calendar-header">
+    <h1 class="calendar-title">📅 월간 출입 캘린더</h1>
+    <div class="calendar-nav">
+      <button class="btn btn-secondary" id="btn-prev-month" aria-label="이전 달">‹</button>
+      <button class="btn btn-ghost" id="btn-today-month" aria-label="이번 달">이번 달</button>
+      <button class="btn btn-secondary" id="btn-next-month" aria-label="다음 달">›</button>
+    </div>
+  </div>
+
+  <!-- 월간 요약 -->
+  <div class="month-summary">
+    <div class="month-summary-card">
+      <div class="month-summary-label">월 누적</div>
+      <div class="month-summary-value total" id="month-total">0시간 0분</div>
+    </div>
+    <div class="month-summary-card">
+      <div class="month-summary-label">일 평균</div>
+      <div class="month-summary-value avg" id="month-avg">0시간 0분</div>
+    </div>
+    <div class="month-summary-card">
+      <div class="month-summary-label">목표 대비</div>
+      <div class="month-summary-value remain" id="month-remain">남음: 80시간 0분</div>
+    </div>
+  </div>
+
+  <!-- 캘린더 그리드 -->
+  <div class="calendar-grid" id="calendar-grid">
+    <!-- 요일 헤더 -->
+    <div class="calendar-day-header">일</div>
+    <div class="calendar-day-header">월</div>
+    <div class="calendar-day-header">화</div>
+    <div class="calendar-day-header">수</div>
+    <div class="calendar-day-header">목</div>
+    <div class="calendar-day-header">금</div>
+    <div class="calendar-day-header">토</div>
+    <!-- 날짜들은 JS로 생성 -->
+  </div>
+
+  <!-- 범례 -->
+  <div class="calendar-legend">
+    <div class="legend-item"><span class="legend-color normal"></span> 정상 (12시간 이하)</div>
+    <div class="legend-item"><span class="legend-color over"></span> 초과 (12시간 초과)</div>
+    <div class="legend-item"><span class="legend-color current"></span> 오늘 (입실 중)</div>
+    <div class="legend-item"><span class="legend-color other"></span> 다른 달</div>
+  </div>
+</div>
+
+<!-- 일별 상세 모달 -->
+<div class="day-detail-modal" id="day-detail-modal">
+  <div class="day-detail-panel">
+    <div class="day-detail-title">
+      <span id="day-detail-date">2026년 7월 15일</span>
+      <button class="day-detail-close" id="day-detail-close">×</button>
+    </div>
+    <div class="day-detail-summary">
+      <div class="day-detail-card">
+        <div class="day-detail-label">해당 일 출입</div>
+        <div class="day-detail-value normal" id="day-total">0시간 0분</div>
+      </div>
+      <div class="day-detail-card">
+        <div class="day-detail-label">일일 한도</div>
+        <div class="day-detail-value" id="day-limit">최대 12시간</div>
+      </div>
+    </div>
+    <div class="day-detail-records" id="day-records">
+      <div class="day-detail-empty">해당 날짜의 출입 기록이 없습니다.</div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="../js/calendar.js"></script>
+</body>
+</html>

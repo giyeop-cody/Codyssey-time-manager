@@ -1,0 +1,30 @@
+const config = {
+  appId: 'kr.codyssey.attendance',
+  appName: '코디세이 출입 현황 알리미',
+  webDir: 'web',
+  server: {
+    androidScheme: 'https',
+    cleartext: true
+  },
+  android: {
+    allowMixedContent: true,
+    captureInput: true,
+    webContentsDebuggingEnabled: true,
+    overrideUserAgent: 'CodysseyAttendance/1.0'
+  },
+  plugins: {
+    LocalNotifications: {
+      smallIcon: 'ic_stat_codyssey',
+      iconColor: '#4ec9b0',
+      sound: 'beep.wav'
+    },
+    Preferences: {
+      group: 'codyssey_prefs'
+    },
+    PushNotifications: {
+      presentationOptions: ['badge', 'sound', 'alert']
+    }
+  }
+};
+
+module.exports = config;

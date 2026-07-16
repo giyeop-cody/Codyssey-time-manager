@@ -1,0 +1,93 @@
+package kr.codyssey.attendance.util;
+
+import android.content.Context;
+import android.webkit.CookieManager;
+import android.webkit.WebView;
+
+import java.util.HashMap;
+import java.util.Map;
+
+public class CookieManager {
+
+    private static final String COOKIE_DOMAIN = "codyssey.kr";
+    private static final String API_BASE = "https://api.usr.codyssey.kr";
+
+    // 세션 유지 핑
+    public static void pingKeepAlive(Context context) {
+        WebView webView = new WebView(context.getApplicationContext());
+        webView.getSettings().setJavaScriptEnabled(true);
+        webView.getSettings().setDomStorageEnabled(true);
+
+        // 쿠키 동기화
+        android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        cookieManager.setAcceptThirdPartyCookies(webView, true);
+
+        // pre-check API 호출로 세션 유지
+        String url = "https://api.ams.codyssey.kr/rest/login/pre-check";
+        webView.postUrl(url, "{\"userId\":\"\"}".getBytes());
+
+        // 3초 후 정리
+        webView.postDelayed(() -> {
+            webView.destroy();
+        }, 3000);
+    }
+
+    // 쿠키 가져오기
+    public static String getCookies(Context context, String url) {
+        android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
+        return cookieManager.getCookie(url);
+    }
+
+    // 쿠키 설정
+    public static void setCookie(Context context, String url, String name, String value) {
+        android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        String cookie = name + "=" + value + "; domain=" + COOKIE_DOMAIN + "; path=/; Secure; SameSite=None";
+        cookieManager.setCookie(url, cookie);
+        cookieManager.flush();
+    }
+
+    // 모든 쿠키 가져오기
+    public static Map<String, String> getAllCookies(Context context) {
+        Map<String, String> cookies = new HashMap<>();
+        String cookieString = getCookies(context, API_BASE);
+        if (cookieString != null) {
+            for (String cookie : cookieString.split(";")) {
+                String[] parts = cookie.trim().split("=", 2);
+                if (parts.length == 2) {
+                    cookies.put(parts[0], parts[1]);
+                }
+            }
+        }
+        return cookies;
+    }
+
+    // 세션 쿠키 확인
+    public static boolean hasSessionCookie(Context context) {
+        String cookies = getCookies(context, API_BASE);
+        return cookies != null && cookies.contains("JSESSIONID");
+    }
+
+    // 세션 쿠키 값 가져오기
+    public static String getSessionId(Context context) {
+        String cookies = getCookies(context, API_BASE);
+        if (cookies != null) {
+            for (String cookie : cookies.split(";")) {
+                String[] parts = cookie.trim().split("=", 2);
+                if (parts.length == 2 && parts[0].trim().equals("JSESSIONID")) {
+                    return parts[1];
+                }
+            }
+        }
+        return null;
+    }
+
+    // 쿠키 동기화 (WebView용)
+    public static void syncCookies(Context context, WebView webView) {
+        android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
+        cookieManager.setAcceptCookie(true);
+        cookieManager.setAcceptThirdPartyCookies(webView, true);
+        cookieManager.flush();
+    }
+}

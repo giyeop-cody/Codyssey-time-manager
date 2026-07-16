@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">codyssey.kr</domain>
+        <domain includeSubdomains="true">ams.codyssey.kr</domain>
+        <domain includeSubdomains="true">api.usr.codyssey.kr</domain>
+        <domain includeSubdomains="true">api.ams.codyssey.kr</domain>
+    </domain-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

@@ -1,0 +1,59 @@
+{
+  "manifest_version": 3,
+  "name": "코디세이 출입 현황 알리미",
+  "short_name": "출입알리미",
+  "version": "1.0.0",
+  "description": "코디세이 월 80시간/일 12시간 출입기록 관리, 캘린더 뷰, 퇴실 알람",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "cookies",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://ams.codyssey.kr/*",
+    "https://api.ams.codyssey.kr/*",
+    "https://api.usr.codyssey.kr/*",
+    "https://usr.codyssey.kr/*",
+    "https://codyssey.kr/*"
+  ],
+  "background": {
+    "service_worker": "js/background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://ams.codyssey.kr/*",
+        "https://api.ams.codyssey.kr/*",
+        "https://codyssey.kr/*"
+      ],
+      "js": ["js/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "html/popup.html",
+    "default_title": "코디세이 출입 현황 알리미",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["html/calendar.html", "css/*", "js/*"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
