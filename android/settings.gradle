@@ -1,19 +1,8 @@
 rootProject.name = 'CodysseyAttendance'
 
-include ':capacitor-android'
-include ':capacitor-app'
-include ':capacitor-local-notifications'
-include ':capacitor-preferences'
-include ':capacitor-network'
-include ':capacitor-push-notifications'
-include ':capacitor-device'
-
-project(':capacitor-android').projectDir = new File('../capacitor/capacitor-android')
-project(':capacitor-app').projectDir = new File('../capacitor/capacitor-app')
-project(':capacitor-local-notifications').projectDir = new File('../capacitor/capacitor-local-notifications')
-project(':capacitor-preferences').projectDir = new File('../capacitor/capacitor-preferences')
-project(':capacitor-network').projectDir = new File('../capacitor/capacitor-network')
-project(':capacitor-push-notifications').projectDir = new File('../capacitor/capacitor-push-notifications')
-project(':capacitor-device').projectDir = new File('../capacitor/capacitor-device')
-
 include ':app'
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File('./capacitor-cordova-android-plugins/')
+
+// DO NOT EDIT THE SECTION BELOW: managed by "capacitor sync"
+apply from: 'capacitor.settings.gradle'

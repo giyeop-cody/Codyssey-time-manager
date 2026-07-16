@@ -1,0 +1,17 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Gradle / Android 빌드 산출물
+.gradle/
+android/.gradle/
+android/app/build/
+android/build/
+android/capacitor-cordova-android-plugins/build/
+local.properties
+android/local.properties
+
+# IDE / OS
+.idea/
+.DS_Store
+*.iml

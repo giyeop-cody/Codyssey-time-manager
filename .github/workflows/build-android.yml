@@ -27,10 +27,22 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Sync Capacitor Android project
+        run: npx cap sync android
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
-          api-level: 33
+          api-level: 34
           ndk-version: r26c
           emulator: false
 
