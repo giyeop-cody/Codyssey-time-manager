@@ -168,11 +168,13 @@ function extractMemberId(memberInfoData) {
       || null;
 }
 
-// --- 2. 출입기록 조회 ---
-async function fetchAttendance(memberId, year, month) {
+// --- 2. 출입기록 조회 (J1: force면 5분 캐시 바이패스) ---
+async function fetchAttendance(memberId, year, month, force = false) {
   const cacheKey = `attendance_${memberId}_${year}_${month}`;
-  const cached = await getCache(cacheKey);
-  if (cached) return cached;
+  if (!force) {
+    const cached = await getCache(cacheKey);
+    if (cached) return cached;
+  }
 
   // 사용자 지정 정확한 엔드포인트
   const url = `${CONFIG.API_BASE}/rest/secom/detail?mbrId=${memberId}&year=${year}&month=${String(month).padStart(2,'0')}`;
@@ -181,7 +183,11 @@ async function fetchAttendance(memberId, year, month) {
     res = await fetchWithAuth(url);
   } catch (e) {
     // 세션 만료인데 캐시만 잔존하는 상태 방지 — 캐시 무효화 후 오류 전파 (R7)
-    if (e.message === 'AUTH_REQUIRED') await clearAttendanceCaches();
+    // Q1: memberId도 함께 폐기 — 다음 로그인(또는 다른 계정)에서 스테일 id 재사용 방지
+    if (e.message === 'AUTH_REQUIRED') {
+      await clearAttendanceCaches();
+      await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
+    }
     throw e;
   }
 
@@ -192,6 +198,13 @@ async function fetchAttendance(memberId, year, month) {
   const data = await readJsonResponse(res, 'ATTENDANCE');
   await setCache(cacheKey, data);
   return data;
+}
+
+// Q1: 세션 전환(로그인 직후) 시 저장 memberId + 캐시 초기화
+// — 계정 전환 시 이전 계정 데이터가 표시되던 문제 방지
+async function clearSessionIdentity() {
+  await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
+  await clearAttendanceCaches();
 }
 
 // ===== 알람 관리 (이름 생성/파싱은 shared-attendance.js 단일 소스 사용) =====
@@ -337,7 +350,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
 
           const now = new Date();
-          const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1);
+          // J1: force면 캐시 바이패스 (수동 새로고침 의도 존중)
+          const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, message.force === true);
           const parsed = parseAttendance(data, now);
 
           // 월 경계 입실(R2/L4): 이달 데이터에서 입실 중이 아니면 전월 말 데이터 확인
@@ -408,9 +422,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
           
           const { year, month } = message;
-          const data = await fetchAttendance(memberId, year, month);
+          const data = await fetchAttendance(memberId, year, month, message.force === true);
           const parsed = parseAttendance(data, new Date(year, month - 1));
           sendResponse({ success: true, parsed });
+          break;
+        }
+
+        // --- Q1: 세션 전환(로그인 직후) — 저장 memberId + 캐시 폐기 ---
+        case 'CLEAR_MEMBER_ID': {
+          await clearSessionIdentity();
+          sendResponse({ success: true });
           break;
         }
 
@@ -461,6 +482,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // --- 설정 저장 ---
         case 'UPDATE_SETTINGS': {
           await saveSettings(message.settings);
+          await syncKeepAliveAlarm(); // J2: keep-alive 토글을 알람에 즉시 반영
           sendResponse({ success: true });
           break;
         }
@@ -474,7 +496,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // --- 로그아웃 ---
         case 'LOGOUT': {
-          await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
+          await clearSessionIdentity(); // Q1: memberId + 캐시 폐기 공통화
+          // Q4: keep-alive도 해제 — 로그아웃 상태에서 계속 핑 쏘지 않도록
+          const settingsAtLogout = await getSettings();
+          if (settingsAtLogout.keepAliveEnabled) {
+            settingsAtLogout.keepAliveEnabled = false;
+            await saveSettings(settingsAtLogout);
+          }
+          await syncKeepAliveAlarm(); // J2 알람도 해제
           const all = await getStorage(null);
           const keysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.CACHE));
           if (keysToRemove.length) {
@@ -506,13 +535,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           } catch (e) {
             console.warn('세션 쿠키 삭제 실패:', e);
           }
-          sendResponse({ success: true });
-          break;
-        }
-
-        // --- 캘린더 열기 ---
-        case 'OPEN_CALENDAR': {
-          chrome.tabs.create({ url: chrome.runtime.getURL('calendar.html') });
           sendResponse({ success: true });
           break;
         }
@@ -586,6 +608,25 @@ async function migrateLegacyAlarms() {
 
 // 주기적 백그라운드 동기화 (캐시 무효화)
 chrome.alarms.create('periodic_sync', { periodInMinutes: 30 });
+
+// J2: keep-alive 핑을 서비스 워커 알람으로 관리 — 팝업 생명주기와 무관하게 동작.
+// (기존 popup.js 타이머는 팝업이 열린 동안에만 유효 → 설정과 실제 동작이 어긋났음)
+const KEEPALIVE_ALARM = 'keepalive_ping';
+async function syncKeepAliveAlarm() {
+  try {
+    const settings = await getSettings();
+    const existing = await chrome.alarms.get(KEEPALIVE_ALARM);
+    if (settings.keepAliveEnabled && !existing) {
+      chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 25 });
+    } else if (!settings.keepAliveEnabled && existing) {
+      await chrome.alarms.clear(KEEPALIVE_ALARM);
+    }
+  } catch (e) {
+    console.warn('keep-alive 알람 동기화 실패:', e);
+  }
+}
+syncKeepAliveAlarm(); // SW 기동 시점에 설정과 알람 상태 일치
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'periodic_sync') {
     const memberId = await getMemberId();
@@ -593,6 +634,22 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
       const now = new Date();
       const cacheKey = `attendance_${memberId}_${now.getFullYear()}_${now.getMonth()+1}`;
       await chrome.storage.local.remove(CONFIG.STORAGE_KEYS.CACHE + cacheKey);
+    }
+  }
+  // J2: keep-alive 핑 — 세션 터치 (응답 본문은 불필요, 만료 시 정리)
+  if (alarm.name === KEEPALIVE_ALARM) {
+    const settings = await getSettings();
+    if (!settings.keepAliveEnabled) {
+      await chrome.alarms.clear(KEEPALIVE_ALARM);
+      return;
+    }
+    try {
+      await fetchMemberInfo();
+    } catch (e) {
+      if (e.message === 'AUTH_REQUIRED') {
+        await clearSessionIdentity(); // Q1: 만료 시 식별자/캐시 폐기
+      }
+      console.warn('[KeepAlive] ping 실패:', e.message);
     }
   }
 });

@@ -9,7 +9,6 @@ import com.getcapacitor.BridgeActivity;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
-import kr.codyssey.attendance.plugin.NotificationPlugin;
 
 public class MainActivity extends BridgeActivity {
 
@@ -21,9 +20,9 @@ public class MainActivity extends BridgeActivity {
         instance = this;
 
         // 커스텀 Capacitor 플러그인 등록 (반드시 super.onCreate 전에 호출)
+        // Q8: NotificationPlugin은 JS 미사용 데드 브리지였기에 util.NotificationHelper로 대첩
         registerPlugin(NetworkPlugin.class);
         registerPlugin(AlarmPlugin.class);
-        registerPlugin(NotificationPlugin.class);
 
         super.onCreate(savedInstanceState);
 
@@ -124,6 +123,14 @@ public class MainActivity extends BridgeActivity {
 
     private static String jsQuote(String s) {
         if (s == null) return "null";
-        return "'" + s.replace("\\", "\\\\").replace("'", "\\'") + "'";
+        // Q6: 개행/라인 구분자 미이스케이프 시 evaluateJavascript의 JS 파싱이 깨져 이벤트가 유실됨
+        return "'" + s
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029")
+                + "'";
     }
 }

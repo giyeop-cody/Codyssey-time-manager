@@ -100,17 +100,33 @@ async function loadAttendance() {
       currentSettings = status.settings;
     }
 
-    const response = await sendMessage('FETCH_ATTENDANCE', {
-      memberId: currentMemberId,
-      year: currentViewDate.getFullYear(),
-      month: currentViewDate.getMonth() + 1
-    });
+    // J4: 인접 월(그리드 가장자리 셀) 데이터도 함께 조회해 병합
+    const year = currentViewDate.getFullYear();
+    const month = currentViewDate.getMonth() + 1;
+    const prevDate = new Date(year, month - 2, 1);
+    const nextDate = new Date(year, month, 1);
+
+    const [response, prevRes, nextRes] = await Promise.all([
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year, month }),
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year: prevDate.getFullYear(), month: prevDate.getMonth() + 1 }),
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year: nextDate.getFullYear(), month: nextDate.getMonth() + 1 })
+    ]);
 
     if (!response.success) {
       throw new Error(response.error);
     }
 
     attendanceData = response.parsed;
+    // 인접 월은 dailyBreakdown만 병합 (월 합계/상태는 보고 있는 월 기준 유지)
+    if (prevRes && prevRes.success) {
+      attendanceData.dailyBreakdown = { ...prevRes.parsed.dailyBreakdown, ...attendanceData.dailyBreakdown };
+    }
+    if (nextRes && nextRes.success) {
+      attendanceData.dailyBreakdown = { ...attendanceData.dailyBreakdown, ...nextRes.parsed.dailyBreakdown };
+    }
+
+    // J4 평균 계산 시 인접 월 날짜가 포함되지 않도록 현재 월 분해를 별도 보관
+    attendanceData.currentMonthBreakdown = response.parsed.dailyBreakdown;
 
     renderCalendar();
     updateMonthSummary();
@@ -261,8 +277,9 @@ function updateMonthSummary() {
   const monthlyReq = currentSettings.monthlyRequiredHours * 60;
   const monthlyRemain = Math.max(0, monthlyReq - monthlyTotal);
 
-  // 일 평균 (기록이 있는 날만)
-  const recordedDays = Object.keys(attendanceData.dailyBreakdown).length;
+  // 일 평균 (기록이 있는 날만 — J4: 인접 월이 병합되어도 현재 월 날짜만 집계)
+  const breakdown = attendanceData.currentMonthBreakdown || attendanceData.dailyBreakdown;
+  const recordedDays = Object.keys(breakdown).length;
   const avg = recordedDays > 0 ? Math.round(monthlyTotal / recordedDays) : 0;
 
   els.monthTotal.textContent = minutesToTimeStr(monthlyTotal);

@@ -10,7 +10,7 @@ import org.json.JSONObject;
 
 import kr.codyssey.attendance.MainActivity;
 import kr.codyssey.attendance.plugin.AlarmPlugin;
-import kr.codyssey.attendance.plugin.NotificationPlugin;
+import kr.codyssey.attendance.util.NotificationHelper;
 
 public class AlarmReceiver extends BroadcastReceiver {
 
@@ -47,7 +47,7 @@ public class AlarmReceiver extends BroadcastReceiver {
         }
 
         // 알림 표시 (title, body, id)
-        NotificationPlugin.showNotification(context, "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
+        NotificationHelper.showNotification(context, "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
 
         // R8: 앱이 살아있으면 WebView JS로 이벤트 전달 (화면 자동 갱신)
         MainActivity.emitNativeEvent("ALARM_TRIGGERED", label, id);

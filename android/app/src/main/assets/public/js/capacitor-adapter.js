@@ -94,6 +94,18 @@ import {
     if (!chrome.storage) chrome.storage = {};
     chrome.storage.local = {
       get: function(keys, callback) {
+        // J3: 표준 시그니처 — get(null)은 전체 항목 반환
+        if (keys === null || keys === undefined) {
+          Plugins.Preferences.keys()
+            .then(({ keys: allKeys }) => Promise.all((allKeys || []).map(k => getPrefs(k).then(v => [k, v]))))
+            .then(entries => {
+              const obj = {};
+              entries.forEach(([k, v]) => { if (v !== null) obj[k] = v; });
+              if (callback) callback(obj);
+            })
+            .catch(() => { if (callback) callback({}); });
+          return;
+        }
         const keyArray = Array.isArray(keys) ? keys : [keys];
         Promise.all(keyArray.map(k => getPrefs(k)))
           .then(values => {
@@ -149,11 +161,17 @@ import {
   const NOTIF_ID_MAP_KEY = 'notif_id_map';
   const NOTIF_ID_COUNTER_KEY = 'notif_id_counter';
   const NOTIF_ID_BASE = 1000;
+  // Q7: local_/notif_ 타임스탬프형 원샷 키는 매핑을 영속하지 않고 시간 기반 정수 사용 (맵 무한 증가 방지)
+  const ONESHOT_NOTIF_KEY_RE = /^(local|notif)_\d+$/;
 
   async function notificationIdFor(idKey) {
+    if (ONESHOT_NOTIF_KEY_RE.test(idKey)) {
+      return (Date.now() % 2000000000) | 0;
+    }
     try {
       const map = (await getPrefs(NOTIF_ID_MAP_KEY)) || {};
-      if (map[idKey]) return map[idKey];
+      // Q9: hasOwnProperty로 프로토타입 키(__proto__ 등) 오동작 방지
+      if (Object.prototype.hasOwnProperty.call(map, idKey)) return map[idKey];
       const next = ((await getPrefs(NOTIF_ID_COUNTER_KEY)) || NOTIF_ID_BASE) + 1;
       map[idKey] = next;
       await setPrefs(NOTIF_ID_COUNTER_KEY, next);
@@ -194,7 +212,8 @@ import {
         if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
 
         const now = new Date();
-        const result = await getAttendanceParsed(memberId, now.getFullYear(), now.getMonth() + 1, now);
+        // J1: force면 캐시 바이패스 (수동 새로고침)
+        const result = await getAttendanceParsed(memberId, now.getFullYear(), now.getMonth() + 1, now, message.force === true);
         if (result.error) return { success: false, error: result.error };
 
         const parsed = result.parsed;
@@ -231,9 +250,15 @@ import {
       case 'FETCH_ATTENDANCE': {
         const memberId = message.memberId || await ensureMemberId();
         if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
-        const result = await getAttendanceParsed(memberId, message.year, message.month, new Date(message.year, message.month - 1));
+        const result = await getAttendanceParsed(memberId, message.year, message.month, new Date(message.year, message.month - 1), message.force === true);
         if (result.error) return { success: false, error: result.error };
         return { success: true, parsed: result.parsed };
+      }
+
+      // Q1: 세션 전환(로그인 직후) — 저장 memberId + 캐시 폐기
+      case 'CLEAR_MEMBER_ID': {
+        await clearSessionIdentity();
+        return { success: true };
       }
 
       case 'SET_ALARM': {
@@ -333,6 +358,12 @@ import {
         await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID });
         await Plugins.Preferences.remove({ key: STORE_KEYS.ALARMS });
         await clearAttendanceCaches();
+        // Q4: keep-alive 설정도 해제 — 재부팅 시 BootReceiver가 유령 핑을 다시 예약하지 않도록
+        try {
+          const settings = await getSettings();
+          settings.keepAliveEnabled = false;
+          await setPrefs(STORE_KEYS.SETTINGS, settings);
+        } catch (e) { /* 무시 */ }
         // 서버 세션 쿠키도 정리 (C5)
         if (Plugins.NetworkPlugin && Plugins.NetworkPlugin.clearCookies) {
           try { await Plugins.NetworkPlugin.clearCookies({}); } catch (e) { /* 무시 */ }
@@ -345,11 +376,6 @@ import {
 
       case 'LOCAL_NOTIFY': {
         await scheduleLocalNotification(message.title || '알림', message.body || '', 'local_' + Date.now());
-        return { success: true };
-      }
-
-      case 'OPEN_CALENDAR': {
-        window.location.href = 'calendar.html';
         return { success: true };
       }
 
@@ -450,16 +476,18 @@ import {
            status === 401 || status === 403;
   }
 
-  // 원본 JSON 조회 (N8 캐시 적용). { raw } 또는 { error }
-  async function getAttendanceRaw(memberId, year, month) {
-    const cached = await getCachedAttendance(memberId, year, month);
-    if (cached) return { raw: cached };
+  // 원본 JSON 조회 (N8 캐시 적용, J1: force면 캐시 바이패스). { raw } 또는 { error }
+  async function getAttendanceRaw(memberId, year, month, force = false) {
+    if (!force) {
+      const cached = await getCachedAttendance(memberId, year, month);
+      if (cached) return { raw: cached };
+    }
 
     if (!Plugins.NetworkPlugin) return { error: 'NETWORK_PLUGIN_UNAVAILABLE' };
     const res = await Plugins.NetworkPlugin.getAttendance({ memberId, year, month });
 
     if (isAuthStatus(res.status)) {
-      await clearAttendanceCaches(); // R7: 만료 시 캐시 잔존 방지
+      await clearSessionIdentity(); // R7 캐시 + Q1 memberId 폐기
       return { error: 'NOT_LOGGED_IN' };
     }
     if (res.status && res.status >= 400) {
@@ -470,7 +498,7 @@ import {
     if (!raw || !raw.detail_list) {
       // 로그인 페이지 HTML이 그대로 온 경우 인증 오류로 분류 (N4)
       if (typeof res.data === 'string' && /login|로그인/i.test(res.data)) {
-        await clearAttendanceCaches();
+        await clearSessionIdentity();
         return { error: 'NOT_LOGGED_IN' };
       }
       return { error: 'ATTENDANCE_PARSE_ERROR' };
@@ -480,10 +508,16 @@ import {
     return { raw };
   }
 
-  async function getAttendanceParsed(memberId, year, month, targetDate) {
-    const result = await getAttendanceRaw(memberId, year, month);
+  async function getAttendanceParsed(memberId, year, month, targetDate, force = false) {
+    const result = await getAttendanceRaw(memberId, year, month, force);
     if (result.error) return result;
     return { parsed: parseAttendance(result.raw, targetDate) };
+  }
+
+  // Q1: 세션 전환(로그인 직후/만료) 시 저장 memberId + 캐시 폐기 — 스테일 id 재사용 방지
+  async function clearSessionIdentity() {
+    try { await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID }); } catch (e) { /* 무시 */ }
+    await clearAttendanceCaches();
   }
 
   function safeJson(s) {
@@ -524,6 +558,19 @@ import {
   // ===== 알림 권한 요청 (Android 13+) =====
   if (isCapacitor && Plugins.LocalNotifications) {
     Plugins.LocalNotifications.requestPermissions().catch(() => {});
+  }
+
+  // ===== Q5: 하드웨어 뒤로가기 처리 (미처리 시 앱이 바로 종료됨) =====
+  if (isCapacitor && Plugins.App && Plugins.App.addListener) {
+    try {
+      Plugins.App.addListener('backButton', ({ canGoBack }) => {
+        if (canGoBack) {
+          window.history.back();
+        } else {
+          Plugins.App.exitApp();
+        }
+      }).catch(() => {});
+    } catch (e) { /* 리스너 미지원 환경 무시 */ }
   }
 
   // K6: MainActivity가 알림 탭 이벤트 전달 전에 이 플래그를 폴리 -> JS 리스너 준비 여부 확인용

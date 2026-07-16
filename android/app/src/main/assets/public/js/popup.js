@@ -197,9 +197,10 @@ function setLoginButtonLoading(loading) {
 }
 
 // ===== 데이터 로드 및 UI 업데이트 =====
-async function loadDashboard() {
+async function loadDashboard(forceRefresh = false) {
   try {
-    const response = await sendMessage('GET_STATUS');
+    // J1: forceRefresh면 서버에서 강제 갱신 (5분 캐시 바이패스)
+    const response = await sendMessage('GET_STATUS', { force: forceRefresh });
     if (!response.success) {
       if (response.error === 'NOT_LOGGED_IN') {
         showLoginScreen();
@@ -665,17 +666,25 @@ async function loadCalendarData() {
     const year = currentViewDate.getFullYear();
     const month = currentViewDate.getMonth() + 1;
     
-    // 해당 월 데이터 fetch
-    const response = await sendMessage('FETCH_ATTENDANCE', { 
-      memberId: currentMemberId, 
-      year, 
-      month 
-    });
+    // J4: 그리드 가장자리 인접 월 셀에도 기록이 표시되도록 전/다음 월을 함께 조회
+    const prevDate = new Date(year, month - 2, 1);
+    const nextDate = new Date(year, month, 1);
+    const [curRes, prevRes, nextRes] = await Promise.all([
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year, month }),
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year: prevDate.getFullYear(), month: prevDate.getMonth() + 1 }),
+      sendMessage('FETCH_ATTENDANCE', { memberId: currentMemberId, year: nextDate.getFullYear(), month: nextDate.getMonth() + 1 })
+    ]);
     
-    if (response.success) {
-      // 기존 currentParsed에 병합하거나 별도 저장
-      // 여기서는 렌더링용으로 임시 저장
-      window.calendarParsed = response.parsed;
+    if (curRes.success) {
+      const parsed = curRes.parsed;
+      // 인접 월은 dailyBreakdown만 병합 (합계/입실 상태는 보고 있는 월 기준 유지)
+      if (prevRes && prevRes.success) {
+        parsed.dailyBreakdown = { ...prevRes.parsed.dailyBreakdown, ...parsed.dailyBreakdown };
+      }
+      if (nextRes && nextRes.success) {
+        parsed.dailyBreakdown = { ...parsed.dailyBreakdown, ...nextRes.parsed.dailyBreakdown };
+      }
+      window.calendarParsed = parsed;
       renderCalendar();
     } else {
       // 실패 시 기존 데이터로 렌더링
@@ -1229,6 +1238,8 @@ async function logout() {
     await sendMessage('LOGOUT');
     currentMemberId = null;
     currentParsed = null;
+    window.calendarParsed = null; // Q1: 캘린더 데이터도 폐기 (계정 전환 잔여 데이터 방지)
+    currentViewDate = new Date();
     showLoginScreen();
     els.loginEmail.value = '';
     els.loginPassword.value = '';
@@ -1277,8 +1288,13 @@ function setupEventListeners() {
     try {
       await performLogin(email, password);
 
+      // Q1: 세션 전환 — 저장된 이전 memberId/캐시 폐기 후 신선 조회
+      // (다른 계정으로 로그인필시 이전 mbrId로 API를 호출하는 스테일 방지)
+      await sendMessage('CLEAR_MEMBER_ID');
+      window.calendarParsed = null;
+
       // 로그인 성공 - 대시보드 로드
-      const response = await sendMessage('GET_STATUS');
+      const response = await sendMessage('GET_STATUS', { force: true });
       if (response.success) {
         currentMemberId = response.memberId;
         currentParsed = response.parsed;
@@ -1301,8 +1317,8 @@ function setupEventListeners() {
     }
   });
 
-  // 대시보드 버튼들
-  els.btnRefresh.addEventListener('click', () => loadDashboard());
+  // 대시보드 버튼들 (⟳는 캐시를 우회해서 강제 갱신 — J1)
+  els.btnRefresh.addEventListener('click', () => loadDashboard(true));
   els.btnSettings.addEventListener('click', openSettings);
   
   // 로그인 유지 토글
@@ -1364,8 +1380,13 @@ function setupEventListeners() {
 
   // 백그라운드/네이티브 메시지 리스너
   chrome.runtime.onMessage.addListener((message) => {
-    // K13: 네이티브 주기 동기화(keep-alive 핑) 후에도 화면을 최신으로 갱신
-    if (message.type === 'ALARM_TRIGGERED' || message.type === 'SYNC_COMPLETE') {
+    if (message.type === 'ALARM_TRIGGERED') {
+      loadDashboard();
+      return;
+    }
+    // Q2 (K13 회귀 수정): 사용자가 보고(입력 중) 있는 동안 자동 갱신하면
+    // 계산기 입력·결과가 리셋됨 → 백그라운드일 때만 조용히 갱신
+    if (message.type === 'SYNC_COMPLETE' && document.hidden) {
       loadDashboard();
     }
   });

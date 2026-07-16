@@ -216,8 +216,9 @@ public class NetworkPlugin extends Plugin {
     }
 
     // 세션 쿠키 첨부 허용 도메인 (codyssey 계엧만 — N5)
+    // Q3: endsWith("codyssey.kr")는 "evilcodyssey.kr"도 통과시키므로 점(.) 경계를 강제
     private static boolean isAllowedHost(String host) {
-        return host != null && host.endsWith("codyssey.kr");
+        return host != null && (host.equals("codyssey.kr") || host.endsWith(".codyssey.kr"));
     }
 
     private void addCookies(HttpURLConnection conn) {

@@ -1,4 +1,4 @@
-package kr.codyssey.attendance.plugin;
+package kr.codyssey.attendance.util;
 
 import android.app.Notification;
 import android.app.NotificationChannel;
@@ -13,52 +13,18 @@ import android.os.Build;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.NotificationManagerCompat;
 
-import com.getcapacitor.JSObject;
-import com.getcapacitor.Plugin;
-import com.getcapacitor.PluginCall;
-import com.getcapacitor.PluginMethod;
-import com.getcapacitor.annotation.CapacitorPlugin;
-
-@CapacitorPlugin(name = "NotificationPlugin")
-public class NotificationPlugin extends Plugin {
+/**
+ * 알림 표시 유틸 (Q8).
+ *
+ * 기존 plugin/NotificationPlugin은 @PluginMethod 브리지였지만 JS에서 한 번도 호출되지 않고
+ * AlarmReceiver가 static 메서드만 사용했음 → 데드 브리지 표면을 제거하고 순수 util로 전환.
+ * (Android 13+ 알림 권한 요청은 Capacitor LocalNotifications 플러그인이 adapter에서 담당)
+ */
+public class NotificationHelper {
 
     private static final String CHANNEL_ID = "codyssey_alarms";
     private static final String CHANNEL_NAME = "출입 알림";
     private static final int NOTIFICATION_ID_BASE = 1000;
-
-    @PluginMethod
-    public void show(PluginCall call) {
-        String title = call.getString("title", "알림");
-        String body = call.getString("body", "");
-        String id = call.getString("id", String.valueOf(System.currentTimeMillis()));
-
-        showNotification(getContext(), title, body, id);
-
-        JSObject result = new JSObject();
-        result.put("success", true);
-        call.resolve(result);
-    }
-
-    @PluginMethod
-    public void requestPermission(PluginCall call) {
-        // Android 13+ 알림 권한 요청
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (getActivity() != null) {
-                getActivity().requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1001);
-            }
-        }
-        JSObject result = new JSObject();
-        result.put("granted", NotificationManagerCompat.from(getContext()).areNotificationsEnabled());
-        call.resolve(result);
-    }
-
-    @PluginMethod
-    public void checkPermission(PluginCall call) {
-        boolean enabled = NotificationManagerCompat.from(getContext()).areNotificationsEnabled();
-        JSObject result = new JSObject();
-        result.put("granted", enabled);
-        call.resolve(result);
-    }
 
     // M7: 알람 id의 hashCode 충돌로 다른 알림을 덮어쓰는 문제 방지 — id별 고유 int 매핑 유지
     private static int notificationIdFor(Context context, String key) {
