@@ -8,9 +8,7 @@
     "storage",
     "alarms",
     "notifications",
-    "cookies",
-    "scripting",
-    "activeTab"
+    "cookies"
   ],
   "host_permissions": [
     "https://ams.codyssey.kr/*",
@@ -35,7 +33,7 @@
     }
   ],
   "action": {
-    "default_popup": "html/popup.html",
+    "default_popup": "popup.html",
     "default_title": "코디세이 출입 현황 알리미",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -52,8 +50,14 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["html/calendar.html", "css/*", "js/*"],
-      "matches": ["<all_urls>"]
+      "resources": ["calendar.html", "css/*", "js/*"],
+      "matches": [
+        "https://codyssey.kr/*",
+        "https://ams.codyssey.kr/*",
+        "https://usr.codyssey.kr/*",
+        "https://api.ams.codyssey.kr/*",
+        "https://api.usr.codyssey.kr/*"
+      ]
     }
   ]
 }
