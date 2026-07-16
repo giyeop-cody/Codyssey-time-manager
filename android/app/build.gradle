@@ -12,8 +12,10 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // L12: CI에서는 GITHUB_RUN_NUMBER로 versionCode 자동 증가 (로컬은 1)
         // VERSION_NAME은 태그명에서 전달 (v1.2.0 → 1.2.0으로 v 접두어 제거)
-        versionCode (System.getenv('GITHUB_RUN_NUMBER') ?: '1').toInteger()
-        versionName (System.getenv('VERSION_NAME') ?: '1.0.0').replaceFirst(/^v/, '')
+        // ※ `(expr).method()`를 공백 명령형으로 쓰면 .method()가 전체 호출 결과에 붙어
+        //   CI에서 "Value is null" 평가 오류가 나므로, Integer.parseInt/괄호로 명확히 작성
+        versionCode Integer.parseInt(System.getenv('GITHUB_RUN_NUMBER') ?: '1')
+        versionName((System.getenv('VERSION_NAME') ?: '1.0.0').replaceFirst(/^v/, ''))
     }
     buildFeatures {
         buildConfig true
