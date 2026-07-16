@@ -240,8 +240,9 @@ public class NetworkPlugin extends Plugin {
         int responseCode = conn.getResponseCode();
 
         // L9: Set-Cookie 헤더 전체 순회 (첫 헤더만 읽으면 다중 쿠키 설정 시 손실)
-        java.util.List<String> setCookies = conn.getHeaderFields().get("Set-Cookie");
-        if (setCookies != null) {
+        // K1: 헤더명 대소문자 무관하게 수집 (소문자 set-cookie 서버 대응)
+        java.util.List<String> setCookies = kr.codyssey.attendance.util.CookieManager.extractSetCookies(conn);
+        if (!setCookies.isEmpty()) {
             String origin = conn.getURL().getProtocol() + "://" + conn.getURL().getHost();
             CookieManager cookieManager = CookieManager.getInstance();
             for (String cookie : setCookies) {

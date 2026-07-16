@@ -4,11 +4,13 @@ import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
 import android.app.PendingIntent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.provider.Settings;
 
 import androidx.work.Data;
 import androidx.work.ExistingPeriodicWorkPolicy;
+import androidx.work.ExistingWorkPolicy;
 import androidx.work.OneTimeWorkRequest;
 import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
@@ -19,6 +21,8 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import kr.codyssey.attendance.receiver.AlarmReceiver;
@@ -29,8 +33,41 @@ import kr.codyssey.attendance.worker.SyncWorker;
 public class AlarmPlugin extends Plugin {
 
     // 공통 태그로 모든 알람 작업을 묶고(cancelAll 가능), id 태그로 개별 취소
-    private static final String WORK_TAG_ALARM = "codyssey_alarm_";
+    public static final String WORK_TAG_ALARM = "codyssey_alarm_";
     private static final String WORK_TAG_PERIODIC = "codyssey_periodic_sync";
+
+    // ===== K7: 예약된 알람 id를 네이티브가 자체 추적 =====
+    // (JS Preferences 목록은 사용자 데이터이며 저장 실패/유실될 수 있어,
+    //  AlarmManager 정확 알람의 완전한 해제를 위해 OS측 기록을 별도 유지)
+    private static final String TRACK_PREFS = "codyssey_alarm_ids";
+    private static final String TRACK_KEY = "ids";
+
+    public static synchronized void trackScheduled(Context ctx, String id) {
+        if (ctx == null || id == null) return;
+        SharedPreferences prefs = ctx.getSharedPreferences(TRACK_PREFS, Context.MODE_PRIVATE);
+        Set<String> ids = new HashSet<>(prefs.getStringSet(TRACK_KEY, new HashSet<String>()));
+        if (ids.add(id)) {
+            prefs.edit().putStringSet(TRACK_KEY, ids).apply();
+        }
+    }
+
+    public static synchronized void untrackScheduled(Context ctx, String id) {
+        if (ctx == null || id == null) return;
+        SharedPreferences prefs = ctx.getSharedPreferences(TRACK_PREFS, Context.MODE_PRIVATE);
+        Set<String> ids = new HashSet<>(prefs.getStringSet(TRACK_KEY, new HashSet<String>()));
+        if (ids.remove(id)) {
+            prefs.edit().putStringSet(TRACK_KEY, ids).apply();
+        }
+    }
+
+    public static Set<String> trackedIds(Context ctx) {
+        SharedPreferences prefs = ctx.getSharedPreferences(TRACK_PREFS, Context.MODE_PRIVATE);
+        return new HashSet<>(prefs.getStringSet(TRACK_KEY, new HashSet<String>()));
+    }
+
+    private static synchronized void clearTracked(Context ctx) {
+        ctx.getSharedPreferences(TRACK_PREFS, Context.MODE_PRIVATE).edit().remove(TRACK_KEY).apply();
+    }
 
     @PluginMethod
     public void schedule(PluginCall call) {
@@ -58,6 +95,7 @@ public class AlarmPlugin extends Plugin {
         } else {
             enqueueAlarmWork(triggerTimeMillis - now, id, label, triggerTimeMillis);
         }
+        trackScheduled(getContext(), id); // K7: OS측 예약 기록
 
         JSObject result = new JSObject();
         result.put("success", true);
@@ -86,7 +124,8 @@ public class AlarmPlugin extends Plugin {
         }
 
         WorkManager.getInstance(getContext()).cancelAllWorkByTag(WORK_TAG_ALARM + id);
-        cancelExactAlarm(id);
+        cancelExactAlarm(getContext(), id);
+        untrackScheduled(getContext(), id); // K7
 
         JSObject result = new JSObject();
         result.put("success", true);
@@ -97,7 +136,13 @@ public class AlarmPlugin extends Plugin {
     public void cancelAll(PluginCall call) {
         // 공통 태그로 한번에 취소 (예약 시 WORK_TAG_ALARM을 항상 추가함)
         WorkManager.getInstance(getContext()).cancelAllWorkByTag(WORK_TAG_ALARM);
-        // AlarmManager 쪽은 id별 PendingIntent라 모륵 없음 — 스토리지 목록 순회는 JS(LOGOUT)에서 처리
+        // K7: AlarmManager 정확 알람은 id별 PendingIntent라 태그 취소가 불가 —
+        // 네이티브 추적 목록을 순회해 전부 해제 (JS 목록 누락분도 커버)
+        Context ctx = getContext();
+        for (String id : trackedIds(ctx)) {
+            cancelExactAlarm(ctx, id);
+        }
+        clearTracked(ctx);
         call.resolve();
     }
 
@@ -154,6 +199,7 @@ public class AlarmPlugin extends Plugin {
     }
 
     // WorkManager 경로 (정확 알람 불가 시의 폼백)
+    // unique + REPLACE: 같은 id로 재예약 시 OS 수준에서 1걸만 유지 (이중 발화 방지)
     private void enqueueAlarmWork(long delayMillis, String id, String label, long triggerTimeMillis) {
         Data inputData = new Data.Builder()
                 .putString("label", label)
@@ -168,20 +214,31 @@ public class AlarmPlugin extends Plugin {
                 .addTag(WORK_TAG_ALARM + id)     // 개별 태그 (cancel용)
                 .build();
 
-        WorkManager.getInstance(getContext()).enqueue(alarmWork);
+        WorkManager.getInstance(getContext())
+                .enqueueUniqueWork(
+                        WORK_TAG_ALARM + id,
+                        ExistingWorkPolicy.REPLACE,
+                        alarmWork
+                );
     }
 
     private void scheduleExactAlarm(long triggerTimeMillis, String id, String label) {
-        AlarmManager alarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+        scheduleExactAlarmAt(getContext(), triggerTimeMillis, id, label);
+    }
+
+    // K7/K4 연계: 부트 복원 등 컨텍스트만 있는 곳에서도 사용할 수 있도록 정적 공개
+    public static void scheduleExactAlarmAt(Context ctx, long triggerTimeMillis, String id, String label) {
+        AlarmManager alarmManager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) return;
 
-        Intent intent = new Intent(getContext(), AlarmReceiver.class);
+        Intent intent = new Intent(ctx, AlarmReceiver.class);
         intent.putExtra("label", label);
         intent.putExtra("id", id);
+        intent.putExtra("triggerTime", triggerTimeMillis); // K3: 수신 측 지연 발화 판정용
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                getContext(),
+                ctx,
                 id.hashCode(),
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
@@ -202,15 +259,15 @@ public class AlarmPlugin extends Plugin {
         }
     }
 
-    private void cancelExactAlarm(String id) {
-        AlarmManager alarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
+    public static void cancelExactAlarm(Context ctx, String id) {
+        AlarmManager alarmManager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) return;
 
-        Intent intent = new Intent(getContext(), AlarmReceiver.class);
+        Intent intent = new Intent(ctx, AlarmReceiver.class);
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                getContext(),
+                ctx,
                 id.hashCode(),
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE

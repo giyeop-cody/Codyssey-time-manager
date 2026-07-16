@@ -284,3 +284,28 @@ test('신형 이름은 구형과 다르게 생성됨 (마이그레이션 대상 
   // 둘 다 같은 의미로 파싱됨
   assert.deepEqual(parseAlarmName(legacy), parseAlarmName(modern));
 });
+
+// ===== K11: formatEndMinutes =====
+test('formatEndMinutes: 당일은 HH:MM, 24시간 초과는 N일 후 표기', async () => {
+  const { formatEndMinutes } = await import('../web/js/shared-attendance.js');
+  assert.equal(formatEndMinutes(1080), '18:00');
+  assert.equal(formatEndMinutes(0), '00:00');
+  assert.equal(formatEndMinutes(1439), '23:59');
+  assert.equal(formatEndMinutes(1440), '1일 후 00:00');
+  assert.equal(formatEndMinutes(1560), '1일 후 02:00');
+  assert.equal(formatEndMinutes(2885), '2일 후 00:05');
+  assert.equal(formatEndMinutes(null), '--:--');
+  assert.equal(formatEndMinutes(NaN), '--:--');
+});
+
+// ===== K3: isAlarmStale (지연 발화 판정) =====
+test('isAlarmStale: 15분 초과 지연만 stale', async () => {
+  const { isAlarmStale, ALARM_STALE_WINDOW_MS } = await import('../web/js/shared-attendance.js');
+  const now = Date.now();
+  assert.equal(isAlarmStale(now - 5 * 60000, now), false);   // 5분 지연 → 정상 발화
+  assert.equal(isAlarmStale(now - ALARM_STALE_WINDOW_MS - 1, now), true); // 창구 1ms 초과 → stale
+  assert.equal(isAlarmStale(now - 24 * 60 * 60000, now), true); // 하루 지연 → stale
+  assert.equal(isAlarmStale(now + 60000, now), false);       // 미래 시각 → 아님
+  assert.equal(isAlarmStale(0, now), false);                 // 정보 없음 → 정상 간주
+  assert.equal(isAlarmStale(null, now), false);
+});

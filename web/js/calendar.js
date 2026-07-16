@@ -7,6 +7,8 @@ import {
   minutesToTimeStr,
   durationToMinutes,
   timeStrToMinutes,
+  elapsedSinceEntry,
+  minutesToHHMM,
   recognizedToday,
   recognizedMonthly,
   getTodayString
@@ -287,11 +289,15 @@ function openDayDetail(dateStr, minutes) {
   // 상세 기록 - rawDetailList에서 세션 정보 사용
   const todayStr = getTodayString();
   const dayData = (attendanceData.rawDetailList || []).find(d => d.date === dateStr);
+  const isToday = dateStr === todayStr;
+
+  const rows = [];
+  let hasLiveRow = false;
 
   if (dayData && dayData.sessions && dayData.sessions.length > 0) {
     const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
 
-    els.dayRecords.innerHTML = dayData.sessions.map(session => {
+    for (const session of dayData.sessions) {
       const entryTime = session.entry_time || '';
       const exitTime = session.exit_time || '';
       const durationStr = session.duration || '';
@@ -304,24 +310,45 @@ function openDayDetail(dateStr, minutes) {
       let displayDuration = minutesToTimeStr(durationMin);
 
       // 오늘 날짜의 진행 중 세션만 실시간 계산 (과거 날짜는 서버 확정 값)
-      if (isMissing && missingType === 'exit' && entryTime && dateStr === todayStr) {
+      if (isMissing && missingType === 'exit' && entryTime && isToday) {
         const entryMin = timeStrToMinutes(entryTime);
         if (entryMin !== null) {
-          const realDuration = nowMin - entryMin;
-          displayDuration = minutesToTimeStr(realDuration);
+          displayDuration = minutesToTimeStr(Math.max(0, nowMin - entryMin)); // K10: 음수 클램프
         }
       }
 
-      return `
+      if (isMissing && missingType === 'exit') hasLiveRow = true;
+
+      rows.push(`
         <div class="day-detail-record ${isMissing && missingType === 'exit' ? 'current' : ''}">
           <span class="day-detail-record-time">${displayTime}</span>
           <span class="day-detail-record-duration ${isOverRecord ? 'over' : ''}">${displayDuration}</span>
         </div>
-      `;
-    }).join('');
-  } else {
-    els.dayRecords.innerHTML = '<div class="day-detail-empty">해당 날짜의 출입 기록이 없습니다.</div>';
+      `);
+    }
   }
+
+  // K10: 전날 입실(야간) 등으로 오늘 세션 목록에 진행 중 행이 없어도,
+  // 현재 입실 중이면 실시간 경과 행을 추가 (entryTimestamp 기준 자정 경계 안전)
+  if (isToday && attendanceData.isCurrentlyIn && !hasLiveRow) {
+    const entryTs = attendanceData.entryTimestamp;
+    const entryDate = entryTs ? new Date(entryTs) : null;
+    const entryLabel = entryDate
+      ? minutesToHHMM(entryDate.getHours() * 60 + entryDate.getMinutes())
+      : (attendanceData.lastInTime !== null ? minutesToHHMM(attendanceData.lastInTime) : '--:--');
+    const isOvernight = entryDate ? getTodayString(entryDate) !== todayStr : false;
+    const liveDuration = elapsedSinceEntry(attendanceData);
+    rows.push(`
+      <div class="day-detail-record current">
+        <span class="day-detail-record-time">${isOvernight ? '전일 ' : ''}${entryLabel} ~ 입실 중 (실시간)</span>
+        <span class="day-detail-record-duration">${minutesToTimeStr(liveDuration)}</span>
+      </div>
+    `);
+  }
+
+  els.dayRecords.innerHTML = rows.length > 0
+    ? rows.join('')
+    : '<div class="day-detail-empty">해당 날짜의 출입 기록이 없습니다.</div>';
 
   els.dayDetailModal.classList.add('show');
 }

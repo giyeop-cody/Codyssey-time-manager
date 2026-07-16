@@ -28,6 +28,21 @@ export function minutesToHHMM(minutes) {
   return `${h}:${m}`;
 }
 
+// endMinutes(오늘 자정부터 분) 표시 — 24시간 초과 시 'N일 후 HH:MM' (K11: 팝업/백그라운드 공용 단일 소스)
+export function formatEndMinutes(m) {
+  if (m === null || m === undefined || isNaN(m)) return '--:--';
+  if (m < 1440) return minutesToHHMM(m);
+  const days = Math.floor(m / 1440);
+  return `${days}일 후 ${minutesToHHMM(m % 1440)}`;
+}
+
+// 분(ms epoch) 시각 → 사용 메모: 아래 STALE_WINDOW_MS보다 오래 지연 발화된 알람은 표시하지 않음 (K3)
+export const ALARM_STALE_WINDOW_MS = 15 * 60 * 1000;
+export function isAlarmStale(scheduledTimeMs, nowMs = Date.now()) {
+  if (!scheduledTimeMs || scheduledTimeMs <= 0) return false; // 시각 정보 없으면 신선한 것으로 간주
+  return nowMs - scheduledTimeMs > ALARM_STALE_WINDOW_MS;
+}
+
 export function getTodayString(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }

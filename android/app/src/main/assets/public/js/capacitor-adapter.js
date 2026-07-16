@@ -5,11 +5,7 @@
 
 import {
   parseAttendance,
-  applyOvernightFromPrevMonth,
-  elapsedSinceEntry,
-  projectedMonthly,
-  minutesToHHMM,
-  SERVER_DAILY_CAP_MINUTES
+  applyOvernightFromPrevMonth
 } from './shared-attendance.js';
 
 (function() {
@@ -141,25 +137,38 @@ import {
         if (callback) callback(id);
       },
       clear: function(notificationId, callback) {
-        const nid = Math.abs(hashString(String(notificationId))) % 2000000000;
-        Plugins.LocalNotifications.cancel({ notifications: [{ id: nid }] })
-          .then(() => { if (callback) callback(true); });
+        notificationIdFor(String(notificationId))
+          .then(nid => Plugins.LocalNotifications.cancel({ notifications: [{ id: nid }] }))
+          .then(() => { if (callback) callback(true); })
+          .catch(() => { if (callback) callback(true); });
       }
     };
   }
 
-  function hashString(s) {
-    let hash = 0;
-    for (let i = 0; i < s.length; i++) {
-      hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  // K14: 해시 기반 id는 충돌 시 타 알림을 덮어씀 — Preferences 영속 카운터로 고유 매핑 (네이티브 M7과 동일 원리)
+  const NOTIF_ID_MAP_KEY = 'notif_id_map';
+  const NOTIF_ID_COUNTER_KEY = 'notif_id_counter';
+  const NOTIF_ID_BASE = 1000;
+
+  async function notificationIdFor(idKey) {
+    try {
+      const map = (await getPrefs(NOTIF_ID_MAP_KEY)) || {};
+      if (map[idKey]) return map[idKey];
+      const next = ((await getPrefs(NOTIF_ID_COUNTER_KEY)) || NOTIF_ID_BASE) + 1;
+      map[idKey] = next;
+      await setPrefs(NOTIF_ID_COUNTER_KEY, next);
+      await setPrefs(NOTIF_ID_MAP_KEY, map);
+      return next;
+    } catch (e) {
+      // 저장소 실패 시에도 알림은 떠야 함 — 시간 기반 폴리곤
+      return (Date.now() % 2000000000) | 0;
     }
-    return hash;
   }
 
   async function scheduleLocalNotification(title, body, idKey) {
     if (!Plugins.LocalNotifications) return;
     try {
-      const nid = Math.abs(hashString(idKey)) % 2000000000;
+      const nid = await notificationIdFor(idKey);
       await Plugins.LocalNotifications.schedule({
         notifications: [{
           id: nid,
@@ -227,38 +236,6 @@ import {
         return { success: true, parsed: result.parsed };
       }
 
-      case 'CALCULATE_TARGET': {
-        const memberId = await ensureMemberId();
-        if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
-        const now = new Date();
-        const result = await getAttendanceParsed(memberId, now.getFullYear(), now.getMonth() + 1, now);
-        if (result.error) return { success: false, error: result.error };
-
-        const parsed = result.parsed;
-        const settings = await getSettings();
-        const extraMinutes = message.extraMinutes;
-        const nowMin = getCurrentMinutes();
-        const endMin = nowMin + extraMinutes;
-
-        const monthlyReq = settings.monthlyRequiredHours * 60;
-        const elapsed = elapsedSinceEntry(parsed);
-        const todayUncapped = parsed.dailyTotal + elapsed + extraMinutes;
-        const newDaily = Math.min(todayUncapped, SERVER_DAILY_CAP_MINUTES);
-        const newMonthly = projectedMonthly(parsed, extraMinutes);
-
-        return {
-          success: true,
-          endMinutes: endMin,
-          endTimeStr: minutesToHHMM(endMin),
-          newMonthlyTotal: newMonthly,
-          newMonthlyRemain: Math.max(0, monthlyReq - newMonthly),
-          newDailyTotal: newDaily,
-          newDailyRemain: Math.max(0, SERVER_DAILY_CAP_MINUTES - newDaily),
-          dailyOver: todayUncapped > SERVER_DAILY_CAP_MINUTES,
-          monthlyOver: newMonthly > monthlyReq
-        };
-      }
-
       case 'SET_ALARM': {
         if (!Plugins.AlarmPlugin) return { success: false, error: 'AlarmPlugin not available' };
         const endMinutes = message.endMinutes;
@@ -268,9 +245,10 @@ import {
         // endMinutes(오늘 자정부터의 분) → 실제 epoch ms로 변환 (B4 수정)
         const target = new Date();
         target.setHours(0, 0, 0, 0);
-        target.setTime(target.getTime() + endMinutes * 60000);
+        target.setTime(target.getTime() + endMinutes * 60000); // 24h 초과분(goal)은 자동으로 익일
+        // K2: 과거 시각은 익스텐션과 동일하게 거부 (조용히 다음날로 미루던 동작 제거)
         if (target.getTime() <= Date.now()) {
-          target.setDate(target.getDate() + 1);
+          return { success: false, reason: 'past' };
         }
 
         const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
@@ -370,11 +348,6 @@ import {
         return { success: true };
       }
 
-      case 'OPEN_LOGIN': {
-        window.location.href = 'https://ams.codyssey.kr/loginForm';
-        return { success: true };
-      }
-
       case 'OPEN_CALENDAR': {
         window.location.href = 'calendar.html';
         return { success: true };
@@ -411,7 +384,15 @@ import {
 
   async function getStoredAlarms() {
     const alarms = await getPrefs(STORE_KEYS.ALARMS);
-    return Array.isArray(alarms) ? alarms : [];
+    const list = Array.isArray(alarms) ? alarms : [];
+    // K8: 발화하지 못한 채 지나간 알람(기기 전원 꺼짐 중 소실 등)은 읽을 때 자가정비.
+    // (M6의 네이티브 목록 제거와 경합하지 않음 — 제거된 항목만 재기록하지 않으면 됨)
+    const now = Date.now();
+    const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now);
+    if (fresh.length !== list.length) {
+      await setPrefs(STORE_KEYS.ALARMS, fresh);
+    }
+    return fresh;
   }
 
   // N7: keep-alive 설정과 백그라운드 주기 동기화
@@ -517,11 +498,6 @@ import {
     return result.mbrId || result.memberId || result.userId || result.id || result.no || null;
   }
 
-  function getCurrentMinutes() {
-    const now = new Date();
-    return now.getHours() * 60 + now.getMinutes();
-  }
-
   // ===== Android 로그인 헬퍼 (popup.js에서 직접 사용 — CORS 우회용 네이티브 HTTP) =====
   window.CodysseyNative = {
     isNative: isCapacitor && !!Plugins.NetworkPlugin,
@@ -549,6 +525,10 @@ import {
   if (isCapacitor && Plugins.LocalNotifications) {
     Plugins.LocalNotifications.requestPermissions().catch(() => {});
   }
+
+  // K6: MainActivity가 알림 탭 이벤트 전달 전에 이 플래그를 폴리 -> JS 리스너 준비 여부 확인용
+  window.__codysseyAdapterReady = true;
+  window.dispatchEvent(new CustomEvent('CodysseyAdapterReady'));
 
   console.log('[Capacitor Adapter] Loaded', isCapacitor ? '(Capacitor mode)' : '(Web fallback mode)');
 })();

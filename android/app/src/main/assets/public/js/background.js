@@ -11,12 +11,12 @@ import {
   buildAlarmName,
   legacyAlarmName,
   parseAlarmName,
-  minutesToHHMM
+  formatEndMinutes,
+  isAlarmStale
 } from './shared-attendance.js';
 
 const CONFIG = {
   API_BASE: 'https://api.usr.codyssey.kr',
-  LOGIN_URL: 'https://ams.codyssey.kr/loginForm',
   MONTHLY_REQUIRED_HOURS: 80,
   DAILY_MAX_HOURS: 12,
   STORAGE_KEYS: {
@@ -242,8 +242,14 @@ async function cancelExitAlarm(memberId, endMinutes, type = 'exit') {
 async function getActiveAlarms(memberId) {
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
   const list = alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
+  // K8: 발화하지 못한 채 지나간 알람(브라우저 꺼짐 중 소실 등)은 읽을 때 자가정비
+  const now = Date.now();
+  const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now);
+  if (fresh.length !== list.length) {
+    await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: fresh });
+  }
   // 구형 항목 정규화 (type/createdAt 기본값 보강 — N3)
-  return list.map(a => ({
+  return fresh.map(a => ({
     ...a,
     type: a.type || 'exit',
     createdAt: a.createdAt || a.time
@@ -275,17 +281,26 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (!parsedName) return;
 
   const { memberId, type, endMinutes } = parsedName;
+
+  // K3: 브라우저가 꺼져 있던 사이 지나간 알람이 재시작 시 늦게 발화되면
+  // (예: 전날 18:00 알림이 다음날 아침에 울림) 알림은 생략하고 목록만 정리
+  if (isAlarmStale(alarm.scheduledTime)) {
+    console.log(`[알람] 예정 시각 대비 크게 지연된 발화 무시: ${alarm.name}`);
+    await cancelExitAlarm(memberId, endMinutes, type);
+    return;
+  }
+
   const what = type === 'goal' ? '목표 달성 시간' : '퇴실 시간';
 
   await showNotification(
     '⏰ 코디세이 출입 알림',
-    `설정한 ${minutesToHHMM(endMinutes % 1440)} ${what}이 되었습니다.`,
+    `설정한 ${formatEndMinutes(endMinutes)} ${what}이 되었습니다.`, // K11: 포맷 단일 소스
     memberId
   );
-  
+
   // 알람 울린 후 정리
   await cancelExitAlarm(memberId, endMinutes, type);
-  
+
   // 팝업이 열려있으면 업데이트 알림
   chrome.runtime.sendMessage({ type: 'ALARM_TRIGGERED', memberId, endMinutes, alarmType: type }).catch(() => {});
 });
@@ -459,7 +474,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // --- 로그아웃 ---
         case 'LOGOUT': {
-          const memberIdForLogout = await getMemberId();
           await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
           const all = await getStorage(null);
           const keysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.CACHE));
@@ -467,15 +481,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await chrome.storage.local.remove(keysToRemove);
           }
           // M3: 예약된 알람도 전부 정리 (chrome 알람 + 저장 목록)
-          if (memberIdForLogout) {
-            const alarmsKey = CONFIG.STORAGE_KEYS.ALARMS + memberIdForLogout;
-            const stored = all[alarmsKey] || [];
-            for (const a of stored) {
-              if (a && a.name) {
-                try { await chrome.alarms.clear(a.name); } catch (e) { /* 무시 */ }
+          // 저장 목록에 없는 구형/유령 알람까지 포함해 codyssey_ 접두어 알람 전부 해제 (K12)
+          try {
+            const chromeAlarms = await chrome.alarms.getAll();
+            for (const ca of chromeAlarms) {
+              if (ca.name.startsWith('codyssey_')) {
+                try { await chrome.alarms.clear(ca.name); } catch (e) { /* 무시 */ }
               }
             }
-            await chrome.storage.local.remove(alarmsKey);
+          } catch (e) { /* 무시 */ }
+          const alarmKeysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.ALARMS));
+          if (alarmKeysToRemove.length) {
+            await chrome.storage.local.remove(alarmKeysToRemove);
           }
           // 서버 세션 쿠키(JSESSIONID 등)도 함께 삭제 — 로그아웃 후 자동 재로그인 방지
           try {
@@ -490,20 +507,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             console.warn('세션 쿠키 삭제 실패:', e);
           }
           sendResponse({ success: true });
-          break;
-        }
-
-        // --- 로그인 페이지 열기 ---
-        case 'OPEN_LOGIN': {
-          chrome.tabs.create({ url: CONFIG.LOGIN_URL });
-          sendResponse({ success: true });
-          break;
-        }
-
-        // --- 저장된 멤버 ID 조회 ---
-        case 'GET_MEMBER_ID_FROM_STORAGE': {
-          const memberId = await getMemberId();
-          sendResponse({ memberId });
           break;
         }
 

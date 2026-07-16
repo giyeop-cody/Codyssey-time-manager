@@ -22,11 +22,14 @@ public class AlarmWorker extends Worker {
     public Result doWork() {
         String label = getInputData().getString("label");
         String id = getInputData().getString("id");
+        long triggerTime = getInputData().getLong("triggerTime", 0);
 
         // AlarmReceiver로 위임 (알림 표시 + 저장 목록 정리 + JS 이벤트)
+        // K3: triggerTime을 함께 넘겨 수신 측에서 지연 발화 스킵 판정
         Intent intent = new Intent(getApplicationContext(), AlarmReceiver.class);
         intent.putExtra("label", label);
         intent.putExtra("id", id);
+        intent.putExtra("triggerTime", triggerTime);
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
         getApplicationContext().sendBroadcast(intent);
 

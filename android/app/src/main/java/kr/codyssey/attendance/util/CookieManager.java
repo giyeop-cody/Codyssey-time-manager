@@ -12,6 +12,21 @@ public class CookieManager {
     private static final String COOKIE_DOMAIN = "codyssey.kr";
     private static final String API_BASE = "https://api.usr.codyssey.kr";
 
+    // K1: Set-Cookie 헤더명은 대소문자 무관하게 수집 (서버가 "set-cookie" 소문자로
+    // 전송하면 getHeaderFields().get("Set-Cookie")가 null을 반환해 쿠키가 유실됨)
+    public static java.util.List<String> extractSetCookies(java.net.HttpURLConnection conn) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        java.util.Map<String, java.util.List<String>> fields = conn.getHeaderFields();
+        if (fields == null) return out;
+        for (java.util.Map.Entry<String, java.util.List<String>> entry : fields.entrySet()) {
+            String name = entry.getKey();
+            if (name != null && name.equalsIgnoreCase("set-cookie") && entry.getValue() != null) {
+                out.addAll(entry.getValue());
+            }
+        }
+        return out;
+    }
+
     // 세션 유지 핑 (네이티브 HTTP — 백그라운드 스레드에서 WebView 생성하던 크래시 위험 제거, N7)
     public static void pingKeepAlive(Context context) {
         try {
@@ -31,9 +46,9 @@ public class CookieManager {
                 }
                 int responseCode = conn.getResponseCode(); // 응답 본문은 불필요
 
-                // Set-Cookie 전체 순회 — 다중 쿠키 손실 방지 (L9 연계)
-                java.util.List<String> setCookies = conn.getHeaderFields().get("Set-Cookie");
-                if (setCookies != null) {
+                // Set-Cookie 전체 순회 — 다중 쿠키 손실 방지 (L9 연계) + 대소문자 무관 (K1)
+                java.util.List<String> setCookies = extractSetCookies(conn);
+                if (!setCookies.isEmpty()) {
                     for (String cookie : setCookies) {
                         cookieManager.setCookie(API_BASE, cookie);
                     }

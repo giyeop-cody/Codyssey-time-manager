@@ -27,13 +27,11 @@ public class MainActivity extends BridgeActivity {
 
         super.onCreate(savedInstanceState);
 
-        // L7: 알림 탭으로 앱이 열린 경우 alarmId를 보관 — WebView 로드 후 JS로 전달
+        // L7+K6: 알림 탭으로 앱이 열린 경우 alarmId를 보관 —
+        // JS 리스너(adapter) 준비를 폴한 뒤 이벤트 전달 (고정 지연은 느린 기기에서 이벤트 유실)
         String alarmId = getIntent() != null ? getIntent().getStringExtra("alarmId") : null;
         if (alarmId != null) {
-            final String id = alarmId;
-            // 브리지 초기화를 기다려 이벤트 전달 (약간의 지연 후 전송)
-            getBridge().getWebView().postDelayed(
-                    () -> emitNativeEvent("ALARM_TRIGGERED", "알림에서 열기", id), 1500);
+            emitAlarmEventWhenAdapterReady(alarmId, 30); // 300ms × 30 = 최대 9초 대기
         }
 
         // WebView 디버깅은 디버그 빌드에서만 허용
@@ -59,6 +57,26 @@ public class MainActivity extends BridgeActivity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         // Mixed content / 임의 권한 허용은 보안상 설정하지 않음(기본값 유지)
+    }
+
+    // K6: WebView의 JS 리스너(capacitor-adapter)가 준비될 때까지 폴한 뒤 알람 이벤트 전달.
+    // index.html → popup.html 리다이렉트 + 모듈 로딩이 끝나야 리스너가 등록되므로
+    // 고정 지연(1.5초)은 느린 기기에서 이벤트가 유실 될 수 있다.
+    private void emitAlarmEventWhenAdapterReady(final String alarmId, final int attemptsLeft) {
+        if (attemptsLeft <= 0 || getBridge() == null || getBridge().getWebView() == null) {
+            return; // 준비 실패 시 네이티브 알림만으로 충분
+        }
+        getBridge().getWebView().evaluateJavascript(
+                "window.__codysseyAdapterReady === true ? 'yes' : 'no'",
+                value -> {
+                    if ("\"yes\"".equals(value) || "yes".equals(value)) {
+                        emitNativeEvent("ALARM_TRIGGERED", "알림에서 열기", alarmId);
+                    } else {
+                        getBridge().getWebView().postDelayed(
+                                () -> emitAlarmEventWhenAdapterReady(alarmId, attemptsLeft - 1), 300);
+                    }
+                }
+        );
     }
 
     @Override

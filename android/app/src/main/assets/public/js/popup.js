@@ -10,6 +10,7 @@ import {
   projectedMonthly,
   minutesToTimeStr,
   minutesToHHMM,
+  formatEndMinutes,
   getTodayString,
   SERVER_DAILY_CAP_MINUTES
 } from './shared-attendance.js';
@@ -314,13 +315,7 @@ function calculateRealtimeRecognized() {
   return recognizedToday(currentParsed);
 }
 
-// endMinutes(오늘 자정부터 분) 표시 — 24시간 초과 시 'N일 후 HH:MM'
-function formatEndMinutes(m) {
-  if (m === null || m === undefined || isNaN(m)) return '--:--';
-  if (m < 1440) return minutesToHHMM(m);
-  const days = Math.floor(m / 1440);
-  return `${days}일 후 ${minutesToHHMM(m % 1440)}`;
-}
+// formatEndMinutes는 shared-attendance.js 단일 소스 사용 (K11)
 
 // 실시간 월 누적 인정 시간 계산 (일일 상한 적용)
 function calculateRealtimeMonthly() {
@@ -540,6 +535,21 @@ async function syncAlarmButtons() {
 }
 
 // ===== 캘린더 렌더링 =====
+// 보고 있는 월이 실제 이번 달인지 (K9: 실시간 값은 이번 달에만 적용)
+function isCurrentMonthView() {
+  const now = new Date();
+  return currentViewDate.getFullYear() === now.getFullYear() &&
+         currentViewDate.getMonth() === now.getMonth();
+}
+
+// K9: 오늘 셀은 서버 확정 값과 실시간 인정 값 중 큰 값 표시 (calendar.js L5와 동작 통일)
+function miniDisplayMinutes(dateStr, serverValue) {
+  if (dateStr === getTodayString() && isCurrentMonthView() && currentParsed?.isCurrentlyIn) {
+    return Math.max(serverValue, recognizedToday(currentParsed));
+  }
+  return serverValue;
+}
+
 function renderCalendar() {
   if (!currentSettings) return;
   
@@ -577,7 +587,7 @@ function renderCalendar() {
   for (let day = 1; day <= lastDate; day++) {
     const date = new Date(year, month, day);
     const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
-    const dayData = calendarData.dailyBreakdown[dateStr] || 0;
+    const dayData = miniDisplayMinutes(dateStr, calendarData.dailyBreakdown[dateStr] || 0); // K9: 오늘은 실시간 값
     const isToday = dateStr === todayStr;
     grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, false, isToday, todayStr));
   }
@@ -979,6 +989,11 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
           }
         }, 300);
       }
+    } else {
+      // K2: 과거 시각 등 설정 거부 사유를 사용자에게 표시 (무음 실패 방지)
+      alert(response.reason === 'past'
+        ? '설정한 시간이 이미 지났습니다. 시간을 다시 확인해주세요.'
+        : `알람 설정에 실패했습니다. (${response.error || '알 수 없는 오류'})`);
     }
   } catch (error) {
     console.error('Set alarm error:', error);
@@ -1347,9 +1362,10 @@ function setupEventListeners() {
     if (e.target === els.settingsModal) closeSettings();
   });
 
-  // 백그라운드 메시지 리스너
+  // 백그라운드/네이티브 메시지 리스너
   chrome.runtime.onMessage.addListener((message) => {
-    if (message.type === 'ALARM_TRIGGERED') {
+    // K13: 네이티브 주기 동기화(keep-alive 핑) 후에도 화면을 최신으로 갱신
+    if (message.type === 'ALARM_TRIGGERED' || message.type === 'SYNC_COMPLETE') {
       loadDashboard();
     }
   });
