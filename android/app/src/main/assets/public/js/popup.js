@@ -740,6 +740,11 @@ function updateCalcModeUI() {
 
 // ===== 알림 권한 =====
 async function checkNotificationPermission() {
+  // Android(네이티브): 앱 시작 시 LocalNotifications 권한을 이미 요청하므로 배너 불필요
+  if (window.CodysseyNative && window.CodysseyNative.isNative) {
+    els.permissionBanner.classList.remove('show');
+    return;
+  }
   if (!('Notification' in window)) return;
   const perm = Notification.permission;
   if (perm === 'default') {
@@ -750,6 +755,10 @@ async function checkNotificationPermission() {
 }
 
 async function requestNotificationPermission() {
+  // Android(네이티브): LocalNotifications.requestPermissions()로 이미 처리됨
+  if (window.CodysseyNative && window.CodysseyNative.isNative) {
+    return true;
+  }
   if (!('Notification' in window)) {
     alert('이 브라우저는 알림을 지원하지 않습니다.');
     return false;
