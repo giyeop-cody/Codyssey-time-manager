@@ -6,7 +6,7 @@
 <title>코디세이 출입 현황 알리미</title>
 <link rel="stylesheet" href="./css/popup.css">
 <!-- Capacitor Adapter - Chrome Extension API를 Capacitor 플러그인으로 변환 -->
-<script src="./js/capacitor-adapter.js"></script>
+<script type="module" src="./js/capacitor-adapter.js"></script>
 </head>
 <body>
 <!-- 로그인 화면 -->
@@ -94,6 +94,8 @@
         <span class="realtime-value" id="realtime-recognized">0시간 0분</span>
       </div>
     </div>
+    <!-- 입실 기록 누락 경고 (R5) -->
+    <div class="calculator-warning" id="data-warning" style="display:none;"></div>
   </div>
 
   <!-- 로그인 유지 상태 -->

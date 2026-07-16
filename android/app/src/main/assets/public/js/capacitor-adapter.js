@@ -1,7 +1,16 @@
 // ============================================================
 // Capacitor Adapter - Chrome Extension API를 Capacitor 플러그인으로 변환
-// 이 파일을 popup.js, calendar.js 전에 로드해야 함
+// 이 파일을 popup.js, calendar.js 전에 로드해야 함 (type="module"로 로드)
 // ============================================================
+
+import {
+  parseAttendance,
+  applyOvernightFromPrevMonth,
+  elapsedSinceEntry,
+  projectedMonthly,
+  minutesToHHMM,
+  SERVER_DAILY_CAP_MINUTES
+} from './shared-attendance.js';
 
 (function() {
   'use strict';
@@ -13,7 +22,8 @@
   const STORE_KEYS = {
     MEMBER_ID: 'member_id',
     SETTINGS: 'settings',
-    ALARMS: 'codyssey_alarms'
+    ALARMS: 'codyssey_alarms',
+    CACHE_PREFIX: 'cache_attendance_'
   };
 
   const DEFAULT_SETTINGS = {
@@ -23,31 +33,80 @@
     soundEnabled: true,
     autoRefresh: true,
     refreshInterval: 30, // 분
-    keepAliveEnabled: false // opt-in: 세션 무한 연장 방지
+    keepAliveEnabled: false // opt-in
   };
 
+  const CACHE_TTL_MS = 5 * 60 * 1000;
+
+  // ===== chrome 런타임 폴리필/위임 =====
+  // 확장(Chrome): 원래 API 그대로 사용 (sendMessage 위임)
+  // Capacitor(WebView): chrome 객체가 없거나 불완전 → 네이티브 라우팅으로 폴리필
+  if (typeof chrome === 'undefined') {
+    window.chrome = {};
+  }
+
+  // chrome.runtime.onMessage 리스너 레지스트리 (네이티브 이벤트 → JS 디스패치용)
+  const runtimeListeners = [];
+
+  function dispatchRuntimeMessage(message) {
+    for (const fn of runtimeListeners) {
+      try { fn(message, {}, () => {}); } catch (e) { console.warn('[Adapter] onMessage listener error:', e); }
+    }
+  }
+
+  if (isCapacitor && !chrome.runtime) {
+    chrome.runtime = {};
+  }
+
+  if (isCapacitor) {
+    // sendMessage → 네이티브 핸들러
+    chrome.runtime.sendMessage = function(message, callback) {
+      handleCapacitorMessage(message)
+        .then(result => { if (callback) callback(result); })
+        .catch(err => { if (callback) callback({ success: false, error: err.message }); });
+      return true;
+    };
+    // onMessage → 리스너 레지스트리 (네이티브 이벤트 브릿지에 연결)
+    chrome.runtime.onMessage = {
+      addListener: function(fn) {
+        if (typeof fn === 'function') runtimeListeners.push(fn);
+      }
+    };
+    if (!chrome.runtime.getURL) {
+      chrome.runtime.getURL = function(path) { return path; };
+    }
+  } else if (chrome.runtime && chrome.runtime.sendMessage) {
+    // 익스텐션 환경: 반드시 원래 sendMessage로 위임 (익스텐션 마비 방지)
+    const originalSendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
+    chrome.runtime.sendMessage = function(message, callback) {
+      return originalSendMessage(message, callback);
+    };
+  }
+
+  // 네이티브 → JS 이벤트 브릿지 (R8: 알림 발화 등)
+  // MainActivity/AlarmReceiver가 WebView에 dispatchEvent하는 CodysseyNativeEvent를 수신
+  window.addEventListener('CodysseyNativeEvent', (e) => {
+    if (e && e.detail && e.detail.type) {
+      dispatchRuntimeMessage(e.detail);
+    }
+  });
+
   // ===== chrome.storage.local → Capacitor Preferences (JSON 직렬화) =====
-  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local && isCapacitor && Plugins.Preferences) {
+  if (isCapacitor && Plugins.Preferences) {
+    if (!chrome.storage) chrome.storage = {};
     chrome.storage.local = {
       get: function(keys, callback) {
         const keyArray = Array.isArray(keys) ? keys : [keys];
-        Promise.all(keyArray.map(k => Plugins.Preferences.get({ key: k })))
-          .then(results => {
+        Promise.all(keyArray.map(k => getPrefs(k)))
+          .then(values => {
             const obj = {};
-            keyArray.forEach((k, i) => {
-              const raw = results[i].value;
-              if (raw === null || raw === undefined) { obj[k] = undefined; return; }
-              try { obj[k] = JSON.parse(raw); } catch (e) { obj[k] = raw; }
-            });
+            keyArray.forEach((k, i) => { obj[k] = values[i] === null ? undefined : values[i]; });
             if (callback) callback(obj);
           })
           .catch(() => { if (callback) callback({}); });
       },
       set: function(items, callback) {
-        const promises = Object.entries(items).map(([k, v]) =>
-          Plugins.Preferences.set({ key: k, value: JSON.stringify(v) })
-        );
-        Promise.all(promises)
+        Promise.all(Object.entries(items).map(([k, v]) => setPrefs(k, v)))
           .then(() => { if (callback) callback(); })
           .catch(() => { if (callback) callback(); });
       },
@@ -65,44 +124,8 @@
     };
   }
 
-  // ===== chrome.runtime.sendMessage =====
-  // Capacitor: 네이티브 플러그인으로 라우팅
-  // 확장(Chrome): 반드시 원래 sendMessage로 위임해야 함 (그렇지 않으면 익스텐션 팝업 전면 마비)
-  if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
-    const originalSendMessage = chrome.runtime.sendMessage.bind(chrome.runtime);
-    chrome.runtime.sendMessage = function(message, callback) {
-      if (isCapacitor) {
-        handleCapacitorMessage(message)
-          .then(result => { if (callback) callback(result); })
-          .catch(err => { if (callback) callback({ success: false, error: err.message }); });
-        return true;
-      }
-      return originalSendMessage(message, callback);
-    };
-  }
-
-  // ===== chrome.alarms → Capacitor AlarmPlugin (없는 환경에서만 폴리필) =====
-  if (typeof chrome !== 'undefined' && !chrome.alarms && isCapacitor && Plugins.AlarmPlugin) {
-    chrome.alarms = {
-      create: function(name, alarmInfo) {
-        const triggerTime = alarmInfo.when || Date.now();
-        return Plugins.AlarmPlugin.schedule({
-          triggerTimeMillis: triggerTime,
-          label: name,
-          id: name
-        });
-      },
-      clear: function(name) {
-        return Plugins.AlarmPlugin.cancel({ id: name });
-      },
-      clearAll: function() {
-        return Plugins.AlarmPlugin.cancelAll({});
-      }
-    };
-  }
-
-  // ===== chrome.notifications → Capacitor LocalNotifications (없는 환경에서만) =====
-  if (typeof chrome !== 'undefined' && !chrome.notifications && isCapacitor && Plugins.LocalNotifications) {
+  // ===== chrome.notifications → Capacitor LocalNotifications =====
+  if (!chrome.notifications && isCapacitor && Plugins.LocalNotifications) {
     chrome.notifications = {
       create: function(notificationId, options, callback) {
         // 사용 형태 통일: create({type,title,message}) 또는 create(id, options)
@@ -160,14 +183,26 @@
         if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
 
         const now = new Date();
-        const raw = await getAttendanceRaw(memberId, now.getFullYear(), now.getMonth() + 1);
-        if (!raw) return { success: false, error: 'ATTENDANCE_FETCH_FAILED' };
+        const result = await getAttendanceParsed(memberId, now.getFullYear(), now.getMonth() + 1, now);
+        if (result.error) return { success: false, error: result.error };
+
+        const parsed = result.parsed;
+
+        // 월 경계 입실(R2): 이달 데이터에 입실 중이 없고 월초이면 전월 확인
+        if (!parsed.isCurrentlyIn && now.getDate() <= 3) {
+          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1);
+          if (prevResult.raw) applyOvernightFromPrevMonth(parsed, prevResult.raw);
+        }
+
+        const settings = await getSettings();
+        await syncKeepAliveWork(settings); // N7: keep-alive 설정과 백그라운드 작업 동기화
 
         return {
           success: true,
           memberId,
-          parsed: parseAttendance(raw, now),
-          settings: await getSettings(),
+          parsed,
+          settings,
           alarms: await getStoredAlarms()
         };
       }
@@ -185,29 +220,29 @@
       case 'FETCH_ATTENDANCE': {
         const memberId = message.memberId || await ensureMemberId();
         if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
-        const raw = await getAttendanceRaw(memberId, message.year, message.month);
-        if (!raw) return { success: false, error: 'ATTENDANCE_FETCH_FAILED' };
-        return { success: true, parsed: parseAttendance(raw, new Date(message.year, message.month - 1)) };
+        const result = await getAttendanceParsed(memberId, message.year, message.month, new Date(message.year, message.month - 1));
+        if (result.error) return { success: false, error: result.error };
+        return { success: true, parsed: result.parsed };
       }
 
       case 'CALCULATE_TARGET': {
         const memberId = await ensureMemberId();
         if (!memberId) return { success: false, error: 'NOT_LOGGED_IN' };
         const now = new Date();
-        const raw = await getAttendanceRaw(memberId, now.getFullYear(), now.getMonth() + 1);
-        const parsed = parseAttendance(raw, now);
-        const settings = await getSettings();
+        const result = await getAttendanceParsed(memberId, now.getFullYear(), now.getMonth() + 1, now);
+        if (result.error) return { success: false, error: result.error };
 
+        const parsed = result.parsed;
+        const settings = await getSettings();
         const extraMinutes = message.extraMinutes;
         const nowMin = getCurrentMinutes();
         const endMin = nowMin + extraMinutes;
 
-        const dailyMax = settings.dailyMaxHours * 60;
         const monthlyReq = settings.monthlyRequiredHours * 60;
         const elapsed = elapsedSinceEntry(parsed);
         const todayUncapped = parsed.dailyTotal + elapsed + extraMinutes;
-        const newDaily = Math.min(todayUncapped, dailyMax);
-        const newMonthly = (parsed.monthlyTotal - parsed.dailyTotal) + newDaily;
+        const newDaily = Math.min(todayUncapped, SERVER_DAILY_CAP_MINUTES);
+        const newMonthly = projectedMonthly(parsed, extraMinutes);
 
         return {
           success: true,
@@ -216,8 +251,8 @@
           newMonthlyTotal: newMonthly,
           newMonthlyRemain: Math.max(0, monthlyReq - newMonthly),
           newDailyTotal: newDaily,
-          newDailyRemain: Math.max(0, dailyMax - newDaily),
-          dailyOver: todayUncapped > dailyMax,
+          newDailyRemain: Math.max(0, SERVER_DAILY_CAP_MINUTES - newDaily),
+          dailyOver: todayUncapped > SERVER_DAILY_CAP_MINUTES,
           monthlyOver: newMonthly > monthlyReq
         };
       }
@@ -228,24 +263,24 @@
         const type = message.alarmType || 'exit';
         const label = message.label || '알림';
 
-        // endMinutes(오늘 자정부터의 분) → 실제 epoch ms로 변환 (1970년대 예약 버그 수정)
+        // endMinutes(오늘 자정부터의 분) → 실제 epoch ms로 변환 (B4 수정)
         const target = new Date();
         target.setHours(0, 0, 0, 0);
         target.setTime(target.getTime() + endMinutes * 60000);
         if (target.getTime() <= Date.now()) {
-          target.setDate(target.getDate() + 1); // 이미 지난 시각이면 다음 날
+          target.setDate(target.getDate() + 1);
         }
 
         const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
         const alarmName = `codyssey_alarm_${memberId}_${type}_${endMinutes}`;
 
-        const result = await Plugins.AlarmPlugin.schedule({
+        await Plugins.AlarmPlugin.schedule({
           triggerTimeMillis: target.getTime(),
           label,
           id: alarmName
         });
 
-        // 목록을 Preferences에도 영속화 (GET_ALARMS가 비는 버그 수정)
+        // 목록을 Preferences에 영속화 (B5 수정)
         const alarms = await getStoredAlarms();
         const filtered = alarms.filter(a => a.name !== alarmName);
         filtered.push({
@@ -258,7 +293,7 @@
         });
         await setPrefs(STORE_KEYS.ALARMS, filtered);
 
-        return Object.assign({ success: true, alarmName, triggerTime: target.getTime() }, result);
+        return { success: true, alarmName, triggerTime: target.getTime() };
       }
 
       case 'CANCEL_ALARM': {
@@ -266,22 +301,31 @@
         const type = message.alarmType || 'exit';
         const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
         const alarmName = `codyssey_alarm_${memberId}_${type}_${endMinutes}`;
+        const legacyName = `codyssey_exit_${memberId}_${endMinutes}`;
 
         if (Plugins.AlarmPlugin) {
           try { await Plugins.AlarmPlugin.cancel({ id: alarmName }); } catch (e) { /* 무시 */ }
+          try { await Plugins.AlarmPlugin.cancel({ id: legacyName }); } catch (e) { /* 무시 */ }
         }
-        const alarms = (await getStoredAlarms()).filter(a => a.name !== alarmName);
+        const alarms = (await getStoredAlarms())
+          .filter(a => a.name !== alarmName && a.name !== legacyName);
         await setPrefs(STORE_KEYS.ALARMS, alarms);
         return { success: true };
       }
 
       case 'GET_ALARMS': {
-        return { success: true, alarms: await getStoredAlarms() };
+        const alarms = await getStoredAlarms();
+        return {
+          success: true,
+          alarms: alarms.map(a => ({ ...a, type: a.type || 'exit', createdAt: a.createdAt || a.time }))
+        };
       }
 
       case 'UPDATE_SETTINGS': {
         const current = await getSettings();
-        await setPrefs(STORE_KEYS.SETTINGS, Object.assign({}, current, message.settings));
+        const next = Object.assign({}, current, message.settings);
+        await setPrefs(STORE_KEYS.SETTINGS, next);
+        await syncKeepAliveWork(next); // N7: 설정 변경 즉시 백그라운드 작업 반영
         return { success: true };
       }
 
@@ -292,9 +336,13 @@
       case 'LOGOUT': {
         await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID });
         await Plugins.Preferences.remove({ key: STORE_KEYS.ALARMS });
-        // 서버 세션 쿠키도 정리 (평문 세션 잔존 방지)
+        await clearAttendanceCaches();
+        // 서버 세션 쿠키도 정리 (C5)
         if (Plugins.NetworkPlugin && Plugins.NetworkPlugin.clearCookies) {
           try { await Plugins.NetworkPlugin.clearCookies({}); } catch (e) { /* 무시 */ }
+        }
+        if (Plugins.AlarmPlugin) {
+          try { await Plugins.AlarmPlugin.cancelPeriodicSync({}); } catch (e) { /* 무시 */ }
         }
         return { success: true };
       }
@@ -348,6 +396,37 @@
     return Array.isArray(alarms) ? alarms : [];
   }
 
+  // N7: keep-alive 설정과 백그라운드 주기 동기화
+  async function syncKeepAliveWork(settings) {
+    if (!Plugins.AlarmPlugin) return;
+    try {
+      if (settings.keepAliveEnabled) {
+        await Plugins.AlarmPlugin.schedulePeriodicSync({ intervalMinutes: 30 });
+      } else {
+        await Plugins.AlarmPlugin.cancelPeriodicSync({});
+      }
+    } catch (e) { /* 무시 */ }
+  }
+
+  // ===== 응답 캐시 (N8: 크롬 5분 캐시와 동일) =====
+  async function getCachedAttendance(year, month) {
+    const cached = await getPrefs(STORE_KEYS.CACHE_PREFIX + year + '_' + month);
+    if (cached && cached.timestamp && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+    return null;
+  }
+
+  async function setCachedAttendance(year, month, data) {
+    await setPrefs(STORE_KEYS.CACHE_PREFIX + year + '_' + month, { data, timestamp: Date.now() });
+  }
+
+  async function clearAttendanceCaches() {
+    const all = await Plugins.Preferences.keys();
+    const keys = (all.keys || []).filter(k => k.startsWith(STORE_KEYS.CACHE_PREFIX));
+    await Promise.all(keys.map(k => Plugins.Preferences.remove({ key: k })));
+  }
+
   // ===== 멤버/출입 API =====
   async function ensureMemberId() {
     let memberId = await getPrefs(STORE_KEYS.MEMBER_ID);
@@ -355,7 +434,9 @@
     if (!Plugins.NetworkPlugin) return null;
 
     const res = await Plugins.NetworkPlugin.getMemberInfo({});
+    if (isAuthStatus(res.status)) return null;
     const info = res.json || safeJson(res.data);
+    if (res.status && res.status >= 400) return null;
     memberId = extractMemberId(info);
     if (memberId) {
       await setPrefs(STORE_KEYS.MEMBER_ID, String(memberId));
@@ -364,11 +445,46 @@
     return null;
   }
 
+  // 세션 만료로 분류할 상태 코드 (네이티브는 리다이렉트 비추적이라 3xx가 그대로 옴 — N4)
+  function isAuthStatus(status) {
+    return status === 301 || status === 302 || status === 303 || status === 307 || status === 308 ||
+           status === 401 || status === 403;
+  }
+
+  // 원본 JSON 조회 (N8 캐시 적용). { raw } 또는 { error }
   async function getAttendanceRaw(memberId, year, month) {
-    if (!Plugins.NetworkPlugin) return null;
+    const cached = await getCachedAttendance(year, month);
+    if (cached) return { raw: cached };
+
+    if (!Plugins.NetworkPlugin) return { error: 'NETWORK_PLUGIN_UNAVAILABLE' };
     const res = await Plugins.NetworkPlugin.getAttendance({ memberId, year, month });
-    if (res.status && res.status >= 400) return null;
-    return res.json || safeJson(res.data);
+
+    if (isAuthStatus(res.status)) {
+      await clearAttendanceCaches(); // R7: 만료 시 캐시 잔존 방지
+      return { error: 'NOT_LOGGED_IN' };
+    }
+    if (res.status && res.status >= 400) {
+      return { error: `ATTENDANCE_API_ERROR_${res.status}` };
+    }
+
+    const raw = res.json || safeJson(res.data);
+    if (!raw || !raw.detail_list) {
+      // 로그인 페이지 HTML이 그대로 온 경우 인증 오류로 분류 (N4)
+      if (typeof res.data === 'string' && /login|로그인/i.test(res.data)) {
+        await clearAttendanceCaches();
+        return { error: 'NOT_LOGGED_IN' };
+      }
+      return { error: 'ATTENDANCE_PARSE_ERROR' };
+    }
+
+    await setCachedAttendance(year, month, raw);
+    return { raw };
+  }
+
+  async function getAttendanceParsed(memberId, year, month, targetDate) {
+    const result = await getAttendanceRaw(memberId, year, month);
+    if (result.error) return result;
+    return { parsed: parseAttendance(result.raw, targetDate) };
   }
 
   function safeJson(s) {
@@ -383,121 +499,9 @@
     return result.mbrId || result.memberId || result.userId || result.id || result.no || null;
   }
 
-  // ===== 출입기록 파싱 (background.js와 동일 규칙) =====
-  function parseAttendance(data, targetDate) {
-    const detailList = (data && (data.detail_list || data.result || data.data)) || [];
-    const year = targetDate.getFullYear();
-    const month = targetDate.getMonth() + 1;
-    const todayStr = getTodayString();
-
-    let monthlyTotal = 0;
-    let dailyTotal = 0;
-    let lastInTime = null;
-    let lastOutTime = null;
-    let isCurrentlyIn = false;
-    let entryTimestamp = null;
-    let hasMissingEntry = false;
-    const dailyBreakdown = {};
-
-    for (const day of detailList) {
-      const dateStr = day.date || '';
-      if (!dateStr) continue;
-      if (!dateStr.startsWith(`${year}-${String(month).padStart(2, '0')}`)) continue;
-
-      const dailyTotalMinutes = durationToMinutes(day.daily_total_duration);
-      monthlyTotal += dailyTotalMinutes;
-      dailyBreakdown[dateStr] = dailyTotalMinutes;
-
-      const sessions = (day.sessions || []).slice().sort((a, b) => {
-        const ta = timeStrToMinutes(a.entry_time);
-        const tb = timeStrToMinutes(b.entry_time);
-        return (ta === null ? 0 : ta) - (tb === null ? 0 : tb);
-      });
-
-      for (const session of sessions) {
-        const entryMin = timeStrToMinutes(session.entry_time);
-        const exitMin = timeStrToMinutes(session.exit_time);
-        const isMissing = session.is_missing === true;
-
-        if (isMissing && session.missing_type === 'exit' && entryMin !== null) {
-          // 퇴실 누락 = 현재 입실 중 (오늘뿐 아니라 전날 입실도 감지 → 자정 경계 처리)
-          isCurrentlyIn = true;
-          lastInTime = entryMin;
-          lastOutTime = null;
-          entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
-        } else if (isMissing && session.missing_type === 'entry') {
-          hasMissingEntry = true;
-        } else if (entryMin !== null && exitMin !== null && dateStr === todayStr) {
-          lastInTime = entryMin;
-          lastOutTime = exitMin;
-        }
-      }
-
-      if (dateStr === todayStr) {
-        dailyTotal = dailyTotalMinutes;
-      }
-    }
-
-    return {
-      monthlyTotal,
-      dailyTotal,
-      lastInTime,
-      lastOutTime,
-      isCurrentlyIn,
-      entryTimestamp,
-      hasMissingEntry,
-      dailyBreakdown,
-      rawDetailList: detailList
-    };
-  }
-
-  function parseEntryTimestamp(dateStr, entryTime) {
-    if (!dateStr || !entryTime) return null;
-    const time = entryTime.length === 5 ? entryTime + ':00' : entryTime;
-    const ts = new Date(`${dateStr}T${time}`).getTime();
-    return isNaN(ts) ? null : ts;
-  }
-
-  function elapsedSinceEntry(parsed) {
-    if (!parsed || !parsed.isCurrentlyIn) return 0;
-    if (parsed.entryTimestamp) {
-      return Math.max(0, Math.floor((Date.now() - parsed.entryTimestamp) / 60000));
-    }
-    if (parsed.lastInTime === null) return 0;
-    return Math.max(0, getCurrentMinutes() - parsed.lastInTime);
-  }
-
-  function durationToMinutes(durationStr) {
-    if (!durationStr) return 0;
-    const parts = durationStr.split(':').map(Number);
-    if (parts.some(isNaN)) return 0;
-    if (parts.length === 3) return parts[0] * 60 + parts[1] + Math.round(parts[2] / 60);
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return 0;
-  }
-
-  function timeStrToMinutes(timeStr) {
-    if (!timeStr) return null;
-    const parts = timeStr.split(':').map(Number);
-    if (parts.length >= 2 && !parts.some(isNaN)) return parts[0] * 60 + parts[1];
-    return null;
-  }
-
   function getCurrentMinutes() {
     const now = new Date();
     return now.getHours() * 60 + now.getMinutes();
-  }
-
-  function getTodayString() {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }
-
-  function minutesToHHMM(minutes) {
-    if (minutes === null || minutes === undefined || isNaN(minutes)) return '--:--';
-    const h = String(Math.floor(minutes / 60)).padStart(2, '0');
-    const m = String(minutes % 60).padStart(2, '0');
-    return `${h}:${m}`;
   }
 
   // ===== Android 로그인 헬퍼 (popup.js에서 직접 사용 — CORS 우회용 네이티브 HTTP) =====

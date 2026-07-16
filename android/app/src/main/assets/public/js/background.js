@@ -4,6 +4,12 @@
 // API: https://api.usr.codyssey.kr/rest/secom/detail?mbrId={mbrId}&year={year}&month={month} (출입기록)
 // ============================================================
 
+// 공통 출입 로직 (단일 소스 — capacitor-adapter.js와 공유)
+import {
+  parseAttendance,
+  applyOvernightFromPrevMonth
+} from './shared-attendance.js';
+
 const CONFIG = {
   API_BASE: 'https://api.usr.codyssey.kr',
   LOGIN_URL: 'https://ams.codyssey.kr/loginForm',
@@ -108,6 +114,15 @@ async function setCache(key, data) {
   await setStorage({ [CONFIG.STORAGE_KEYS.CACHE + key]: { data, timestamp: Date.now() } });
 }
 
+// 인증 오류/로그아웃 등 세션 상태 변화 시 출석 캐시 전체 삭제 (R7)
+async function clearAttendanceCaches() {
+  const all = await getStorage(null);
+  const keysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.CACHE));
+  if (keysToRemove.length) {
+    await chrome.storage.local.remove(keysToRemove);
+  }
+}
+
 // ===== API 호출 (세션 쿠키 포함) =====
 async function fetchWithAuth(url, options = {}) {
   const defaultOptions = {
@@ -119,10 +134,21 @@ async function fetchWithAuth(url, options = {}) {
       ...options.headers
     }
   };
-  const res = await fetch(url, { ...defaultOptions, ...options });
+  let res = await fetch(url, { ...defaultOptions, ...options });
 
-  // 세션 만료 감지: 302 리다이렉트, 401, 로그인 페이지로의 리다이렉트
-  if (res.type === 'opaqueredirect' || res.status === 302 || res.status === 301 || res.status === 401) {
+  // 정상 리다이렉트(codyssey 도메인 남부)는 1회 수동 추적 (N10)
+  // ※ cross-origin 리다이렉트는 opaqueredirect라 Location을 읽을 수 없음 — 그 경우 인증 오류로 분류
+  if (res.status >= 300 && res.status < 400 && res.type !== 'opaqueredirect') {
+    const location = res.headers.get('location') || '';
+    if (location.includes('codyssey.kr') && !/login/i.test(location)) {
+      res = await fetch(location, defaultOptions);
+    } else {
+      throw new Error('AUTH_REQUIRED');
+    }
+  }
+
+  // 세션 만료 감지: 리다이렉트, 401, 로그인 페이지로의 이동
+  if (res.type === 'opaqueredirect' || res.status === 302 || res.status === 301 || res.status === 401 || res.status === 403) {
     throw new Error('AUTH_REQUIRED');
   }
   if (res.url && /login/i.test(res.url)) {
@@ -182,7 +208,14 @@ async function fetchAttendance(memberId, year, month) {
 
   // 사용자 지정 정확한 엔드포인트
   const url = `${CONFIG.API_BASE}/rest/secom/detail?mbrId=${memberId}&year=${year}&month=${String(month).padStart(2,'0')}`;
-  const res = await fetchWithAuth(url);
+  let res;
+  try {
+    res = await fetchWithAuth(url);
+  } catch (e) {
+    // 세션 만료인데 캐시만 잔존하는 상태 방지 — 캐시 무효화 후 오류 전파 (R7)
+    if (e.message === 'AUTH_REQUIRED') await clearAttendanceCaches();
+    throw e;
+  }
 
   if (!res.ok) {
     throw new Error(`ATTENDANCE_API_ERROR_${res.status}`);
@@ -191,113 +224,6 @@ async function fetchAttendance(memberId, year, month) {
   const data = await readJsonResponse(res, 'ATTENDANCE');
   await setCache(cacheKey, data);
   return data;
-}
-
-// ===== 출입기록 파싱 =====
-function parseAttendance(data, targetDate = new Date()) {
-  // 실제 응답 구조: { success: true, detail_list: [...], month: "07", year: "2026", max_recog_hours: 12 }
-  const detailList = data.detail_list || data.result || data.data || data || [];
-  const year = targetDate.getFullYear();
-  const month = targetDate.getMonth() + 1;
-  const todayStr = getTodayString();
-
-  let monthlyTotal = 0;
-  let dailyTotal = 0;
-  let lastInTime = null;
-  let lastOutTime = null;
-  let isCurrentlyIn = false;
-  let entryTimestamp = null; // 자정 경계 처리를 위한 실제 입실 시각(밀리초)
-  let hasMissingEntry = false; // 입실 누락 이상 데이터 플래그
-  const dailyBreakdown = {};
-
-  // HH:MM:SS 또는 HH:MM 형식을 분으로 변환
-  function durationToMinutes(durationStr) {
-    if (!durationStr) return 0;
-    const parts = durationStr.split(':').map(Number);
-    if (parts.some(isNaN)) return 0;
-    if (parts.length === 3) {
-      return parts[0] * 60 + parts[1] + Math.round(parts[2] / 60);
-    } else if (parts.length === 2) {
-      return parts[0] * 60 + parts[1];
-    }
-    return 0;
-  }
-
-  // HH:MM:SS 형식을 분 단위(time)로 변환 (entry_time, exit_time용)
-  function timeStrToMinutes(timeStr) {
-    if (!timeStr) return null;
-    const parts = timeStr.split(':').map(Number);
-    if (parts.length >= 2 && !parts.some(isNaN)) {
-      return parts[0] * 60 + parts[1];
-    }
-    return null;
-  }
-
-  // 날짜 + 시각 → 로컬 타임스탬프(밀리초)
-  function parseEntryTimestamp(dateStr, entryTime) {
-    if (!dateStr || !entryTime) return null;
-    const time = entryTime.length === 5 ? `${entryTime}:00` : entryTime;
-    const ts = new Date(`${dateStr}T${time}`).getTime();
-    return isNaN(ts) ? null : ts;
-  }
-
-  for (const day of detailList) {
-    const dateStr = day.date || '';
-    if (!dateStr) continue;
-    if (!dateStr.startsWith(`${year}-${String(month).padStart(2,'0')}`)) continue;
-
-    // 서버에서 이미 12시간 캡 적용된 일일 총 시간 사용
-    const dailyTotalMinutes = durationToMinutes(day.daily_total_duration);
-    
-    monthlyTotal += dailyTotalMinutes;
-    dailyBreakdown[dateStr] = dailyTotalMinutes;
-
-    // 세션을 입실 시각 순으로 정렬해 상태 판정 (순서 뒤집힌 응답 대응)
-    const sessions = (day.sessions || []).slice().sort((a, b) => {
-      const ta = timeStrToMinutes(a.entry_time);
-      const tb = timeStrToMinutes(b.entry_time);
-      return (ta === null ? 0 : ta) - (tb === null ? 0 : tb);
-    });
-
-    for (const session of sessions) {
-      const entryMin = timeStrToMinutes(session.entry_time);
-      const exitMin = timeStrToMinutes(session.exit_time);
-      const isMissing = session.is_missing === true;
-      const missingType = session.missing_type;
-
-      // 퇴실 누락 세션 = 현재 입실 중 (오늘만이 아니라 전날 입실 미퇴실도 감지 — 자정 경계)
-      if (isMissing && missingType === 'exit' && entryMin !== null) {
-        isCurrentlyIn = true;
-        lastInTime = entryMin;
-        lastOutTime = null;
-        entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
-      } else if (isMissing && missingType === 'entry') {
-        hasMissingEntry = true;
-      } else if (entryMin !== null && exitMin !== null && dateStr === todayStr) {
-        // 오늘의 정상 퇴실 세션
-        lastInTime = entryMin;
-        lastOutTime = exitMin;
-      }
-    }
-
-    // 오늘인 경우 일일 총 시간 별도 저장
-    if (dateStr === todayStr) {
-      dailyTotal = dailyTotalMinutes;
-    }
-  }
-
-  return {
-    monthlyTotal,
-    dailyTotal,
-    lastInTime,
-    lastOutTime,
-    isCurrentlyIn,
-    entryTimestamp,
-    hasMissingEntry,
-    dailyBreakdown,
-    // 캘린더용 원본 데이터도 포함
-    rawDetailList: detailList
-  };
 }
 
 // ===== 알람 관리 =====
@@ -349,20 +275,32 @@ async function scheduleExitAlarm(memberId, endMinutes, label = '퇴실 시간', 
   return { success: true, alarmName, triggerTime: target.getTime() };
 }
 
+function legacyAlarmName(memberId, endMinutes) {
+  return `codyssey_exit_${memberId}_${endMinutes}`;
+}
+
 async function cancelExitAlarm(memberId, endMinutes, type = 'exit') {
   const alarmName = buildAlarmName(memberId, type, endMinutes);
+  const legacyName = legacyAlarmName(memberId, endMinutes);
   await chrome.alarms.clear(alarmName);
-  // 구형 이름으로 저장된 경우도 함께 정리
-  await chrome.alarms.clear(`${ALARM_PREFIX.replace('alarm', 'exit')}${memberId}_${endMinutes}`);
+  // 구형 이름으로 저장된 경우도 함께 정리 (N3 유령 알람 방지)
+  await chrome.alarms.clear(legacyName);
   
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
-  const alarmList = (alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || []).filter(a => a.name !== alarmName);
+  const alarmList = (alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [])
+    .filter(a => a.name !== alarmName && a.name !== legacyName);
   await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: alarmList });
 }
 
 async function getActiveAlarms(memberId) {
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
-  return alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
+  const list = alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
+  // 구형 항목 정규화 (type/createdAt 기본값 보강 — N3)
+  return list.map(a => ({
+    ...a,
+    type: a.type || 'exit',
+    createdAt: a.createdAt || a.time
+  }));
 }
 
 // ===== 알림 표시 =====
@@ -439,6 +377,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const now = new Date();
           const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1);
           const parsed = parseAttendance(data, now);
+
+          // 월 경계 입실(R2): 이달 데이터에서 입실 중이 아니고 월초(1~3일)이면 전월 데이터 확인
+          if (!parsed.isCurrentlyIn && now.getDate() <= 3) {
+            try {
+              const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+              const prevData = await fetchAttendance(memberId, prev.getFullYear(), prev.getMonth() + 1);
+              applyOvernightFromPrevMonth(parsed, prevData);
+            } catch (e) {
+              console.warn('전월 데이터 확인 실패:', e);
+            }
+          }
+
           const settings = await getSettings();
           const alarms = await getActiveAlarms(memberId);
           sendResponse({ success: true, memberId, parsed, settings, alarms });

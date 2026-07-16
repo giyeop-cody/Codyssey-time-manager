@@ -12,5 +12,11 @@
 		"Preferences": {
 			"group": "codyssey_prefs"
 		}
+	},
+	"cordova": {
+		"accessOrigins": [
+			"https://*.codyssey.kr",
+			"https://codyssey.kr"
+		]
 	}
 }
