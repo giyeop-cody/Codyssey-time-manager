@@ -275,12 +275,13 @@ async function processGateEvents(memberId, rawData) {
 }
 
 // ===== E2: 평가 일정 자동 연동 =====
-// API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링 + body "null")
-// scheduleType=request → result.reqList[] (평가 일정 행)
+// API: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/ (쿼리스트링, 본문 없음)
+// scheduleType=request → result.reqList[] (평가 일정 행, scdlGubunCd==='EV'가 평가)
+// ※ usr 프론트엔드 번들 실측(2026-07-17)으로 확정 — 레거시 명세(api.codyssey.kr/http) 아님
 // 네이티브 EvalSync.java와 같은 저장 상태키(eval_sync_state)를 공유해 중복 없이 동기화
 const EVAL_STATE_KEY = 'eval_sync_state';
 const EVAL_INST_CD_KEY = 'eval_inst_cd';
-const EVAL_SCHEDULE_API = 'https://codyssey.kr';
+const EVAL_SCHEDULE_API = 'https://api.usr.codyssey.kr';
 
 function ymdDot(d) {
   return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
@@ -297,8 +298,7 @@ async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
   const qs = `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
     + `&bgngYmd=${ymdDot(fromDate)}&endYmd=${ymdDot(toDate)}&scheduleType=request`;
   const res = await fetchWithAuth(`${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?${qs}`, {
-    method: 'POST',
-    body: 'null' // 사용자 제공 명세: 본문은 리터럴 "null"
+    method: 'POST' // 실측: 본문 없이 쿼리스트링만 (axios post(url, null, {params})와 동일)
   });
   if (!res.ok) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status}`);
   return await readJsonResponse(res, 'EVAL_SCHEDULE');
@@ -439,7 +439,8 @@ async function doSyncEvalAlarms(memberId) {
         items: nextItems,
         fetchedAt: now,
         skipped: parsed.skipped,
-        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단 (응답 키 목록)
+        nonEv: parsed.nonEv || 0, // 평가 아닌 행 수 (AM/EXAM/MT 등)
+        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단 (첫 EV 행의 키 목록)
       }
     });
     return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };

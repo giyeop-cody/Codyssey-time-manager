@@ -403,14 +403,23 @@ export function validateEvalAlarm(whenMs, leadMinutes, nowMs = Date.now()) {
 
 // ============================================================
 // E2: 평가 일정 자동 연동 (schedule/scheduleAllList 응답 해석)
-// - 사용자 제공 명세: reqDetail "R||"=피평가자 / "A||"=평가자,
-//   scdlReqUsr=피평가자 이름, fixedCd 00004=평가거절 / 00005=요청취소 / 00006=완료
-// - 응답 행의 날짜·시각·제목·고유키 필드명은 샘플이 없어 폴곤 체인으로 추정
-//   (실패 시 해당 행은 건수만 세고 건갈 — sampleKeys로 응답 키 목록을 남겨 다음 보정에 사용)
+// - 2026-07-17 usr 프론트엔드 번들(usr.codyssey.kr/assets/index-*.js) 실측 근거:
+//   · 호출: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/
+//           ?mbrId=&instCd=&bgngYmd=YYYY.MM.DD&endYmd=YYYY.MM.DD&scheduleType=request (본문 없음)
+//   · 응답: result.reqList[] (+ academicList[]·timeList[] — 출직표/학사일정, 미사용)
+//   · 평가 행 식별: scdlGubunCd === 'EV' (AM=오전점호 / EXAM=시험 / MT=멘토링 등은 제외)
+//   · 시작 시각: bgngYmd('YYYY.MM.DD') + bgngTm('HH:MM') — 두 필드 조합
+//   · 상태(fixedCd): 00001=요청(수락 대기) 00002=평가 대기중 00003=평가 진행중
+//                    00004=요청 거절 / 00005=요청 취소 / 00006=평가 완료 → 이 3개는 알람 제외
+//   · 역할(reqDetail): '|' 연속 구분으로 쪼갠 첫 토큰 — R=내가 피평가자(request) /
+//     A=내가 평가자(participation). 실 형식: "R||mtlEvlSn||projectNo||lcorsNo||uqstnNo"
+//   · 제목: title || scdlGubunNm (캘린더 표시 규칙과 동일)
+// - 구 배포/필드 변종 대비 폴곤 체인은 유지 (EV 행의 키 목록을 sampleKeys에 남김)
 // ============================================================
 
 export const EVAL_AUTO_ID_PREFIX = 'auto_'; // codyssey_eval_auto_{key} — 수동 등록(e...)과 구분
 export const EVAL_CANCEL_FIXED_CODES = ['00004', '00005', '00006']; // 거절/요청취소/완료 → 알람 대상 아님
+export const EVAL_GUBUN_VALUE = 'EV'; // scdlGubunCd === 'EV' 인 행만 평가 (AM/EXAM/MT 등 제외)
 
 // 멤버 정보 응답 어디에 있든 instCd를 재귀 탐색 (키 이름만 확실하다는 전제)
 export function findInstCd(root) {
@@ -439,12 +448,14 @@ function pickFirst(row, names) {
   return null;
 }
 
-// 'YYYY.MM.DD' / 'YYYY-MM-DD' / 'YYYYMMDD' → [y, m, d]
+// 'YYYY.MM.DD' / 'YYYY-MM-DD' / 'YYYYMMDD' → [y, m, d] (+ 'YY.MM.DD' 2자리 연도 폴곤)
 function ymdFromString(s) {
   if (!s) return null;
   const m = String(s).match(/(20\d\d)[.\-/]?(0[1-9]|1[0-2])[.\-/]?(0[1-9]|[12]\d|3[01])/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  const s2 = String(s).trim().match(/^(\d{2})[.\-/](0?[1-9]|1[0-2])[.\-/](0?[1-9]|[12]\d|3[01])$/);
+  if (s2) return [2000 + Number(s2[1]), Number(s2[2]), Number(s2[3])];
+  return null;
 }
 
 // 'HH:mm' / 'HHmm' → [h, m] (날짜가 붙은 문자열에서는 뒤쪽 시각만 추출)
@@ -474,8 +485,9 @@ const EVAL_DT_DATE_KEYS = [
   'scdlDe', 'scdlDt', 'scdlYmd', 'evlDe', 'bgngYmd', 'evlYmd', 'scdlDay', 'evlDate', 'scdlDate'
 ];
 const EVAL_DT_TIME_KEYS = [
-  'scdlTime', 'scdlHm', 'bgngHm', 'bgngTime', 'evlBgngHm', 'startTime', 'startHm', 'scdlStartHm'
-];
+  'scdlTime', 'scdlHm', 'bgngTm', 'bgngHm', 'bgngTime', 'evlBgngHm',
+  'startTime', 'startHm', 'scdlStartHm'
+]; // ※ 'endTm' 등 종료 시각 키는 넣지 않음 — 시작 날짜+종료 시각이 섞이는 오파싱 방지
 
 // 평가 행에서 시작 시각(epoch ms) 추출 — 전체 일시 키 → 날짜+시각 키 조합 → 전 필드 스캔 순
 export function extractEvalDateTimeMs(row) {
@@ -520,17 +532,25 @@ export function extractEvalDateTimeMs(row) {
   return null;
 }
 
-// reqList[] → 정규화된 평가 일정 [{key, title, role, whenMs}] (+ 진단: skipped, sampleKeys)
+// reqList[] → 정규화된 평가 일정 [{key, title, role, whenMs}] (+ 진단: skipped, nonEv, sampleKeys)
+// - scdlGubunCd가 있고 'EV'가 아닌 행(오전점호/시험/멘토링 등)은 평가가 아니므로 nonEv로만 집계
+// - sampleKeys는 진단 가치가 높은 "첫 번째 EV 행"의 키 목록 (EV 행이 없으면 첫 행)
 export function parseScheduleRows(rawList) {
   const list = Array.isArray(rawList) ? rawList : [];
   const items = [];
   let skipped = 0;
+  let nonEv = 0;
   let sampleKeys = null;
+  let evSampleKeys = null;
 
   for (let i = 0; i < list.length; i++) {
     const row = list[i];
     if (!row || typeof row !== 'object') { skipped++; continue; }
     if (i === 0 && !sampleKeys) sampleKeys = Object.keys(row);
+
+    const gubun = pickFirst(row, ['scdlGubunCd']);
+    if (gubun && gubun !== EVAL_GUBUN_VALUE) { nonEv++; continue; } // 평가(EV)가 아닌 행
+    if (!evSampleKeys) evSampleKeys = Object.keys(row);
 
     const fixed = pickFirst(row, ['fixedCd', 'fixedCode', 'sttsCd', 'stusCd']);
     if (fixed && EVAL_CANCEL_FIXED_CODES.includes(fixed)) continue; // 거절/취소/완료 제외
@@ -539,15 +559,17 @@ export function parseScheduleRows(rawList) {
     if (!whenMs || isNaN(whenMs)) { skipped++; continue; }
 
     const detail = pickFirst(row, ['reqDetail', 'reqDtl', 'detailCd']) || '';
-    const role = detail.startsWith('R||') ? 'R' : detail.startsWith('A||') ? 'A' : '';
-    const course = pickFirst(row, ['lcorsNm', 'mtlEvlNm', 'evlNm', 'courseNm', 'projectNm', 'subjectNm', 'evlTtl', 'ttmsNm']) || '평가';
+    const dTokens = detail.split(/\|+/).filter(Boolean); // "R||35||…" → ['R','35','…']
+    const role = (dTokens[0] === 'R' || dTokens[0] === 'A') ? dTokens[0] : '';
+    const course = pickFirst(row, ['title', 'scdlGubunNm', 'lcorsNm', 'mtlEvlNm', 'evlNm', 'courseNm', 'projectNm', 'subjectNm', 'evlTtl', 'ttmsNm']) || '평가';
     const reqUsr = pickFirst(row, ['scdlReqUsr', 'reqUsrNm', 'reqNm']) || '';
     const roleLabel = role === 'R' ? '피평가자' : role === 'A' ? '평가자' : '평가';
     const title = reqUsr ? `${course} (${roleLabel}: ${reqUsr})` : `${course} (${roleLabel})`;
 
-    const idParts = ['scdlNo', 'evlScdlNo', 'evlNo', 'evlDegr', 'reqNo', 'scdlSn', 'evalReqNo', 'evlReqNo']
+    const idParts = ['mtlEvlSn', 'scdlNo', 'evlScdlNo', 'evlNo', 'evlDegr', 'reqNo', 'scdlSn', 'scheduleNo', 'evalReqNo', 'evlReqNo']
       .map(k => pickFirst(row, [k]))
       .filter(Boolean);
+    if (!idParts.length && dTokens.length >= 2) idParts.push(dTokens[1]); // reqDetail의 mtlEvlSn
     const key = (idParts.length ? idParts.join('_') : `${whenMs}_${detail}_${reqUsr}`)
       .replace(/[^A-Za-z0-9_.-]/g, '_');
 
@@ -559,7 +581,12 @@ export function parseScheduleRows(rawList) {
   for (const it of items) {
     if (!seen.has(it.key)) seen.set(it.key, it);
   }
-  return { items: [...seen.values()].sort((a, b) => a.whenMs - b.whenMs), skipped, sampleKeys };
+  return {
+    items: [...seen.values()].sort((a, b) => a.whenMs - b.whenMs),
+    skipped,
+    nonEv,
+    sampleKeys: evSampleKeys || sampleKeys
+  };
 }
 
 // 이전 동기화 항목과 새 항목 비교 — added/removed/changed (시각·lead·제목 변경 감지)

@@ -2,3 +2,4 @@
 relay_kv.json
 relay_cookies.txt
 popup-sandbox.html
+__pycache__/

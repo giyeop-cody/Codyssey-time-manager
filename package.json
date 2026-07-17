@@ -6,6 +6,7 @@
     "build": "cap sync android",
     "check:js": "node scripts/check-js.js",
     "test:js": "node --test tests/",
+    "test:relay": "node sandbox/test_relay_e2e.mjs",
     "android": "cap open android",
     "run:android": "cap run android",
     "dev": "cap run android --livereload --external"

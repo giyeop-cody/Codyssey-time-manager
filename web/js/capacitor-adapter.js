@@ -673,11 +673,12 @@ import {
   }
 
   // ===== E2: 평가 일정 자동 연동 =====
-  // API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링 + body "null")
+  // API: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/ (쿼리스트링, 본문 없음)
+  // ※ usr 프론트엔드 번들 실측(2026-07-17) 확정 — 레거시 명세(api.codyssey.kr) 아님
   // 저장 상태키 eval_sync_state는 네이티브 EvalSync.java와 공유 — 어느 쪽이 동기화하든 중복 없음
   const EVAL_STATE_KEY = 'eval_sync_state';
   const EVAL_INST_CD_KEY = 'eval_inst_cd';
-  const EVAL_SCHEDULE_API = 'https://codyssey.kr';
+  const EVAL_SCHEDULE_API = 'https://api.usr.codyssey.kr';
 
   function evalYmdDot(d) {
     return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
@@ -836,7 +837,8 @@ import {
         items: nextItems,
         fetchedAt: now,
         skipped: parsed.skipped,
-        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단
+        nonEv: parsed.nonEv || 0,
+        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단 (첫 EV 행의 키 목록)
       });
       return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
     } catch (e) {

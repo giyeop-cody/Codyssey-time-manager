@@ -333,7 +333,8 @@ async function ryDoSyncEvalAlarms(memberId, settingsIn) {
 
   await ryKvSet('eval_sync_state', {
     memberId: String(memberId), instCd, items: nextItems,
-    fetchedAt: now, skipped: parsed.skipped, sampleKeys: parsed.sampleKeys || null
+    fetchedAt: now, skipped: parsed.skipped, nonEv: parsed.nonEv || 0,
+    sampleKeys: parsed.sampleKeys || null
   });
   return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length };
 }

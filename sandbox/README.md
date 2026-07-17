@@ -37,9 +37,27 @@ python sandbox/relay_server.py --save-session   # 세션 쿠키를 로컬 파일
 sandbox/relay_server.py (파이썬 중계)
   ├─ api.ams.codyssey.kr 로그인 + 쿠키 관리
   ├─ api.usr.codyssey.kr 출입/멤버 프록시 (5분 캐시)
-  ├─ codyssey.kr 평가 일정 프록시
+  ├─ api.usr.codyssey.kr 평가 일정 프록시 (아래 "평가 API 실측" 참고)
   └─ 알람 스케줄러 (3초 주기 발화 → 이벤트 큐)
 ```
+
+### 평가 API 실측 (2026-07-17, usr 프론트엔드 번들에서 확정)
+
+- 엔드포인트: `POST https://api.usr.codyssey.kr/schedule/scheduleAllList/?mbrId=&instCd={instCd}&bgngYmd=YYYY.MM.DD&endYmd=YYYY.MM.DD&scheduleType=request` (**본문 없음**)
+  - 참고: 문서상 레거시 `api.codyssey.kr`은 현 배포에서 404, `codyssey.kr`은 정적 SPA 호스트
+  - `lms.codyssey.kr`은 DNS 자체가 없음 (상세 페이지 참조만 존재)
+- 응답: `result.reqList[]` — 평가 행은 `scdlGubunCd === 'EV'`, 시각은 `bgngYmd`+`bgngTm`,
+  제목은 `title || scdlGubunNm`, 역할은 `reqDetail` 첫 토큰(R=내가 피평가자 / A=내가 평가자),
+  `fixedCd` 00004(거절)·00005(취소)·00006(완료) 제외, 고유키는 `mtlEvlSn` 우선
+- 샌드박스에서 실데이터 원문 확인: 로그인 후 개발자도구 콘솔에서
+  `chrome.runtime.sendMessage({type:'EVAL_SCHEDULE', instCd:'<기관코드>', fromYmd:'2026.01.01', toYmd:'2026.12.31'}, console.log)`
+  → 응답의 `rows`(핵심 필드 축약)와 `raw`(원문) 비교 가능
+
+### 스텁 기반 종단검증 (회귀 스크립트)
+
+`npm run test:relay` — 스텁 코디세이 서버를 띄우고 중계 서버에 env(`CODYSSEY_AMS_BASE/USR_BASE/EVAL_BASE`)로
+주입해, 로그인 → 평가 동기 → 알람 등록/변경/해제·진단값(nonEv/skipped/sampleKeys)까지 20건 자동 검증.
+중계 서버의 모든 `CODYSSEY_*_BASE` env는 이 검증용이며 실사용 시 설정 불필요.
 
 ---
 

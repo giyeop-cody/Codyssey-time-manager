@@ -36,9 +36,13 @@ WEB_DIR = os.path.join(ROOT, '..', 'web')
 KV_FILE = os.path.join(ROOT, 'relay_kv.json')
 SESSION_FILE = os.path.join(ROOT, 'relay_cookies.txt')
 
-AMS_BASE = 'https://api.ams.codyssey.kr'
-USR_BASE = 'https://api.usr.codyssey.kr'
-LMS_BASE = 'https://codyssey.kr'
+# env 오버라이드는 스텁 서버 종단검증(test_relay_e2e.mjs)용 — 실사용 시 건드리지 않음
+AMS_BASE = os.environ.get('CODYSSEY_AMS_BASE') or 'https://api.ams.codyssey.kr'
+USR_BASE = os.environ.get('CODYSSEY_USR_BASE') or 'https://api.usr.codyssey.kr'
+# 평가 API 호스트 — 2026-07-17 usr 프론트엔드 번들 실측으로 확정 (usr SPA가
+# baseURL=https://api.usr.codyssey.kr/ 로 'schedule/scheduleAllList/' 호출).
+# 레거시 명세(api.codyssey.kr)는 현 배포에서 404, codyssey.kr은 정적 SPA 호스트.
+LMS_BASE = os.environ.get('CODYSSEY_EVAL_BASE') or USR_BASE
 
 CACHE_TTL_SEC = 300  # 5분 (익스텐션 background.js와 동일)
 
@@ -139,7 +143,10 @@ def http_request(url, method='GET', data=None, headers=None, timeout=15):
         raise ConnectionError(str(e))
     jar_save()
     # 세션 만료 감지 (background.js의 AUTH_REQUIRED 판정과 유사)
-    if 'login' in (final_url or '').lower():
+    # ※ 'login'이 URL에 포함된지 "리다이렉트가 실제로 일어났을 때"만 판정한다 —
+    #   /rest/login/pre-check 처럼 원래 login이 들어간 정상 호출을 오인하지 않도록
+    redirected = (final_url or url) != url
+    if redirected and 'login' in (final_url or '').lower():
         raise AuthRequired()
     if status in (401, 403):
         raise AuthRequired()
@@ -201,14 +208,23 @@ def fetch_eval_schedule(member_id, inst_cd, from_ymd, to_ymd):
         'mbrId': member_id, 'instCd': inst_cd,
         'bgngYmd': from_ymd, 'endYmd': to_ymd, 'scheduleType': 'request'
     })
+    # 실측(usr 번들): axios post(url, null, {params}) — 본문 없이 쿼리스트링만 전송
     _, _, text = http_request(
-        f'{LMS_BASE}/schedule/scheduleAllList/?{qs}',
-        method='POST', data=b'null',
-        headers={'Content-Type': 'application/json'})
+        f'{LMS_BASE}/schedule/scheduleAllList/?{qs}', method='POST')
     data = json_or_none(text)
     if not isinstance(data, dict):
         raise AuthRequired()
     return data
+
+
+def summarize_eval_rows(raw):
+    """샌드박스 실데이터 확인용 — reqList 각 행의 핵심 필드만 축약."""
+    rows = (((raw or {}).get('result') or {}).get('reqList'))
+    if not isinstance(rows, list):
+        return None
+    keep = ('scdlGubunCd', 'fixedCd', 'bgngYmd', 'bgngTm', 'title',
+            'scdlGubunNm', 'reqDetail', 'scdlReqUsr', 'mtlEvlSn')
+    return [{k: r.get(k) for k in keep if k in r} for r in rows[:50]]
 
 
 # ---------- 알람 엔진 ----------
@@ -393,7 +409,9 @@ def handle_msg(msg):
         if not mid:
             return {'success': False, 'error': 'NOT_LOGGED_IN'}
         raw = fetch_eval_schedule(mid, msg.get('instCd'), msg.get('fromYmd'), msg.get('toYmd'))
-        return {'success': True, 'raw': raw}
+        # 샌드박스 실데이터 확인용 축약 (필드명/상태코드 검증) — 원문 raw도 그대로 전달
+        return {'success': True, 'raw': raw, 'rows': summarize_eval_rows(raw),
+                'host': LMS_BASE}
 
     if t == 'LOCAL_NOTIFY':
         return {'success': True}  # 팝업(하네스)이 직접 표시

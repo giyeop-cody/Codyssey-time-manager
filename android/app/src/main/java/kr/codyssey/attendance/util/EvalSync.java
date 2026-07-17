@@ -26,10 +26,12 @@ import kr.codyssey.attendance.plugin.AlarmPlugin;
 /**
  * 평가 일정 자동 연동 (E2) — 앱이 닫혀 있어도 SyncWorker 주기 작업에서 실행.
  *
- * API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링, 본문 "null")
+ * API: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/ (쿼리스트링, 본문 없음)
  *  - instCd, bgngYmd~endYmd(YYYY.MM.DD), scheduleType=request
- *  - 응답 result.reqList[] 해석 규칙(사용자 제공): reqDetail "R||"=피평가자 / "A||"=평가자,
- *    scdlReqUsr=피평가자 이름, fixedCd 00004=거절 / 00005=요청취소 / 00006=완료
+ *  - 응답 result.reqList[] 해석 규칙 (2026-07-17 usr 프론트엔드 번들 실측으로 확정):
+ *    scdlGubunCd "EV"가 평가 행, 시작 시각 bgngYmd+bgngTm,
+ *    reqDetail 첫 토큰 R=내가 피평가자 / A=내가 평가자, title || scdlGubunNm이 제목,
+ *    fixedCd 00004=거절 / 00005=요청취소 / 00006=완료 → 알람 대상 아님
  *
  * web/js/capacitor-adapter.js의 syncEvalAlarms와 같은 저장 상태(eval_sync_state,
  * codyssey_prefs)를 JS/네이티브가 공유 → 어느 쪽이 동기화하든 알람이 중복되지 않는다.
@@ -41,8 +43,8 @@ public class EvalSync {
     private static final String ALARMS_KEY = "codyssey_alarms";
     private static final String STATE_KEY = "eval_sync_state";
     private static final String INSTCD_KEY = "eval_inst_cd";
-    private static final String SCHEDULE_API = "https://codyssey.kr";
     private static final String USR_API = "https://api.usr.codyssey.kr";
+    private static final String SCHEDULE_API = USR_API; // 평가 API도 usr 게이트웨이 (번들 실측)
 
     // 앱이 열릴 때마다 JS도 동기화하므로 네이티브는 6시간에 1회면 충분 (배터리/트래픽 절약)
     private static final long THROTTLE_MS = 6L * 60 * 60 * 1000;
@@ -60,20 +62,24 @@ public class EvalSync {
             "scdlDe", "scdlDt", "scdlYmd", "evlDe", "bgngYmd", "evlYmd", "scdlDay", "evlDate", "scdlDate"
     };
     private static final String[] DT_TIME_KEYS = {
-            "scdlTime", "scdlHm", "bgngHm", "bgngTime", "evlBgngHm", "startTime", "startHm", "scdlStartHm"
+            // ※ 종료 시각 키(endTm 등)는 넣지 않음 — 시작 날짜+종료 시각 오조합 방지 (JS와 동일)
+            "scdlTime", "scdlHm", "bgngTm", "bgngHm", "bgngTime", "evlBgngHm", "startTime", "startHm", "scdlStartHm"
     };
     private static final String[] ID_KEYS = {
-            "scdlNo", "evlScdlNo", "evlNo", "evlDegr", "reqNo", "scdlSn", "evalReqNo", "evlReqNo"
+            "mtlEvlSn", "scdlNo", "evlScdlNo", "evlNo", "evlDegr", "reqNo", "scdlSn", "scheduleNo", "evalReqNo", "evlReqNo"
     };
     private static final String[] TITLE_KEYS = {
-            "lcorsNm", "mtlEvlNm", "evlNm", "courseNm", "projectNm", "subjectNm", "evlTtl", "ttmsNm"
+            "title", "scdlGubunNm", "lcorsNm", "mtlEvlNm", "evlNm", "courseNm", "projectNm", "subjectNm", "evlTtl", "ttmsNm"
     };
     private static final String[] FIXED_KEYS = { "fixedCd", "fixedCode", "sttsCd", "stusCd" };
+    private static final String[] GUBUN_KEYS = { "scdlGubunCd" }; // "EV"가 아니면 평가 아님 (AM/EXAM/MT)
     private static final String[] DETAIL_KEYS = { "reqDetail", "reqDtl", "detailCd" };
     private static final String[] REQUSR_KEYS = { "scdlReqUsr", "reqUsrNm", "reqNm" };
 
     private static final Pattern YMD_RE =
             Pattern.compile("(20\\d\\d)[.\\-/]?(0[1-9]|1[0-2])[.\\-/]?(0[1-9]|[12]\\d|3[01])");
+    private static final Pattern YMD_SHORT_RE = // '26/07/01' 같은 2자리 연도 (레거시 페이지 표기)
+            Pattern.compile("^(\\d{2})[.\\-/](0?[1-9]|1[0-2])[.\\-/](0?[1-9]|[12]\\d|3[01])$");
     private static final Pattern HM_COLON_RE = Pattern.compile("(\\d{1,2}):(\\d{2})");
     private static final Pattern HM_DIGIT_RE = Pattern.compile("(\\d{2})(\\d{2})");
 
@@ -118,7 +124,7 @@ public class EvalSync {
                 + "mbrId=" + enc(memberId) + "&instCd=" + enc(instCd)
                 + "&bgngYmd=" + ymdDot(from) + "&endYmd=" + ymdDot(to)
                 + "&scheduleType=request";
-        CookieManager.HttpResult res = CookieManager.httpRequest(context, url, "POST", "null");
+        CookieManager.HttpResult res = CookieManager.httpRequest(context, url, "POST", null); // 실측: 본문 없이 쿼리스트링만
         if (res.status != 200) {
             recordSkip(prefs, state, "api_" + res.status); // 302/401=세션 만료 — 폭주 없이 다음 기회로
             return;
@@ -251,6 +257,7 @@ public class EvalSync {
         newState.put("items", nextItems);
         newState.put("fetchedAt", now);
         newState.put("skipped", parsed.skipped);
+        newState.put("nonEv", parsed.nonEv);
         if (parsed.sampleKeys != null) newState.put("sampleKeys", parsed.sampleKeys);
         prefs.edit().putString(STATE_KEY, newState.toString()).apply();
     }
@@ -339,7 +346,9 @@ public class EvalSync {
     private static class ParsedRows {
         List<EvalItem> items = new ArrayList<>();
         int skipped = 0;
-        JSONArray sampleKeys = null;
+        int nonEv = 0;                    // 평가 아닌 행 수 (AM/EXAM/MT 등)
+        JSONArray sampleKeys = null;      // 첫 EV 행의 키 목록 (진단용)
+        JSONArray firstRowKeys = null;    // 폴곤: EV가 하나도 없으면 첫 행의 키 목록
     }
 
     private static ParsedRows parseRows(JSONArray reqList) throws Exception {
@@ -349,7 +358,11 @@ public class EvalSync {
         for (int i = 0; i < reqList.length(); i++) {
             JSONObject row = reqList.optJSONObject(i);
             if (row == null) { out.skipped++; continue; }
-            if (i == 0 && out.sampleKeys == null) out.sampleKeys = row.names();
+            if (i == 0 && out.firstRowKeys == null) out.firstRowKeys = row.names();
+
+            String gubun = pickFirst(row, GUBUN_KEYS);
+            if (gubun != null && !"EV".equals(gubun)) { out.nonEv++; continue; } // 평가(EV) 아님
+            if (out.sampleKeys == null) out.sampleKeys = row.names();
 
             String fixed = pickFirst(row, FIXED_KEYS);
             if (fixed != null && CANCEL_CODES.contains(fixed)) continue;
@@ -359,7 +372,16 @@ public class EvalSync {
 
             String detail = pickFirst(row, DETAIL_KEYS);
             if (detail == null) detail = "";
-            String role = detail.startsWith("R||") ? "R" : detail.startsWith("A||") ? "A" : "";
+            String role = "";
+            String detailSn = null; // reqDetail "R||35||…" 의 두 번째 토큰(mtlEvlSn)
+            if (!detail.isEmpty()) {
+                List<String> toks = new ArrayList<>();
+                for (String tk : detail.split("\\|+")) { if (!tk.isEmpty()) toks.add(tk); }
+                if (!toks.isEmpty() && ("R".equals(toks.get(0)) || "A".equals(toks.get(0)))) {
+                    role = toks.get(0);
+                    if (toks.size() >= 2) detailSn = toks.get(1);
+                }
+            }
             String course = pickFirst(row, TITLE_KEYS);
             if (course == null) course = "평가";
             String reqUsr = pickFirst(row, REQUSR_KEYS);
@@ -373,6 +395,7 @@ public class EvalSync {
                 String v = pickFirst(row, new String[] { k });
                 if (v != null) idParts.add(v);
             }
+            if (idParts.isEmpty() && detailSn != null) idParts.add(detailSn); // reqDetail의 mtlEvlSn
             String key = !idParts.isEmpty()
                     ? join(idParts, "_")
                     : whenMs + "_" + detail + "_" + (reqUsr != null ? reqUsr : "");
@@ -389,6 +412,7 @@ public class EvalSync {
         }
 
         java.util.Collections.sort(out.items, (a, b) -> Long.compare(a.whenMs, b.whenMs));
+        if (out.sampleKeys == null) out.sampleKeys = out.firstRowKeys;
         return out;
     }
 
@@ -439,12 +463,22 @@ public class EvalSync {
     private static int[] ymd(String s) {
         if (s == null) return null;
         Matcher m = YMD_RE.matcher(s);
-        if (!m.find()) return null;
-        try {
-            return new int[] { Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)) };
-        } catch (Exception e) {
-            return null;
+        if (m.find()) {
+            try {
+                return new int[] { Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)) };
+            } catch (Exception e) {
+                return null;
+            }
         }
+        Matcher s2 = YMD_SHORT_RE.matcher(s.trim());
+        if (s2.find()) {
+            try {
+                return new int[] { 2000 + Integer.parseInt(s2.group(1)), Integer.parseInt(s2.group(2)), Integer.parseInt(s2.group(3)) };
+            } catch (Exception e) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private static int[] hm(String s) {
