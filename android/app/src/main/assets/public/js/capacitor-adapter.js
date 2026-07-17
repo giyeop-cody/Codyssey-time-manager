@@ -6,7 +6,15 @@
 import {
   parseAttendance,
   applyOvernightFromPrevMonth,
-  equivalentAlarmNames
+  equivalentAlarmNames,
+  getTodayString,
+  snapshotSessionsByDate,
+  detectGateEvents,
+  formatGateEventMessage,
+  gateEventKey,
+  newEvalId,
+  buildEvalAlarmName,
+  validateEvalAlarm
 } from './shared-attendance.js';
 
 (function() {
@@ -32,7 +40,9 @@ import {
     soundEnabled: true,
     autoRefresh: true,
     refreshInterval: 30, // 분
-    keepAliveEnabled: false // opt-in
+    keepAliveEnabled: false, // opt-in
+    gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
+    evalLeadMinutes: 30 // E1: 평가 알람 기본 사전 알림 (분)
   };
 
   const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -219,6 +229,9 @@ import {
 
         const parsed = result.parsed;
 
+        // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
+        processGateEvents(memberId, parsed.rawDetailList).catch(() => {});
+
         // 월 경계 입실(R2/L4): 이달 데이터에 입실 중이 없으면 전월 말 확인 (월초 제한 제거)
         if (!parsed.isCurrentlyIn) {
           const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -308,6 +321,45 @@ import {
         };
       }
 
+      // E1: 평가 알람 등록 (평가 시각 - N분에 1회 알림)
+      case 'SET_EVAL_ALARM': {
+        if (!Plugins.AlarmPlugin) return { success: false, error: 'AlarmPlugin not available' };
+
+        const title = (message.title || '').toString().trim() || '평가';
+        const whenMs = Number(message.whenMs);
+        const leadMinutes = Number(message.leadMinutes);
+
+        const invalid = validateEvalAlarm(whenMs, leadMinutes);
+        if (invalid) return { success: false, reason: invalid };
+
+        const triggerAt = whenMs - leadMinutes * 60000;
+        const alarmName = buildEvalAlarmName(message.evalId || newEvalId());
+
+        const scheduleResult = await Plugins.AlarmPlugin.schedule({
+          triggerTimeMillis: triggerAt,
+          label: `📋 평가 ${leadMinutes}분 전: ${title}`,
+          id: alarmName
+        });
+
+        // 활성 알람 목록에 함께 영속화 (BootReceiver 복원/일괄 정리/해제 파이프라인 재사용)
+        const evalAlarms = await getStoredAlarms();
+        const keptEval = evalAlarms.filter(a => a.name !== alarmName);
+        keptEval.push({
+          name: alarmName,
+          time: triggerAt,
+          label: `📋 ${title}`,
+          endMinutes: null,
+          type: 'eval',
+          evalTitle: title,
+          evalWhen: whenMs,
+          leadMinutes,
+          createdAt: Date.now()
+        });
+        await setPrefs(STORE_KEYS.ALARMS, keptEval);
+
+        return { success: true, alarmName, triggerTime: triggerAt, exact: scheduleResult.exact !== false };
+      }
+
       case 'CANCEL_ALARM': {
         // 문제2 수정: memberId로 이름을 재계산하지 않고 "목록에 저장된 실제 이름"으로 해제.
         // (memberId가 'unknown'이거나 계정 전환 시 실제 이름과 불일치해 해제가 무음 실패하던 결함)
@@ -386,6 +438,7 @@ import {
         await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID });
         await Plugins.Preferences.remove({ key: STORE_KEYS.ALARMS });
         await clearAttendanceCaches();
+        await clearGateSnapshots(); // G1: 스냅샷도 계정과 함께 폐기
         // Q4: keep-alive 설정도 해제 — 재부팅 시 BootReceiver가 유령 핑을 다시 예약하지 않도록
         try {
           const settings = await getSettings();
@@ -449,12 +502,14 @@ import {
     return fresh;
   }
 
-  // N7: keep-alive 설정과 백그라운드 주기 동기화
+  // N7: 백그라운드 주기 동기화 — keep-alive 또는 입·퇴실 감지(G1, 기본 켬)가 하나라도 켜져 있으면 예약
+  // G1: 15분 간격 (WorkManager 최소 주기) — 입·퇴실 알림 지연 상한을 낮추기 위함
   async function syncKeepAliveWork(settings) {
     if (!Plugins.AlarmPlugin) return;
     try {
-      if (settings.keepAliveEnabled) {
-        await Plugins.AlarmPlugin.schedulePeriodicSync({ intervalMinutes: 30 });
+      const needSync = settings.keepAliveEnabled || settings.gateNotifyEnabled !== false;
+      if (needSync) {
+        await Plugins.AlarmPlugin.schedulePeriodicSync({ intervalMinutes: 15 });
       } else {
         await Plugins.AlarmPlugin.cancelPeriodicSync({});
       }
@@ -546,6 +601,50 @@ import {
   async function clearSessionIdentity() {
     try { await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID }); } catch (e) { /* 무시 */ }
     await clearAttendanceCaches();
+    await clearGateSnapshots(); // G1: 계정 바뀌면 이전 계정 스냅샷도 폐기
+  }
+
+  // ===== G1: 입·퇴실 처리 감지 =====
+  // 스냅샷 키/포맷은 Android GateCheck.java와 동일 (양쪽이 같은 저장소를 써서 중복 알림 방지)
+  const GATE_SNAP_PREFIX = 'gate_snapshot_';
+
+  async function clearGateSnapshots() {
+    try {
+      const all = await Plugins.Preferences.keys();
+      const keys = (all.keys || []).filter(k => k.startsWith(GATE_SNAP_PREFIX));
+      await Promise.all(keys.map(k => Plugins.Preferences.remove({ key: k })));
+    } catch (e) { /* 무시 */ }
+  }
+
+  // 오늘/어제 세션 스냅샷을 갱신하며 새 입·퇴실 처리 이벤트를 알림
+  // - 최초 스냅샷은 조용히 채택, 알림 꺼져 있어도 스냅샷은 갱신 (재활성 시 폭주 방지)
+  async function processGateEvents(memberId, rawData) {
+    try {
+      if (!memberId || !rawData) return;
+
+      const todayStr = getTodayString();
+      const y = new Date();
+      y.setDate(y.getDate() - 1);
+      const yesterdayStr = getTodayString(y);
+      const nextDates = snapshotSessionsByDate(rawData, [todayStr, yesterdayStr]);
+
+      const key = GATE_SNAP_PREFIX + memberId;
+      const stored = await getPrefs(key);
+      const prevDates = stored && stored.dates ? stored.dates : null;
+
+      const settings = await getSettings();
+      if (prevDates && settings.gateNotifyEnabled && settings.notificationsEnabled) {
+        const events = detectGateEvents(prevDates, nextDates);
+        for (const event of events) {
+          const msg = formatGateEventMessage(event, todayStr);
+          await scheduleLocalNotification(msg.title, msg.body, gateEventKey(event));
+        }
+      }
+
+      await setPrefs(key, { dates: nextDates, updatedAt: Date.now() });
+    } catch (e) {
+      console.warn('[Adapter] 입·퇴실 감지 처리 실패:', e); // 감지 실패가 본래 조회를 깨면 안 됨
+    }
   }
 
   function safeJson(s) {

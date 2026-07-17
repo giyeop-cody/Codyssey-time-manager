@@ -68,6 +68,69 @@ public class CookieManager {
         return cookieManager.getCookie(url);
     }
 
+    // 간단한 네이티브 GET 결과 (G1: 백그라운드 출입 조회용 — NetworkPlugin은 JS 브릿지 전용이라 재사용 불가)
+    public static class HttpResult {
+        public int status = -1;
+        public String body = "";
+    }
+
+    // 세션 쿠키를 포함한 GET 요청 (응답 Set-Cookie는 WebView 쿠키 저장소에 반영)
+    // pingKeepAlive(N7)와 동일 패턴. 실패 시 status=-1 반환, 예외는 밖으로 던지지 않음.
+    public static HttpResult httpGet(Context context, String urlString) {
+        HttpResult result = new HttpResult();
+        java.net.HttpURLConnection conn = null;
+        try {
+            java.net.URL url = new java.net.URL(urlString);
+            String origin = url.getProtocol() + "://" + url.getHost();
+            String cookies = getCookies(context, origin);
+
+            conn = (java.net.HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(15000);
+            conn.setInstanceFollowRedirects(false); // 302(세션 만료)를 status로 확인하기 위함
+            conn.setRequestProperty("Accept", "application/json");
+            if (cookies != null && !cookies.isEmpty()) {
+                conn.setRequestProperty("Cookie", cookies);
+            }
+
+            result.status = conn.getResponseCode();
+
+            // Set-Cookie 전체 순회 — 다중 쿠키 손실 방지 (L9 연계) + 대소문자 무관 (K1)
+            java.util.List<String> setCookies = extractSetCookies(conn);
+            if (!setCookies.isEmpty()) {
+                android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
+                for (String cookie : setCookies) {
+                    cookieManager.setCookie(origin, cookie);
+                }
+                cookieManager.flush();
+            }
+
+            java.io.InputStream in = result.status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            if (in != null) {
+                StringBuilder sb = new StringBuilder();
+                try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(in, "UTF-8"))) {
+                    char[] buf = new char[4096];
+                    int total = 0;
+                    int read;
+                    while ((read = reader.read(buf)) != -1) {
+                        total += read;
+                        if (total > 2 * 1024 * 1024) break; // NetworkPlugin과 동일 상한
+                        sb.append(buf, 0, read);
+                    }
+                }
+                result.body = sb.toString();
+            }
+        } catch (Exception e) {
+            result.status = -1;
+            result.body = "";
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return result;
+    }
+
     // 쿠키 설정
     public static void setCookie(Context context, String url, String name, String value) {
         android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();

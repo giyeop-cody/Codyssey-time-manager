@@ -223,6 +223,25 @@
   </div>
 </div>
 
+  <!-- 평가 알람 등록 (E1) -->
+  <div class="alarms-section" id="eval-section">
+    <div class="alarms-header">
+      <h3 class="alarms-title">📋 평가 알람</h3>
+    </div>
+    <div class="calculator-input-row">
+      <input type="text" id="eval-title-input" class="input" placeholder="평가 이름 (예: 중간 평가)" maxlength="30" autocomplete="off">
+    </div>
+    <div class="calculator-input-row" style="margin-top:6px;">
+      <input type="datetime-local" id="eval-datetime-input" class="input">
+    </div>
+    <div class="calculator-input-row" style="margin-top:6px;">
+      <input type="number" id="eval-lead-input" class="input" min="0" max="1440" step="5" value="30" style="width:70px;text-align:center;">
+      <span style="font-size:13px;color:#888;white-space:nowrap;">분 전에 알림</span>
+      <button class="btn btn-primary" id="btn-add-eval">➕ 등록</button>
+    </div>
+    <div class="alarms-empty" id="eval-hint">등록된 평가는 아래 활성 알람 목록에 표시되며, 평가 시간 N분 전에 알림이 울립니다.</div>
+  </div>
+
   <!-- 활성 알람 목록 -->
   <div class="alarms-section" id="alarms-section">
     <div class="alarms-header">
@@ -285,6 +304,20 @@
           <div class="setting-desc">알림 시 비프음 재생</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-sound" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">입·퇴실 처리 알림</div>
+          <div class="setting-desc">게이트에 입실/퇴실이 기록되면 알림</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-gate-notify" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">평가 알림 기본 시점</div>
+          <div class="setting-desc">평가 등록 시 자동 입력되는 사전 알림 (분)</div>
+        </div>
+        <input type="number" id="setting-eval-lead" class="input" style="width:80px;text-align:center;" min="0" max="1440" step="5" value="30"> 분
       </div>
     </div>
 

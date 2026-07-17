@@ -46,8 +46,11 @@ public class AlarmReceiver extends BroadcastReceiver {
             return;
         }
 
-        // 알림 표시 (title, body, id)
-        NotificationHelper.showNotification(context, "⏰ 코디세이 출입 알림", label != null ? label : "알림", id);
+        // 알림 표시 (title, body, id) — E1: 평가 알람은 전용 제목
+        String title = (id != null && id.startsWith("codyssey_eval_"))
+                ? "📋 평가 알림"
+                : "⏰ 코디세이 출입 알림";
+        NotificationHelper.showNotification(context, title, label != null ? label : "알림", id);
 
         // R8: 앱이 살아있으면 WebView JS로 이벤트 전달 (화면 자동 갱신)
         MainActivity.emitNativeEvent("ALARM_TRIGGERED", label, id);

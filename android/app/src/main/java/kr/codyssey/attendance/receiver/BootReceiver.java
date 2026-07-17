@@ -34,10 +34,10 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        // N7: keep-alive 설정이 켜져 있을 때만 주기 동기화 재시작
-        if (isKeepAliveEnabled(context)) {
+        // N7+G1: keep-alive 또는 입·퇴실 감지(기본 켬)가 하나라도 켜져 있으면 주기 동기화 재시작
+        if (isPeriodicSyncEnabled(context)) {
             PeriodicWorkRequest syncWork = new PeriodicWorkRequest.Builder(
-                    SyncWorker.class, 30, TimeUnit.MINUTES)
+                    SyncWorker.class, 15, TimeUnit.MINUTES) // G1: 알림 지연 상한을 낮추기 위해 15분
                     .addTag("codyssey_periodic_sync")
                     .build();
 
@@ -55,14 +55,17 @@ public class BootReceiver extends BroadcastReceiver {
         restoreOneShotAlarms(context);
     }
 
-    private boolean isKeepAliveEnabled(Context context) {
+    // 주기 동기화 필요 여부 = keep-alive 켬 OR 입·퇴실 감지 켬(G1, JS 기본값과 동일하게 기본 true)
+    private boolean isPeriodicSyncEnabled(Context context) {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             String settingsJson = prefs.getString("settings", null);
-            if (settingsJson == null) return false;
-            return new JSONObject(settingsJson).optBoolean("keepAliveEnabled", false);
+            if (settingsJson == null) return true; // 설정 저장 전 최초 부팅 — G1 기본값(true)에 따름
+            JSONObject settings = new JSONObject(settingsJson);
+            return settings.optBoolean("keepAliveEnabled", false)
+                    || settings.optBoolean("gateNotifyEnabled", true);
         } catch (Exception e) {
-            return false;
+            return true; // 파싱 실패 시 감지 기본값(true) 쪽에 붙음 (알림 누락보다 재예약이 안전)
         }
     }
 

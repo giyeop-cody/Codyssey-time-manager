@@ -13,7 +13,16 @@ import {
   parseAlarmName,
   equivalentAlarmNames,
   formatEndMinutes,
-  isAlarmStale
+  isAlarmStale,
+  getTodayString,
+  snapshotSessionsByDate,
+  detectGateEvents,
+  formatGateEventMessage,
+  gateEventKey,
+  newEvalId,
+  buildEvalAlarmName,
+  parseEvalAlarmName,
+  validateEvalAlarm
 } from './shared-attendance.js';
 
 const CONFIG = {
@@ -36,7 +45,9 @@ const DEFAULT_SETTINGS = {
   soundEnabled: true,
   autoRefresh: true,
   refreshInterval: 30, // 분
-  keepAliveEnabled: false // 세션 무한 연장 방지 — 사용자가 명시적으로 켜는 opt-in
+  keepAliveEnabled: false, // 세션 무한 연장 방지 — 사용자가 명시적으로 켜는 opt-in
+  gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
+  evalLeadMinutes: 30 // E1: 평가 알람 기본 사전 알림 (분)
 };
 
 // ===== 스토리지 =====
@@ -206,6 +217,51 @@ async function fetchAttendance(memberId, year, month, force = false) {
 async function clearSessionIdentity() {
   await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
   await clearAttendanceCaches();
+  await clearGateSnapshots(); // G1: 계정 바뀌면 이전 계정 스냅샷도 폐기
+}
+
+// ===== G1: 입·퇴실 처리 감지 =====
+const GATE_SNAP_PREFIX = 'codyssey_gate_snap_';
+
+async function clearGateSnapshots() {
+  const all = await getStorage(null);
+  const keys = Object.keys(all).filter(k => k.startsWith(GATE_SNAP_PREFIX));
+  if (keys.length) {
+    await chrome.storage.local.remove(keys);
+  }
+}
+
+// 오늘/어제 세션 스냅샷을 갱신하며 새 입·퇴실 처리 이벤트를 알림
+// - 최초 실행 스냅샷은 조용히 채택 (과거 데이터로 알림 폭주 방지)
+// - 알림이 꺼져 있어도 스냅샷은 갱신 (다시 켰을 때 누적분이 한꺼번에 울리지 않도록)
+async function processGateEvents(memberId, rawData) {
+  try {
+    if (!memberId || !rawData) return;
+
+    const todayStr = getTodayString();
+    const y = new Date();
+    y.setDate(y.getDate() - 1);
+    const yesterdayStr = getTodayString(y);
+    const nextDates = snapshotSessionsByDate(rawData, [todayStr, yesterdayStr]);
+
+    const key = GATE_SNAP_PREFIX + memberId;
+    const stored = await getStorage([key]);
+    const prevDates = stored[key] && stored[key].dates ? stored[key].dates : null;
+
+    const settings = await getSettings();
+    if (prevDates && settings.gateNotifyEnabled && settings.notificationsEnabled) {
+      const events = detectGateEvents(prevDates, nextDates);
+      for (const event of events) {
+        const msg = formatGateEventMessage(event, todayStr);
+        await showNotification(msg.title, msg.body, memberId);
+        console.log(`[입퇴실 감지] ${gateEventKey(event)}`);
+      }
+    }
+
+    await setStorage({ [key]: { dates: nextDates, updatedAt: Date.now() } });
+  } catch (e) {
+    console.warn('입·퇴실 감지 처리 실패:', e); // 감지 실패가 본래 조회를 깨면 안 됨
+  }
 }
 
 // ===== 알람 관리 (이름 생성/파싱은 shared-attendance.js 단일 소스 사용) =====
@@ -310,6 +366,12 @@ async function showNotification(title, body, memberId) {
 
 // 알람 리스너
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  // E1: 평가 알람 — 이름 규칙이 달라 전용 분기
+  if (parseEvalAlarmName(alarm.name)) {
+    await handleEvalAlarmFired(alarm);
+    return;
+  }
+
   const parsedName = parseAlarmName(alarm.name);
   if (!parsedName) return;
 
@@ -334,9 +396,50 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   // 알람 울린 후 정리
   await cancelExitAlarm(memberId, endMinutes, type);
 
-  // 팝업이 열려있으면 업데이트 알림
+  // 팝업이 열리면 업데이트 알림
   chrome.runtime.sendMessage({ type: 'ALARM_TRIGGERED', memberId, endMinutes, alarmType: type }).catch(() => {});
 });
+
+// E1: 평가 알람 발화 처리
+// - 브라우저가 꺼져 있던 사이 예정 시각이 지난 경우: 평가 시작 전이면 늦게라도 알림,
+//   평가 시작이 (5분 이상) 지났으면 알림 없이 정리만 (K3 정책의 평가판)
+async function handleEvalAlarmFired(alarm) {
+  // 저장 목록(어떤 계정 키든)에서 평가 정보를 찾는다
+  let info = null;
+  try {
+    const all = await getStorage(null);
+    const alarmKeys = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.ALARMS));
+    for (const key of alarmKeys) {
+      const list = all[key] || [];
+      const found = list.find(a => a && a.name === alarm.name);
+      if (found) { info = found; break; }
+    }
+  } catch (e) { /* 무시 */ }
+
+  const title = (info && info.evalTitle) || '평가';
+  const lead = (info && typeof info.leadMinutes === 'number') ? info.leadMinutes : null;
+  const evalWhen = info && info.evalWhen ? info.evalWhen : 0;
+
+  // 평가 시작이 이미 5분 이상 지났으면 사전 알림으로서 의미가 없음 → 알림 생략
+  const expired = evalWhen > 0
+    ? Date.now() > evalWhen + 5 * 60 * 1000
+    : isAlarmStale(alarm.scheduledTime);
+  if (!expired) {
+    const leadText = lead === 0 ? '지금 시작' : lead !== null ? `${lead}분 전` : '알림';
+    const whenText = evalWhen
+      ? `${String(new Date(evalWhen).getHours()).padStart(2, '0')}:${String(new Date(evalWhen).getMinutes()).padStart(2, '0')} 시작`
+      : '';
+    await showNotification(
+      '📋 평가 알림',
+      `${title} — ${leadText}${whenText ? ` (${whenText})` : ''}`,
+      null
+    );
+  }
+
+  // 발화된 평가 알람은 목록에서 제거 (유령 방지 — exit 알람과 동일 정책)
+  await cancelAlarmByName(alarm.name);
+  chrome.runtime.sendMessage({ type: 'ALARM_TRIGGERED', evalAlarm: true }).catch(() => {});
+}
 
 // ===== 메시지 핸들러 =====
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -373,6 +476,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           // J1: force면 캐시 바이패스 (수동 새로고침 의도 존중)
           const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, message.force === true);
           const parsed = parseAttendance(data, now);
+
+          // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
+          processGateEvents(memberId, data).catch(() => {});
 
           // 월 경계 입실(R2/L4): 이달 데이터에서 입실 중이 아니면 전월 말 데이터 확인
           // (월초 3일 제한 제거 — 월 어느 날짜든 전월 말 API 1회로 안전하게 판정)
@@ -464,6 +570,50 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const { endMinutes, label, alarmType } = message;
           const result = await scheduleExitAlarm(memberId, endMinutes, label, alarmType || 'exit');
           sendResponse(result);
+          break;
+        }
+
+        // --- E1: 평가 알람 등록 (평가 시각 - N분에 1회 알림) ---
+        case 'SET_EVAL_ALARM': {
+          const memberId = await getMemberId();
+          if (!memberId) {
+            sendResponse({ success: false, error: 'NOT_LOGGED_IN' });
+            return;
+          }
+          const title = (message.title || '').toString().trim() || '평가';
+          const whenMs = Number(message.whenMs);
+          const leadMinutes = Number(message.leadMinutes);
+
+          const invalid = validateEvalAlarm(whenMs, leadMinutes);
+          if (invalid) {
+            sendResponse({ success: false, reason: invalid });
+            break;
+          }
+
+          const triggerAt = whenMs - leadMinutes * 60000;
+          const alarmName = buildEvalAlarmName(message.evalId || newEvalId());
+
+          await chrome.alarms.clear(alarmName);
+          await chrome.alarms.create(alarmName, { when: triggerAt });
+
+          // 활성 알람 목록에 함께 저장 (부팅 복원/일괄 정리/해제 파이프라인 재사용)
+          const alarmsRes = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
+          const alarmList = (alarmsRes[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [])
+            .filter(a => a.name !== alarmName);
+          alarmList.push({
+            name: alarmName,
+            time: triggerAt,
+            label: `📋 ${title}`,
+            endMinutes: null,
+            type: 'eval',
+            evalTitle: title,
+            evalWhen: whenMs,
+            leadMinutes,
+            createdAt: Date.now()
+          });
+          await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: alarmList });
+
+          sendResponse({ success: true, alarmName, triggerTime: triggerAt });
           break;
         }
 
@@ -642,8 +792,8 @@ async function migrateLegacyAlarms() {
   }
 }
 
-// 주기적 백그라운드 동기화 (캐시 무효화)
-chrome.alarms.create('periodic_sync', { periodInMinutes: 30 });
+// 주기적 백그라운드 동기화 (G1: 입·퇴실 감지를 위해 15분 간격으로 조회 — 알림 지연 상한)
+chrome.alarms.create('periodic_sync', { periodInMinutes: 15 });
 
 // J2: keep-alive 핑을 서비스 워커 알람으로 관리 — 팝업 생명주기와 무관하게 동작.
 // (기존 popup.js 타이머는 팝업이 열린 동안에만 유효 → 설정과 실제 동작이 어긋났음)
@@ -667,9 +817,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'periodic_sync') {
     const memberId = await getMemberId();
     if (memberId) {
-      const now = new Date();
-      const cacheKey = `attendance_${memberId}_${now.getFullYear()}_${now.getMonth()+1}`;
-      await chrome.storage.local.remove(CONFIG.STORAGE_KEYS.CACHE + cacheKey);
+      try {
+        // G1: 캐시 무효화만 하던 주기 동기화를 실제 조회 + 입·퇴실 감지로 전환
+        const now = new Date();
+        const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, true);
+        await processGateEvents(memberId, data);
+      } catch (e) {
+        console.warn('주기 동기화 실패:', e.message);
+      }
     }
   }
   // J2: keep-alive 핑 — 세션 터치 (응답 본문은 불필요, 만료 시 정리)

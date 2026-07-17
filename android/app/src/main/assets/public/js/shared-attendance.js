@@ -250,3 +250,153 @@ export function equivalentAlarmNames(name) {
   const legacy = legacyAlarmName(parsed.memberId, parsed.endMinutes);
   return modern === legacy ? [modern] : [modern, legacy];
 }
+
+// ============================================================
+// 입·퇴실 처리 감지 (G1)
+// - 마지막으로 스냅샷한 "오늘/어제 세션 상태"와 새 응답을 비교해
+//   새 입실 처리 / 퇴실 완료 처리 이벤트를 찾아낸다.
+// - 스냅샷 포맷: { 'YYYY-MM-DD': [ ['HH:MM', 'HH:MM'|null], ... ] }
+//   (JS와 Android 네이티브 GateCheck가 동일 포맷을 공유 — 중복 알림 방지)
+// ============================================================
+
+// 이 시간보다 오래된 변화는 "방금 처리"가 아닌 것으로 보고 알림 없이 스냅샷에만 반영
+// (앱을 오래 닫아뒀다가 열었을 때 과거 입실이 새 알림처럼 울리는 것 방지)
+export const GATE_EVENT_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+export const GATE_EVENT_MAX_PER_PASS = 3; // 한 번의 감지에서 알림 상한 (폭주 방지)
+
+// 'HH:MM(:SS)' → 'HH:MM' 정규화 (스냅샷 비교 안정성). 파싱 불가 시 null
+export function normalizeHHMM(timeStr) {
+  if (!timeStr || typeof timeStr !== 'string') return null;
+  const m = timeStr.trim().match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mm = Number(m[2]);
+  if (isNaN(h) || isNaN(mm) || h > 30 || mm > 59) return null;
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+// rawData(detail_list)에서 지정된 날짜들의 세션 스냅샷 맵 생성
+// - entry_time이 없는 세션(입실 누락)은 식별 불가라 비교 대상에서 제외
+// - 요청한 날짜는 데이터가 없어도 빈 배열로 포함 (날짜 롤오버 감지용)
+export function snapshotSessionsByDate(rawData, dateStrs) {
+  const out = {};
+  const want = Array.isArray(dateStrs) ? dateStrs.filter(Boolean) : [];
+  const detailList = Array.isArray(rawData)
+    ? rawData
+    : ((rawData && (rawData.detail_list || rawData.result || rawData.data)) || []);
+  for (const day of detailList) {
+    const dateStr = (day && day.date) || '';
+    if (!dateStr || !want.includes(dateStr)) continue;
+    const sessions = [];
+    for (const s of (day.sessions || [])) {
+      const entry = normalizeHHMM(s && s.entry_time);
+      if (!entry) continue;
+      const exit = normalizeHHMM(s && s.exit_time);
+      sessions.push([entry, exit]);
+    }
+    sessions.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    out[dateStr] = sessions;
+  }
+  for (const d of want) {
+    if (!Object.prototype.hasOwnProperty.call(out, d)) out[d] = [];
+  }
+  return out;
+}
+
+// 이벤트 시각 계산: 퇴실 이벤트에서 퇴실 시각이 입실 시각보다 작으면 익일로 간주 (야간 세션)
+function gateEventTimestamp(event) {
+  const timeStr = event.type === 'exit' ? event.exit : event.entry;
+  let ts = parseEntryTimestamp(event.dateStr, timeStr);
+  if (ts === null) return null;
+  if (event.type === 'exit' && event.entry) {
+    const em = timeStrToMinutes(event.entry);
+    const xm = timeStrToMinutes(event.exit);
+    if (em !== null && xm !== null && xm < em) ts += 24 * 60 * 60000;
+  }
+  return ts;
+}
+
+// 이전 스냅샷(prevDates, null=없음)과 새 스냅샷(nextDates)을 비교해 이벤트 배열 반환
+// - 최초 스냅샷(null)은 조용히 채택 (과거 데이터로 알림 폭주 방지)
+// - entry_time 일치로 세션을 매칭: 새 entry → 입실 이벤트, exit가 새로 채워짐 → 퇴실 이벤트
+// - GATE_EVENT_MAX_AGE_MS보다 오래된 이벤트는 제외, 최신 순으로 MAX_PER_PASS건 제한
+export function detectGateEvents(prevDates, nextDates, nowMs = Date.now()) {
+  if (!nextDates || typeof nextDates !== 'object') return [];
+  if (!prevDates || typeof prevDates !== 'object') return []; // 베이스라인 채택
+
+  const events = [];
+  for (const [dateStr, sessions] of Object.entries(nextDates)) {
+    if (!Array.isArray(sessions)) continue;
+    const prevSessions = Array.isArray(prevDates[dateStr]) ? prevDates[dateStr] : [];
+    const prevExitByEntry = new Map();
+    for (const p of prevSessions) {
+      if (Array.isArray(p) && p[0]) prevExitByEntry.set(p[0], p[1] || null);
+    }
+    for (const pair of sessions) {
+      if (!Array.isArray(pair) || !pair[0]) continue;
+      const [entry, exit] = [pair[0], pair[1] || null];
+      if (prevExitByEntry.has(entry)) {
+        const prevExit = prevExitByEntry.get(entry);
+        if (!prevExit && exit) {
+          events.push({ type: 'exit', dateStr, entry, exit });
+        }
+      } else {
+        events.push({ type: 'entry', dateStr, entry, exit });
+      }
+    }
+  }
+
+  return events
+    .map(e => ({ ...e, atMs: gateEventTimestamp(e) }))
+    .filter(e => e.atMs !== null && nowMs - e.atMs <= GATE_EVENT_MAX_AGE_MS) // 미래/너무 오래된 것 제외
+    .sort((a, b) => a.atMs - b.atMs)
+    .slice(-GATE_EVENT_MAX_PER_PASS);
+}
+
+// 입·퇴실 이벤트 → 알림 제목/본문 (JS용 — Android GateCheck.java가 동일 문구를 미러링)
+export function formatGateEventMessage(event, todayStr = getTodayString()) {
+  const dateLabel = event.dateStr === todayStr
+    ? ''
+    : `[${Number(event.dateStr.slice(5, 7))}월 ${Number(event.dateStr.slice(8, 10))}일] `;
+  if (event.type === 'entry') {
+    return { title: '✅ 코디세이 입실 처리', body: `${dateLabel}입실 처리됨: ${event.entry}` };
+  }
+  const extra = event.entry ? ` (입실 ${event.entry})` : '';
+  return { title: '🏁 코디세이 퇴실 처리', body: `${dateLabel}퇴실 처리됨: ${event.exit}${extra}` };
+}
+
+// 스냅샷 이벤트의 알림 id 키 (JS/네이티브 공통 규칙 — 같은 이벤트는 같은 id)
+export function gateEventKey(event) {
+  const t = event.type === 'exit' ? event.exit : event.entry;
+  return `gate_${event.dateStr}_${event.type}_${t}`;
+}
+
+// ============================================================
+// 평가 알람 (E1) — 사용자가 등록한 평가 일정의 N분 전 알림
+// 퇴실/목표 알람(codyssey_alarm_*)과 네임스페이스 분리
+// ============================================================
+export const EVAL_ALARM_PREFIX = 'codyssey_eval_';
+
+export function newEvalId(nowMs = Date.now()) {
+  return `e${nowMs.toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+}
+
+export function buildEvalAlarmName(evalId) {
+  return `${EVAL_ALARM_PREFIX}${evalId}`;
+}
+
+export function parseEvalAlarmName(name) {
+  if (!name || typeof name !== 'string') return null;
+  if (!name.startsWith(EVAL_ALARM_PREFIX)) return null;
+  const evalId = name.slice(EVAL_ALARM_PREFIX.length);
+  return evalId ? { evalId } : null;
+}
+
+// 평가 알람 유효성 검사: 과거 시각이면 'past', 입력 오류면 'invalid', 정상이면 null 반환
+export function validateEvalAlarm(whenMs, leadMinutes, nowMs = Date.now()) {
+  if (!whenMs || isNaN(whenMs) || whenMs <= 0) return 'invalid';
+  const lead = Number(leadMinutes);
+  if (isNaN(lead) || lead < 0 || lead > 1440) return 'invalid';
+  if (whenMs - lead * 60000 <= nowMs) return 'past';
+  return null;
+}

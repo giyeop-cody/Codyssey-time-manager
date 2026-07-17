@@ -111,6 +111,12 @@ const els = {
   alarmsList: document.getElementById('alarms-list'),
   alarmsEmpty: document.getElementById('alarms-empty'),
 
+  // 평가 알람 등록 (E1)
+  evalTitleInput: document.getElementById('eval-title-input'),
+  evalDatetimeInput: document.getElementById('eval-datetime-input'),
+  evalLeadInput: document.getElementById('eval-lead-input'),
+  btnAddEval: document.getElementById('btn-add-eval'),
+
   // 권한 배너
   permissionBanner: document.getElementById('permission-banner'),
   btnAllowNotification: document.getElementById('btn-allow-notification'),
@@ -128,6 +134,8 @@ const els = {
   settingAutoRefresh: document.getElementById('setting-auto-refresh'),
   settingRefreshInterval: document.getElementById('setting-refresh-interval'),
   settingKeepAlive: document.getElementById('setting-keep-alive'),
+  settingGateNotify: document.getElementById('setting-gate-notify'),
+  settingEvalLead: document.getElementById('setting-eval-lead'),
   btnSettingsSave: document.getElementById('btn-settings-save'),
   btnSettingsCancel: document.getElementById('btn-settings-cancel'),
 
@@ -149,6 +157,7 @@ let keepAliveEnabled = true;
 let exitAlarmEndMinutes = null;
 let goalAlarmEndMinutes = null;
 let currentViewDate = new Date(); // 캘린더용
+let evalLeadInitialized = false; // E1: 평가 사전 알림 기본값 1회 주입용
 
 // ===== 크롬 런타임 메시지 전송 헬퍼 =====
 function sendMessage(type, data = {}) {
@@ -307,7 +316,13 @@ function updateDashboardUI() {
   // 계산 결과 초기화
   resetAllCalculations();
   updateCalcModeUI(); // 토글 모드에 맞는 패널 표시
-  
+
+  // E1: 평가 등록 폼의 사전 알림 기본값을 설정값으로 1회 주입 (사용자 입력 유지)
+  if (!evalLeadInitialized && els.evalLeadInput) {
+    els.evalLeadInput.value = currentSettings.evalLeadMinutes ?? 30;
+    evalLeadInitialized = true;
+  }
+
   // 알람 목록 로드 및 렌더링
   loadAndRenderAlarms();
 }
@@ -486,19 +501,25 @@ function renderAlarms(alarms) {
   
   const now = Date.now();
   els.alarmsList.innerHTML = liveAlarms.map(alarm => {
-    const timeStr = formatEndMinutes(alarm.endMinutes);
+    const isEval = (alarm.type || '') === 'eval'; // E1: 평가 알람은 날짜+시각 표기
+    const timeStr = isEval
+      ? formatEvalWhen(alarm.evalWhen || alarm.time)
+      : formatEndMinutes(alarm.endMinutes);
     const label = alarm.label || '알람';
-    const type = alarm.type || (label.includes('퇴실') ? 'exit' : 'goal');
+    const type = isEval ? 'eval' : (alarm.type || (label.includes('퇴실') ? 'exit' : 'goal'));
     const remainingMin = Math.max(1, Math.ceil((alarm.time - now) / 60000));
     const createdStr = alarm.createdAt
       ? new Date(alarm.createdAt).toLocaleString()
       : new Date(alarm.time).toLocaleString();
+    const subText = isEval
+      ? `${alarm.leadMinutes ?? 0}분 전 알림 · ${remainingMin}분 후`
+      : `${remainingMin}분 후`;
 
     return `
       <div class="alarm-item ${type}" data-end-minutes="${alarm.endMinutes}" data-alarm-type="${type}">
         <div class="alarm-info">
           <div class="alarm-label">${label}</div>
-          <div class="alarm-time">${timeStr} (${remainingMin}분 후)</div>
+          <div class="alarm-time">${timeStr} (${subText})</div>
           <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
         <div class="alarm-actions">
@@ -507,6 +528,63 @@ function renderAlarms(alarms) {
       </div>
     `;
   }).join('');
+}
+
+// E1: 평가 일시 표기 (예: 7월 18일 (토) 14:00)
+function formatEvalWhen(ms) {
+  const d = new Date(ms);
+  const date = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+  return `${date} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// E1: 평가 알람 등록
+async function addEvalAlarm() {
+  const title = els.evalTitleInput.value.trim() || '평가';
+  const whenMs = new Date(els.evalDatetimeInput.value).getTime();
+  if (!els.evalDatetimeInput.value || isNaN(whenMs)) {
+    alert('평가 일시를 선택해주세요.');
+    els.evalDatetimeInput.focus();
+    return;
+  }
+  const leadMinutes = Number(els.evalLeadInput.value);
+  if (isNaN(leadMinutes) || leadMinutes < 0 || leadMinutes > 1440) {
+    alert('사전 알림 시간은 0~1440분 사이로 입력해주세요.');
+    els.evalLeadInput.focus();
+    return;
+  }
+  if (whenMs - leadMinutes * 60000 <= Date.now()) {
+    alert('알림 시각(평가 시간 - 사전 알림)이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.');
+    return;
+  }
+
+  const hasPerm = await requestNotificationPermission();
+  if (!hasPerm) return;
+
+  try {
+    const response = await sendMessage('SET_EVAL_ALARM', { title, whenMs, leadMinutes });
+    if (response.success) {
+      els.evalTitleInput.value = '';
+      els.evalDatetimeInput.value = '';
+      showNotification('평가 알람 등록', `${title} — ${leadMinutes}분 전인 ${formatEvalWhen(response.triggerTime)}에 알림이 울립니다.`);
+      await loadAndRenderAlarms();
+      // M5: 정확 알람 권한 없음(Android) — 안내 재사용
+      if (response.exact === false) {
+        setTimeout(() => {
+          alert('정확한 알람 권한이 꺼져 있어 알림 시각이 몇 분 늦어질 수 있습니다.\n알림 권한 설정에서 "정확한 알람"을 허용해주세요.');
+          if (window.CodysseyNative && window.CodysseyNative.isNative) {
+            window.CodysseyNative.requestExactAlarmPermission().catch(() => {});
+          }
+        }, 300);
+      }
+    } else {
+      alert(response.reason === 'past'
+        ? '알림 시각이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.'
+        : `평가 알람 등록에 실패했습니다. (${response.error || '알 수 없는 오류'})`);
+    }
+  } catch (error) {
+    console.error('Add eval alarm error:', error);
+    alert('평가 알람 등록 중 오류가 발생했습니다.');
+  }
 }
 
 // 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
@@ -1126,6 +1204,8 @@ function openSettings() {
   els.settingAutoRefresh.checked = currentSettings.autoRefresh;
   els.settingRefreshInterval.value = currentSettings.refreshInterval;
   els.settingKeepAlive.checked = currentSettings.keepAliveEnabled !== false;
+  els.settingGateNotify.checked = currentSettings.gateNotifyEnabled !== false; // G1
+  els.settingEvalLead.value = currentSettings.evalLeadMinutes ?? 30; // E1
   
   els.settingsModal.classList.add('show');
 }
@@ -1142,12 +1222,15 @@ async function saveSettings() {
     soundEnabled: els.settingSound.checked,
     autoRefresh: els.settingAutoRefresh.checked,
     refreshInterval: parseInt(els.settingRefreshInterval.value) || 30,
-    keepAliveEnabled: els.settingKeepAlive.checked
+    keepAliveEnabled: els.settingKeepAlive.checked,
+    gateNotifyEnabled: els.settingGateNotify.checked, // G1
+    evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)) // E1
   };
 
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
     currentSettings = settings;
+    els.evalLeadInput.value = settings.evalLeadMinutes; // E1: 새 기본값을 등록 폼에 반영
     closeSettings();
     updateDashboardUI();
     updateKeepAliveUI();
@@ -1377,6 +1460,12 @@ function setupEventListeners() {
   els.btnCancelExitAlarm.addEventListener('click', cancelExitAlarm);
   els.btnSetGoalAlarm.addEventListener('click', setGoalAlarm);
   els.btnCancelGoalAlarm.addEventListener('click', cancelGoalAlarm);
+
+  // E1: 평가 알람 등록
+  els.btnAddEval.addEventListener('click', addEvalAlarm);
+  els.evalDatetimeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addEvalAlarm();
+  });
 
   // 캘린더 네비게이션
   els.btnPrevMonth.addEventListener('click', () => goToMonth(-1));
