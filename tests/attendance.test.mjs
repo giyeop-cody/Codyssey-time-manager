@@ -488,3 +488,101 @@ test('validateEvalAlarm: 미래/과거/입력 오류 판정', () => {
   assert.equal(validateEvalAlarm(NaN, 30, G_NOW), 'invalid');
   assert.equal(validateEvalAlarm(0, 30, G_NOW), 'invalid');
 });
+
+// ===== E2: 평가 일정 자동 연동 파서 (scheduleAllList 해석) =====
+import {
+  findInstCd,
+  extractEvalDateTimeMs,
+  parseScheduleRows,
+  diffEvalItems,
+  EVAL_AUTO_ID_PREFIX
+} from '../web/js/shared-attendance.js';
+
+test('findInstCd: 중첩 어디든 instCd/instCode 탐색', () => {
+  assert.equal(findInstCd({ result: { mbrId: '1', instCd: 'INST001' } }), 'INST001');
+  assert.equal(findInstCd({ result: { inst: { instCode: 'ABC' } } }), 'ABC');
+  assert.equal(findInstCd({ result: { list: [ { x: 1 }, { instCd: 'IN_9' } ] } }), 'IN_9');
+  assert.equal(findInstCd({ result: { mbrId: '1' } }), null);
+  assert.equal(findInstCd(null), null);
+  assert.equal(findInstCd('INST001'), null); // 객체 아님
+});
+
+test('extractEvalDateTimeMs: 전체 일시 필드', () => {
+  const ms = extractEvalDateTimeMs({ scdlBgngDt: '2026.07.20 14:00' });
+  assert.equal(ms, new Date(2026, 6, 20, 14, 0).getTime());
+  const ms2 = extractEvalDateTimeMs({ evlBgngDt: '2026-07-20 09:30:00' });
+  assert.equal(ms2, new Date(2026, 6, 20, 9, 30).getTime());
+});
+
+test('extractEvalDateTimeMs: 날짜+시각 분리 필드 (YYYYMMDD + HHmm 포함)', () => {
+  const ms = extractEvalDateTimeMs({ scdlDe: '2026.07.20', scdlTime: '14:00' });
+  assert.equal(ms, new Date(2026, 6, 20, 14, 0).getTime());
+  const ms2 = extractEvalDateTimeMs({ scdlYmd: '20260720', scdlHm: '1430' });
+  assert.equal(ms2, new Date(2026, 6, 20, 14, 30).getTime());
+});
+
+test('extractEvalDateTimeMs: 스캔 폴곤 + 파싱 불가 시 null', () => {
+  const ms = extractEvalDateTimeMs({ weirdField: '평가일 2026-07-20 14:00 시작' });
+  assert.equal(ms, new Date(2026, 6, 20, 14, 0).getTime());
+  assert.equal(extractEvalDateTimeMs({ scdlDe: '없음', scdlTime: '없음' }), null);
+  assert.equal(extractEvalDateTimeMs({}), null);
+  assert.equal(extractEvalDateTimeMs(null), null);
+});
+
+test('parseScheduleRows: R/A 구분, 취소 코드 제외, 고유키/제목 폴곤, 정렬', () => {
+  const rows = [
+    { evlNo: '101', evlDegr: '1', reqDetail: 'R||', scdlReqUsr: '김피평', lcorsNm: '알고리즘', scdlDe: '2026.07.22', scdlTime: '10:00', fixedCd: '00002' },
+    { evlNo: '102', evlDegr: '1', reqDetail: 'A||', scdlReqUsr: '이수강', scdlDe: '2026.07.20', scdlTime: '14:00' },
+    { evlNo: '103', reqDetail: 'R||', scdlReqUsr: '김피평', scdlDe: '2026.07.21', scdlTime: '09:00', fixedCd: '00005' }, // 요청취소 → 제외
+    { evlNo: '104', reqDetail: 'R||', scdlReqUsr: '김피평', scdlDe: '2026.07.23', scdlTime: '09:00', fixedCd: '00006' }, // 완료 → 제외
+    { evlNo: '105', reqDetail: 'R||', scdlReqUsr: '김피평', scdlDe: '몰라', scdlTime: '몰라' } // 파싱 불가 → 스킵 집계
+  ];
+  const { items, skipped, sampleKeys } = parseScheduleRows(rows);
+  assert.equal(items.length, 2);
+  assert.equal(skipped, 1);
+  assert.ok(Array.isArray(sampleKeys) && sampleKeys.includes('evlNo'));
+  // 시각순 정렬: 7/20 14:00 (A) 먼저
+  assert.equal(items[0].role, 'A');
+  assert.ok(items[0].title.includes('평가자: 이수강'));
+  assert.equal(items[1].role, 'R');
+  assert.ok(items[1].title.includes('피평가자: 김피평'));
+  assert.ok(items[1].title.includes('알고리즘'));
+  assert.equal(items[1].key, '101_1'); // evlNo_evlDegr
+});
+
+test('parseScheduleRows: id 없으면 날짜+행 정보로 폴곤 키 생성 + 중복 제거', () => {
+  const whenMs = new Date(2026, 6, 20, 14, 0).getTime();
+  const rows = [
+    { reqDetail: 'R||', scdlReqUsr: '김', scdlDe: '2026.07.20', scdlTime: '14:00' },
+    { reqDetail: 'R||', scdlReqUsr: '김', scdlDe: '2026.07.20', scdlTime: '14:00' } // 완전 동일 → 1건
+  ];
+  const { items } = parseScheduleRows(rows);
+  assert.equal(items.length, 1);
+  assert.equal(items[0].key, `${whenMs}_R___김`.replace(/[^A-Za-z0-9_.-]/g, '_'));
+  // 자동 알람 이름 규칙
+  assert.ok(buildEvalAlarmName(EVAL_AUTO_ID_PREFIX + items[0].key).startsWith(EVAL_ALARM_PREFIX));
+});
+
+test('diffEvalItems: added/removed/changed(시각·lead·제목) 판정', () => {
+  const prev = [
+    { key: 'a', whenMs: 100, title: 't1', leadMinutes: 30, name: 'codyssey_eval_auto_a' },
+    { key: 'b', whenMs: 200, title: 't2', leadMinutes: 30, name: 'codyssey_eval_auto_b' },
+    { key: 'c', whenMs: 300, title: 't3', leadMinutes: 30, name: 'codyssey_eval_auto_c' }
+  ];
+  const next = [
+    { key: 'a', whenMs: 100, title: 't1' },      // 동일
+    { key: 'b', whenMs: 250, title: 't2' },      // 시각 변경
+    { key: 'd', whenMs: 400, title: 't4' }       // 신규
+  ];
+  const diff = diffEvalItems(prev, next, 30);
+  assert.deepEqual(diff.added.map(i => i.key), ['d']);
+  assert.deepEqual(diff.removed.map(i => i.key), ['c']);
+  assert.deepEqual(diff.changed.map(i => i.key), ['b']);
+  assert.equal(diff.changed[0].name, 'codyssey_eval_auto_b'); // 기존 알람 이름 승계
+
+  // lead 변경만으로도 changed
+  const diff2 = diffEvalItems([{ key: 'a', whenMs: 100, title: 't1', leadMinutes: 30, name: 'n' }],
+    [{ key: 'a', whenMs: 100, title: 't1' }], 60);
+  assert.equal(diff2.changed.length, 1);
+  assert.deepEqual(diffEvalItems(prev, next, 30).added.length, 1);
+});

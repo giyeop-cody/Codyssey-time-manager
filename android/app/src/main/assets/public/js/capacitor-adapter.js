@@ -14,7 +14,11 @@ import {
   gateEventKey,
   newEvalId,
   buildEvalAlarmName,
-  validateEvalAlarm
+  validateEvalAlarm,
+  findInstCd,
+  parseScheduleRows,
+  diffEvalItems,
+  EVAL_AUTO_ID_PREFIX
 } from './shared-attendance.js';
 
 (function() {
@@ -42,7 +46,9 @@ import {
     refreshInterval: 30, // 분
     keepAliveEnabled: false, // opt-in
     gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
-    evalLeadMinutes: 30 // E1: 평가 알람 기본 사전 알림 (분)
+    evalLeadMinutes: 30, // E1: 평가 알람 기본 사전 알림 (분)
+    evalAutoSyncEnabled: true, // E2: 코디세이 평가 일정 자동 연동 (E1 요청 사항)
+    evalInstCd: '' // E2: instCd 자동 추출 실패 시 사용자 수동 입력
   };
 
   const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -231,6 +237,8 @@ import {
 
         // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
         processGateEvents(memberId, parsed.rawDetailList).catch(() => {});
+        // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
+        syncEvalAlarms(memberId).catch(() => {});
 
         // 월 경계 입실(R2/L4): 이달 데이터에 입실 중이 없으면 전월 말 확인 (월초 제한 제거)
         if (!parsed.isCurrentlyIn) {
@@ -360,6 +368,13 @@ import {
         return { success: true, alarmName, triggerTime: triggerAt, exact: scheduleResult.exact !== false };
       }
 
+      // E2: 평가 일정 수동 1회 동기화 (설정 저장 직후 등)
+      case 'SYNC_EVAL_ALARMS': {
+        const memberId = await ensureMemberId();
+        const result = await syncEvalAlarms(memberId);
+        return { success: result.ok !== false, result };
+      }
+
       case 'CANCEL_ALARM': {
         // 문제2 수정: memberId로 이름을 재계산하지 않고 "목록에 저장된 실제 이름"으로 해제.
         // (memberId가 'unknown'이거나 계정 전환 시 실제 이름과 불일치해 해제가 무음 실패하던 결함)
@@ -417,6 +432,10 @@ import {
         const next = Object.assign({}, current, message.settings);
         await setPrefs(STORE_KEYS.SETTINGS, next);
         await syncKeepAliveWork(next); // N7: 설정 변경 즉시 백그라운드 작업 반영
+        // E2: 평가 연동 토글/기본 시점(분) 변경을 자동 알람에 즉시 반영 (lead 변경 시 재예약)
+        ensureMemberId()
+          .then(id => (id ? syncEvalAlarms(id) : null))
+          .catch(() => {});
         return { success: true };
       }
 
@@ -439,6 +458,9 @@ import {
         await Plugins.Preferences.remove({ key: STORE_KEYS.ALARMS });
         await clearAttendanceCaches();
         await clearGateSnapshots(); // G1: 스냅샷도 계정과 함께 폐기
+        // E2: 평가 동기화 상태/instCd 캐시도 폐기
+        try { await Plugins.Preferences.remove({ key: 'eval_sync_state' }); } catch (e) { /* 무시 */ }
+        try { await Plugins.Preferences.remove({ key: 'eval_inst_cd' }); } catch (e) { /* 무시 */ }
         // Q4: keep-alive 설정도 해제 — 재부팅 시 BootReceiver가 유령 핑을 다시 예약하지 않도록
         try {
           const settings = await getSettings();
@@ -602,6 +624,9 @@ import {
     try { await Plugins.Preferences.remove({ key: STORE_KEYS.MEMBER_ID }); } catch (e) { /* 무시 */ }
     await clearAttendanceCaches();
     await clearGateSnapshots(); // G1: 계정 바뀌면 이전 계정 스냅샷도 폐기
+    // E2: 평가 동기화 상태/instCd 캐시도 계정과 함께 폐기
+    try { await Plugins.Preferences.remove({ key: 'eval_sync_state' }); } catch (e) { /* 무시 */ }
+    try { await Plugins.Preferences.remove({ key: 'eval_inst_cd' }); } catch (e) { /* 무시 */ }
   }
 
   // ===== G1: 입·퇴실 처리 감지 =====
@@ -644,6 +669,179 @@ import {
       await setPrefs(key, { dates: nextDates, updatedAt: Date.now() });
     } catch (e) {
       console.warn('[Adapter] 입·퇴실 감지 처리 실패:', e); // 감지 실패가 본래 조회를 깨면 안 됨
+    }
+  }
+
+  // ===== E2: 평가 일정 자동 연동 =====
+  // API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링 + body "null")
+  // 저장 상태키 eval_sync_state는 네이티브 EvalSync.java와 공유 — 어느 쪽이 동기화하든 중복 없음
+  const EVAL_STATE_KEY = 'eval_sync_state';
+  const EVAL_INST_CD_KEY = 'eval_inst_cd';
+  const EVAL_SCHEDULE_API = 'https://codyssey.kr';
+
+  function evalYmdDot(d) {
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  }
+
+  function formatEvalWhenKo(ms) {
+    const d = new Date(ms);
+    const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
+    return `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+
+  async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
+    if (!Plugins.NetworkPlugin) throw new Error('NETWORK_PLUGIN_UNAVAILABLE');
+    const url = `${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?`
+      + `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
+      + `&bgngYmd=${evalYmdDot(fromDate)}&endYmd=${evalYmdDot(toDate)}&scheduleType=request`;
+    const res = await Plugins.NetworkPlugin.fetch({ url, method: 'POST' }); // 명세: 본문 무시(전송 안 함)
+    if (isAuthStatus(res.status)) {
+      await clearSessionIdentity();
+      throw new Error('NOT_LOGGED_IN');
+    }
+    if (res.status !== 200) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status || 0}`);
+    const json = res.json || safeJson(res.data);
+    if (!json) throw new Error('EVAL_SCHEDULE_PARSE_ERROR');
+    return json;
+  }
+
+  // instCd 해결: 설정 수동값 → 저장 캐시 → member info 재귀 탐색(발견 시 캐시) 순
+  async function resolveInstCd() {
+    const settings = await getSettings();
+    if (settings.evalInstCd) return settings.evalInstCd;
+    const cached = await getPrefs(EVAL_INST_CD_KEY);
+    if (cached) return String(cached);
+    try {
+      if (!Plugins.NetworkPlugin) return null;
+      const res = await Plugins.NetworkPlugin.getMemberInfo({});
+      const found = findInstCd(res.json || safeJson(res.data));
+      if (found) {
+        await setPrefs(EVAL_INST_CD_KEY, found);
+        return found;
+      }
+    } catch (e) { /* 아래 null 반환 */ }
+    return null;
+  }
+
+  // 자동 평가 알람 1건 취소 (네이티브 + 목록)
+  async function cancelAutoEvalAlarm(name) {
+    if (Plugins.AlarmPlugin) {
+      try { await Plugins.AlarmPlugin.cancel({ id: name }); } catch (e) { /* 무시 */ }
+    }
+    const kept = (await getStoredAlarms()).filter(a => !a || a.name !== name);
+    await setPrefs(STORE_KEYS.ALARMS, kept);
+  }
+
+  // 평가 일정 → N분 전 알람 자동 등록/변경/해제 (신규·취소 시 알림)
+  // leadMinutes 변경도 changed로 감지해 재예약 (설정 기본 시점 변경이 자동 알람에 반영됨)
+  // ※ 동시 호출(GET_STATUS+설정 저장 등)의 상태-읽기 경합(중복 등록/알림) 방지용 in-flight 공유
+  let evalSyncInFlight = null;
+  function syncEvalAlarms(memberId) {
+    if (evalSyncInFlight) return evalSyncInFlight;
+    evalSyncInFlight = doSyncEvalAlarms(memberId)
+      .finally(() => { evalSyncInFlight = null; });
+    return evalSyncInFlight;
+  }
+
+  async function doSyncEvalAlarms(memberId) {
+    try {
+      if (!memberId || !Plugins.AlarmPlugin) return { ok: false, reason: 'unavailable' };
+      const settings = await getSettings();
+      if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
+      const instCd = await resolveInstCd();
+      if (!instCd) return { ok: false, reason: 'no_instcd' };
+
+      const state = await getPrefs(EVAL_STATE_KEY);
+      const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
+        ? state.items : [];
+
+      const from = new Date(); from.setDate(from.getDate() - 1);
+      const to = new Date(); to.setDate(to.getDate() + 30);
+      const raw = await fetchEvalSchedule(memberId, instCd, from, to);
+      const reqList = (raw && raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];
+      const parsed = parseScheduleRows(reqList);
+      const lead = settings.evalLeadMinutes ?? 30;
+      const diff = diffEvalItems(prevItems, parsed.items, lead);
+
+      const now = Date.now();
+      const nextItems = [];
+      let notified = 0;
+
+      for (const it of parsed.items) {
+        const action = diff.added.some(a => a.key === it.key) ? 'add'
+          : diff.changed.some(c => c.key === it.key) ? 'change' : 'keep';
+        const existing = prevItems.find(p => p.key === it.key);
+        const name = (existing && existing.name) || buildEvalAlarmName(EVAL_AUTO_ID_PREFIX + it.key);
+
+        // 지나간 평가: 예약·목록 정리 후 상태에서도 제외
+        if (it.whenMs <= now) {
+          if (existing) await cancelAutoEvalAlarm(name);
+          continue;
+        }
+
+        if (action !== 'keep') {
+          await cancelAutoEvalAlarm(name); // 변경 시 이전 예약 정리 후 재예약
+          // lead가 이미 지났으면 즉시 알림(5초 후)
+          const triggerAt = Math.max(it.whenMs - lead * 60000, now + 5000);
+          await Plugins.AlarmPlugin.schedule({
+            triggerTimeMillis: triggerAt,
+            label: `📋 평가 ${lead}분 전: ${it.title}`,
+            id: name
+          });
+          const alarms = await getStoredAlarms();
+          const kept = alarms.filter(a => a && a.name !== name);
+          kept.push({
+            name,
+            time: triggerAt,
+            label: `📋 ${it.title}`,
+            endMinutes: null,
+            type: 'eval',
+            evalTitle: it.title,
+            evalWhen: it.whenMs,
+            leadMinutes: lead,
+            auto: true,
+            createdAt: now
+          });
+          await setPrefs(STORE_KEYS.ALARMS, kept);
+          if (settings.notificationsEnabled && notified < 3) {
+            notified++;
+            await scheduleLocalNotification(
+              '📋 평가 일정 감지',
+              `${formatEvalWhenKo(it.whenMs)} — ${it.title} (${lead}분 전 알람 등록)`,
+              `evalnew_${it.key}`
+            );
+          }
+        } else if (existing) {
+          nextItems.push(existing);
+          continue;
+        }
+        nextItems.push({ ...it, name, leadMinutes: lead, auto: true });
+      }
+
+      for (const rem of diff.removed) {
+        if (rem.name) await cancelAutoEvalAlarm(rem.name);
+        if (settings.notificationsEnabled && notified < 3) {
+          notified++;
+          await scheduleLocalNotification(
+            '📋 평가 일정 변경',
+            `${rem.title || '평가'} 일정이 취소/완료되어 알람을 해제했습니다.`,
+            `evaldel_${rem.key}_${now}`
+          );
+        }
+      }
+
+      await setPrefs(EVAL_STATE_KEY, {
+        memberId: String(memberId),
+        instCd,
+        items: nextItems,
+        fetchedAt: now,
+        skipped: parsed.skipped,
+        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단
+      });
+      return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
+    } catch (e) {
+      console.warn('[Adapter] 평가 일정 동기화 실패:', e.message);
+      return { ok: false, reason: e.message };
     }
   }
 

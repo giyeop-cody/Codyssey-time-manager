@@ -77,6 +77,11 @@ public class CookieManager {
     // 세션 쿠키를 포함한 GET 요청 (응답 Set-Cookie는 WebView 쿠키 저장소에 반영)
     // pingKeepAlive(N7)와 동일 패턴. 실패 시 status=-1 반환, 예외는 밖으로 던지지 않음.
     public static HttpResult httpGet(Context context, String urlString) {
+        return httpRequest(context, urlString, "GET", null);
+    }
+
+    // 세션 쿠키를 포함한 요청 (E2: 평가 일정 API는 POST+본문 "null")
+    public static HttpResult httpRequest(Context context, String urlString, String method, String bodyString) {
         HttpResult result = new HttpResult();
         java.net.HttpURLConnection conn = null;
         try {
@@ -85,13 +90,22 @@ public class CookieManager {
             String cookies = getCookies(context, origin);
 
             conn = (java.net.HttpURLConnection) url.openConnection();
-            conn.setRequestMethod("GET");
+            conn.setRequestMethod(method);
             conn.setConnectTimeout(10000);
             conn.setReadTimeout(15000);
             conn.setInstanceFollowRedirects(false); // 302(세션 만료)를 status로 확인하기 위함
             conn.setRequestProperty("Accept", "application/json");
+            conn.setRequestProperty("Content-Type", "application/json");
             if (cookies != null && !cookies.isEmpty()) {
                 conn.setRequestProperty("Cookie", cookies);
+            }
+
+            if (bodyString != null && !"GET".equals(method)) {
+                conn.setDoOutput(true);
+                try (java.io.DataOutputStream os = new java.io.DataOutputStream(conn.getOutputStream())) {
+                    os.write(bodyString.getBytes("UTF-8"));
+                    os.flush();
+                }
             }
 
             result.status = conn.getResponseCode();

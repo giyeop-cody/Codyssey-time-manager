@@ -400,3 +400,186 @@ export function validateEvalAlarm(whenMs, leadMinutes, nowMs = Date.now()) {
   if (whenMs - lead * 60000 <= nowMs) return 'past';
   return null;
 }
+
+// ============================================================
+// E2: 평가 일정 자동 연동 (schedule/scheduleAllList 응답 해석)
+// - 사용자 제공 명세: reqDetail "R||"=피평가자 / "A||"=평가자,
+//   scdlReqUsr=피평가자 이름, fixedCd 00004=평가거절 / 00005=요청취소 / 00006=완료
+// - 응답 행의 날짜·시각·제목·고유키 필드명은 샘플이 없어 폴곤 체인으로 추정
+//   (실패 시 해당 행은 건수만 세고 건갈 — sampleKeys로 응답 키 목록을 남겨 다음 보정에 사용)
+// ============================================================
+
+export const EVAL_AUTO_ID_PREFIX = 'auto_'; // codyssey_eval_auto_{key} — 수동 등록(e...)과 구분
+export const EVAL_CANCEL_FIXED_CODES = ['00004', '00005', '00006']; // 거절/요청취소/완료 → 알람 대상 아님
+
+// 멤버 정보 응답 어디에 있든 instCd를 재귀 탐색 (키 이름만 확실하다는 전제)
+export function findInstCd(root) {
+  if (!root || typeof root !== 'object') return null;
+  const stack = [root];
+  const seen = new Set();
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
+    seen.add(cur);
+    for (const [k, v] of Object.entries(cur)) {
+      if (/^inst(cd|code)?$/i.test(k) && typeof v === 'string' && v.trim()) return v.trim();
+    }
+    for (const v of Object.values(cur)) {
+      if (v && typeof v === 'object') stack.push(v);
+    }
+  }
+  return null;
+}
+
+function pickFirst(row, names) {
+  for (const n of names) {
+    const v = row[n];
+    if (v !== null && v !== undefined && String(v).trim() !== '') return String(v).trim();
+  }
+  return null;
+}
+
+// 'YYYY.MM.DD' / 'YYYY-MM-DD' / 'YYYYMMDD' → [y, m, d]
+function ymdFromString(s) {
+  if (!s) return null;
+  const m = String(s).match(/(20\d\d)[.\-/]?(0[1-9]|1[0-2])[.\-/]?(0[1-9]|[12]\d|3[01])/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+}
+
+// 'HH:mm' / 'HHmm' → [h, m] (날짜가 붙은 문자열에서는 뒤쪽 시각만 추출)
+function hmFromString(s) {
+  if (!s) return null;
+  const str = String(s).trim();
+  const colonParts = str.match(/(\d{1,2}):(\d{2})/g);
+  if (colonParts && colonParts.length) {
+    const last = colonParts[colonParts.length - 1];
+    const [h, m] = last.split(':').map(Number);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return [h, m];
+  }
+  const hm = str.match(/(\d{2})(\d{2})/);
+  if (hm) {
+    const h = Number(hm[1]);
+    const m = Number(hm[2]);
+    if (h >= 0 && h <= 23 && m >= 0 && m <= 59) return [h, m];
+  }
+  return null;
+}
+
+const EVAL_DT_FULL_KEYS = [
+  'scdlBgngDt', 'evlBgngDt', 'scdlDttm', 'bgngDttm', 'evlDt', 'scdlStartDt', 'evlStartDt',
+  'startDt', 'bgngDt', 'scdlBeginDt', 'evlBgngDttm'
+];
+const EVAL_DT_DATE_KEYS = [
+  'scdlDe', 'scdlDt', 'scdlYmd', 'evlDe', 'bgngYmd', 'evlYmd', 'scdlDay', 'evlDate', 'scdlDate'
+];
+const EVAL_DT_TIME_KEYS = [
+  'scdlTime', 'scdlHm', 'bgngHm', 'bgngTime', 'evlBgngHm', 'startTime', 'startHm', 'scdlStartHm'
+];
+
+// 평가 행에서 시작 시각(epoch ms) 추출 — 전체 일시 키 → 날짜+시각 키 조합 → 전 필드 스캔 순
+export function extractEvalDateTimeMs(row) {
+  if (!row || typeof row !== 'object') return null;
+
+  // 1. 날짜+시각이 한 필드에 있는 형태
+  for (const k of EVAL_DT_FULL_KEYS) {
+    const v = pickFirst(row, [k]);
+    if (!v) continue;
+    const ymd = ymdFromString(v);
+    const hm = hmFromString(v);
+    if (ymd && hm) {
+      return new Date(ymd[0], ymd[1] - 1, ymd[2], hm[0], hm[1], 0).getTime();
+    }
+  }
+
+  // 2. 날짜 키 + 시각 키 조합
+  let ymdV = null;
+  for (const k of EVAL_DT_DATE_KEYS) {
+    ymdV = ymdFromString(pickFirst(row, [k]));
+    if (ymdV) break;
+  }
+  let hmV = null;
+  for (const k of EVAL_DT_TIME_KEYS) {
+    hmV = hmFromString(pickFirst(row, [k]));
+    if (hmV) break;
+  }
+  if (ymdV && hmV) {
+    return new Date(ymdV[0], ymdV[1] - 1, ymdV[2], hmV[0], hmV[1], 0).getTime();
+  }
+
+  // 3. 전 필드 스캔 (폴곤) — 완전한 일시 패턴을 가진 첫 값
+  for (const v of Object.values(row)) {
+    if (typeof v !== 'string' && typeof v !== 'number') continue;
+    const s = String(v);
+    if (!/20\d\d[.\-/]?\d{2}[.\-/]?\d{2}/.test(s)) continue;
+    const ymd = ymdFromString(s);
+    if (!ymd) continue;
+    const hm = hmFromString(s) || [9, 0]; // 시각 없으면 오전 9시로 간주 (알림은 설정 lead로 조정됨)
+    return new Date(ymd[0], ymd[1] - 1, ymd[2], hm[0], hm[1], 0).getTime();
+  }
+  return null;
+}
+
+// reqList[] → 정규화된 평가 일정 [{key, title, role, whenMs}] (+ 진단: skipped, sampleKeys)
+export function parseScheduleRows(rawList) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const items = [];
+  let skipped = 0;
+  let sampleKeys = null;
+
+  for (let i = 0; i < list.length; i++) {
+    const row = list[i];
+    if (!row || typeof row !== 'object') { skipped++; continue; }
+    if (i === 0 && !sampleKeys) sampleKeys = Object.keys(row);
+
+    const fixed = pickFirst(row, ['fixedCd', 'fixedCode', 'sttsCd', 'stusCd']);
+    if (fixed && EVAL_CANCEL_FIXED_CODES.includes(fixed)) continue; // 거절/취소/완료 제외
+
+    const whenMs = extractEvalDateTimeMs(row);
+    if (!whenMs || isNaN(whenMs)) { skipped++; continue; }
+
+    const detail = pickFirst(row, ['reqDetail', 'reqDtl', 'detailCd']) || '';
+    const role = detail.startsWith('R||') ? 'R' : detail.startsWith('A||') ? 'A' : '';
+    const course = pickFirst(row, ['lcorsNm', 'mtlEvlNm', 'evlNm', 'courseNm', 'projectNm', 'subjectNm', 'evlTtl', 'ttmsNm']) || '평가';
+    const reqUsr = pickFirst(row, ['scdlReqUsr', 'reqUsrNm', 'reqNm']) || '';
+    const roleLabel = role === 'R' ? '피평가자' : role === 'A' ? '평가자' : '평가';
+    const title = reqUsr ? `${course} (${roleLabel}: ${reqUsr})` : `${course} (${roleLabel})`;
+
+    const idParts = ['scdlNo', 'evlScdlNo', 'evlNo', 'evlDegr', 'reqNo', 'scdlSn', 'evalReqNo', 'evlReqNo']
+      .map(k => pickFirst(row, [k]))
+      .filter(Boolean);
+    const key = (idParts.length ? idParts.join('_') : `${whenMs}_${detail}_${reqUsr}`)
+      .replace(/[^A-Za-z0-9_.-]/g, '_');
+
+    items.push({ key, title, role, whenMs });
+  }
+
+  // key 중복 제거(앞쪽 유지) + 시각순 정렬
+  const seen = new Map();
+  for (const it of items) {
+    if (!seen.has(it.key)) seen.set(it.key, it);
+  }
+  return { items: [...seen.values()].sort((a, b) => a.whenMs - b.whenMs), skipped, sampleKeys };
+}
+
+// 이전 동기화 항목과 새 항목 비교 — added/removed/changed (시각·lead·제목 변경 감지)
+export function diffEvalItems(prevItems, nextItems, leadMinutes) {
+  const prevMap = new Map((Array.isArray(prevItems) ? prevItems : []).map(i => [i && i.key, i]));
+  const nextMap = new Map((Array.isArray(nextItems) ? nextItems : []).map(i => [i && i.key, i]));
+  const added = [];
+  const removed = [];
+  const changed = [];
+  for (const [k, it] of nextMap) {
+    if (!k) continue;
+    const p = prevMap.get(k);
+    if (!p) {
+      added.push(it);
+    } else if (p.whenMs !== it.whenMs || p.leadMinutes !== leadMinutes || p.title !== it.title) {
+      changed.push({ ...it, name: p.name });
+    }
+  }
+  for (const [k, p] of prevMap) {
+    if (k && !nextMap.has(k)) removed.push(p);
+  }
+  return { added, removed, changed };
+}

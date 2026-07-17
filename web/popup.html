@@ -239,7 +239,7 @@
       <span style="font-size:13px;color:#888;white-space:nowrap;">분 전에 알림</span>
       <button class="btn btn-primary" id="btn-add-eval">➕ 등록</button>
     </div>
-    <div class="alarms-empty" id="eval-hint">등록된 평가는 아래 활성 알람 목록에 표시되며, 평가 시간 N분 전에 알림이 울립니다.</div>
+    <div class="alarms-empty" id="eval-hint">직접 등록한 평가 + 코디세이 평가 일정이 활성 알람 목록에 표시되며, 평가 시간 N분 전에 알림이 울립니다. (자동 연동은 설정에서 끌 수 있습니다)</div>
   </div>
 
   <!-- 활성 알람 목록 -->
@@ -318,6 +318,20 @@
           <div class="setting-desc">평가 등록 시 자동 입력되는 사전 알림 (분)</div>
         </div>
         <input type="number" id="setting-eval-lead" class="input" style="width:80px;text-align:center;" min="0" max="1440" step="5" value="30"> 분
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">평가 일정 자동 연동</div>
+          <div class="setting-desc">코디세이 평가 일정을 가져와 자동 알람 등록</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-eval-autosync" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row" id="setting-eval-instcd-row" style="display:none;">
+        <div>
+          <div class="setting-label">기관 코드 (instCd)</div>
+          <div class="setting-desc">자동 감지 실패 시에만 입력</div>
+        </div>
+        <input type="text" id="setting-eval-instcd" class="input" style="width:110px;text-align:center;" placeholder="자동 감지">
       </div>
     </div>
 

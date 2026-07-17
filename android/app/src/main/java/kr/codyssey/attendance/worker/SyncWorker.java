@@ -8,6 +8,7 @@ import androidx.work.WorkerParameters;
 
 import kr.codyssey.attendance.MainActivity;
 import kr.codyssey.attendance.util.CookieManager;
+import kr.codyssey.attendance.util.EvalSync;
 import kr.codyssey.attendance.util.GateCheck;
 
 public class SyncWorker extends Worker {
@@ -29,6 +30,10 @@ public class SyncWorker extends Worker {
             // G1: 입·퇴실 처리 감지 — 앱이 닫혀 있어도 주기적으로 출입 변화를 확인해 알림.
             // 남게 호출되지 않도록 GateCheck 남부에서 모든 예외를 흡수함 (실패 시 Result.retry 폭주 방지)
             GateCheck.run(getApplicationContext());
+
+            // E2: 평가 일정 자동 연동 — 6시간 스로틀 내장이라 매 주기 호출필요 없음
+            // (JS와 eval_sync_state를 공유해 중복 등록/알림 없음)
+            EvalSync.run(getApplicationContext());
 
             // K13: 아무 수신자도 없던 임시 브로드캐스트 대신 JS 이벤트로 전달 —
             // 앱이 살아있으면 화면이 스스로 최신 데이터로 갱신됨 (popup.js가 SYNC_COMPLETE 처리)

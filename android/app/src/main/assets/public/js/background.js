@@ -22,7 +22,11 @@ import {
   newEvalId,
   buildEvalAlarmName,
   parseEvalAlarmName,
-  validateEvalAlarm
+  validateEvalAlarm,
+  findInstCd,
+  parseScheduleRows,
+  diffEvalItems,
+  EVAL_AUTO_ID_PREFIX
 } from './shared-attendance.js';
 
 const CONFIG = {
@@ -47,7 +51,9 @@ const DEFAULT_SETTINGS = {
   refreshInterval: 30, // 분
   keepAliveEnabled: false, // 세션 무한 연장 방지 — 사용자가 명시적으로 켜는 opt-in
   gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
-  evalLeadMinutes: 30 // E1: 평가 알람 기본 사전 알림 (분)
+  evalLeadMinutes: 30, // E1: 평가 알람 기본 사전 알림 (분)
+  evalAutoSyncEnabled: true, // E2: 코디세이 평가 일정 자동 연동 (E1 요청 사항)
+  evalInstCd: '' // E2: instCd 자동 추출 실패 시 사용자 수동 입력
 };
 
 // ===== 스토리지 =====
@@ -218,6 +224,10 @@ async function clearSessionIdentity() {
   await setStorage({ [CONFIG.STORAGE_KEYS.MEMBER_ID]: null });
   await clearAttendanceCaches();
   await clearGateSnapshots(); // G1: 계정 바뀌면 이전 계정 스냅샷도 폐기
+  // E2: 평가 동기화 상태/instCd 캐시도 계정과 함께 폐기 (등록된 자동 알람은 목록과 함께 정리됨)
+  try {
+    await chrome.storage.local.remove(['eval_sync_state', 'eval_inst_cd']);
+  } catch (e) { /* 무시 */ }
 }
 
 // ===== G1: 입·퇴실 처리 감지 =====
@@ -261,6 +271,181 @@ async function processGateEvents(memberId, rawData) {
     await setStorage({ [key]: { dates: nextDates, updatedAt: Date.now() } });
   } catch (e) {
     console.warn('입·퇴실 감지 처리 실패:', e); // 감지 실패가 본래 조회를 깨면 안 됨
+  }
+}
+
+// ===== E2: 평가 일정 자동 연동 =====
+// API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링 + body "null")
+// scheduleType=request → result.reqList[] (평가 일정 행)
+// 네이티브 EvalSync.java와 같은 저장 상태키(eval_sync_state)를 공유해 중복 없이 동기화
+const EVAL_STATE_KEY = 'eval_sync_state';
+const EVAL_INST_CD_KEY = 'eval_inst_cd';
+const EVAL_SCHEDULE_API = 'https://codyssey.kr';
+
+function ymdDot(d) {
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// '7월 20일 (월) 14:00' 형태 (알림 본문용)
+function formatEvalWhenKo(ms) {
+  const d = new Date(ms);
+  const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
+  return `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
+  const qs = `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
+    + `&bgngYmd=${ymdDot(fromDate)}&endYmd=${ymdDot(toDate)}&scheduleType=request`;
+  const res = await fetchWithAuth(`${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?${qs}`, {
+    method: 'POST',
+    body: 'null' // 사용자 제공 명세: 본문은 리터럴 "null"
+  });
+  if (!res.ok) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status}`);
+  return await readJsonResponse(res, 'EVAL_SCHEDULE');
+}
+
+// instCd 해결: 설정 수동값 → 저장 캐시 → member info 재귀 탐색(발견 시 캐시) 순
+async function resolveInstCd() {
+  const settings = await getSettings();
+  if (settings.evalInstCd) return settings.evalInstCd;
+  const cached = await getStorage([EVAL_INST_CD_KEY]);
+  if (cached[EVAL_INST_CD_KEY]) return cached[EVAL_INST_CD_KEY];
+  try {
+    const info = await fetchMemberInfo();
+    const found = findInstCd(info);
+    if (found) {
+      await setStorage({ [EVAL_INST_CD_KEY]: found });
+      return found;
+    }
+  } catch (e) { /* 아래 null 반환 */ }
+  return null;
+}
+
+// 알람 목록(활성 알람 표시/부팅 복원/일괄 정리 재사용)에 평가 항목 upsert
+async function upsertEvalAlarmEntry(memberId, entry) {
+  const key = CONFIG.STORAGE_KEYS.ALARMS + memberId;
+  const stored = await getStorage([key]);
+  const list = (stored[key] || []).filter(a => a && a.name !== entry.name);
+  list.push({
+    name: entry.name,
+    time: entry.time,
+    label: entry.label,
+    endMinutes: null,
+    type: 'eval',
+    evalTitle: entry.evalTitle,
+    evalWhen: entry.evalWhen,
+    leadMinutes: entry.leadMinutes,
+    auto: entry.auto === true,
+    createdAt: entry.createdAt || Date.now()
+  });
+  await setStorage({ [key]: list });
+}
+
+// 평가 일정 → N분 전 알람 자동 등록/변경/해제 (신규·취소 시 알림)
+// - E1 수동 알람(codyssey_eval_e...)과 네임스페이스 분리 (codyssey_eval_auto_...)
+// - leadMinutes 변경도 changed로 감지해 재예약 (설정 변경이 자동 알람에 반영됨)
+// ※ 동시 호출(주기+GET_STATUS+설정 저장)으로 상태를 각각 읽어 "신규"를 중복 등록/알림하는
+//   경합을 막기 위해 in-flight 호출을 공유한다.
+let evalSyncInFlight = null;
+function syncEvalAlarms(memberId) {
+  if (evalSyncInFlight) return evalSyncInFlight;
+  evalSyncInFlight = doSyncEvalAlarms(memberId)
+    .finally(() => { evalSyncInFlight = null; });
+  return evalSyncInFlight;
+}
+
+async function doSyncEvalAlarms(memberId) {
+  try {
+    if (!memberId) return { ok: false, reason: 'no_member' };
+    const settings = await getSettings();
+    if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
+    const instCd = await resolveInstCd();
+    if (!instCd) return { ok: false, reason: 'no_instcd' };
+
+    const stateRaw = await getStorage([EVAL_STATE_KEY]);
+    const state = stateRaw[EVAL_STATE_KEY] || null;
+    const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
+      ? state.items : [];
+
+    const from = new Date(); from.setDate(from.getDate() - 1);
+    const to = new Date(); to.setDate(to.getDate() + 30);
+    const raw = await fetchEvalSchedule(memberId, instCd, from, to);
+    const reqList = (raw && raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];
+    const parsed = parseScheduleRows(reqList);
+    const lead = settings.evalLeadMinutes ?? 30;
+    const diff = diffEvalItems(prevItems, parsed.items, lead);
+
+    const now = Date.now();
+    const nextItems = [];
+    let notified = 0;
+
+    for (const it of parsed.items) {
+      const action = diff.added.some(a => a.key === it.key) ? 'add'
+        : diff.changed.some(c => c.key === it.key) ? 'change' : 'keep';
+      const existing = prevItems.find(p => p.key === it.key);
+      const name = (existing && existing.name) || buildEvalAlarmName(EVAL_AUTO_ID_PREFIX + it.key);
+
+      // 지나간 평가: 예약·목록 모두 정리하고 상태에서도 제외
+      if (it.whenMs <= now) {
+        if (existing) await cancelAlarmByName(name);
+        continue;
+      }
+
+      if (action !== 'keep') {
+        await cancelAlarmByName(name); // 변경 시 이전 예약 정리 후 재예약
+        // lead가 이미 지났으면 즉시 알림(5초 후) — 방금 잡힌 곧 시작할 평가도 알림 누락 없이
+        const triggerAt = Math.max(it.whenMs - lead * 60000, now + 5000);
+        await chrome.alarms.create(name, { when: triggerAt });
+        await upsertEvalAlarmEntry(memberId, {
+          name,
+          time: triggerAt,
+          label: `📋 ${it.title}`,
+          evalTitle: it.title,
+          evalWhen: it.whenMs,
+          leadMinutes: lead,
+          auto: true
+        });
+        if (settings.notificationsEnabled && notified < 3) {
+          notified++;
+          await showNotification(
+            '📋 평가 일정 감지',
+            `${formatEvalWhenKo(it.whenMs)} — ${it.title} (${lead}분 전 알람 등록)`,
+            memberId
+          );
+        }
+      } else if (existing) {
+        nextItems.push(existing);
+        continue;
+      }
+      nextItems.push({ ...it, name, leadMinutes: lead, auto: true });
+    }
+
+    for (const rem of diff.removed) {
+      if (rem.name) await cancelAlarmByName(rem.name);
+      if (settings.notificationsEnabled && notified < 3) {
+        notified++;
+        await showNotification(
+          '📋 평가 일정 변경',
+          `${rem.title || '평가'} 일정이 취소/완료되어 알람을 해제했습니다.`,
+          memberId
+        );
+      }
+    }
+
+    await setStorage({
+      [EVAL_STATE_KEY]: {
+        memberId: String(memberId),
+        instCd,
+        items: nextItems,
+        fetchedAt: now,
+        skipped: parsed.skipped,
+        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단 (응답 키 목록)
+      }
+    });
+    return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
+  } catch (e) {
+    console.warn('평가 일정 동기화 실패:', e.message);
+    return { ok: false, reason: e.message };
   }
 }
 
@@ -479,6 +664,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
           processGateEvents(memberId, data).catch(() => {});
+          // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
+          syncEvalAlarms(memberId).catch(() => {});
 
           // 월 경계 입실(R2/L4): 이달 데이터에서 입실 중이 아니면 전월 말 데이터 확인
           // (월초 3일 제한 제거 — 월 어느 날짜든 전월 말 API 1회로 안전하게 판정)
@@ -617,6 +804,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           break;
         }
 
+        // --- E2: 평가 일정 수동 1회 동기화 (설정 저장 직후 등) ---
+        case 'SYNC_EVAL_ALARMS': {
+          const memberId = await getMemberId();
+          const result = await syncEvalAlarms(memberId);
+          sendResponse({ success: result.ok !== false, result });
+          break;
+        }
+
         // --- 알람 해제 ---
         case 'CANCEL_ALARM': {
           // 문제2 수정: memberId로 이름을 재계산하지 않고 "목록에 저장된 실제 이름"으로 해제.
@@ -669,6 +864,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'UPDATE_SETTINGS': {
           await saveSettings(message.settings);
           await syncKeepAliveAlarm(); // J2: keep-alive 토글을 알람에 즉시 반영
+          // E2: 평가 연동 토글/기본 시점(분) 변경을 자동 알람에 즉시 반영 (lead 변경 시 재예약)
+          getMemberId()
+            .then(id => (id ? syncEvalAlarms(id) : null))
+            .catch(() => {});
           sendResponse({ success: true });
           break;
         }
@@ -822,6 +1021,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
         const now = new Date();
         const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, true);
         await processGateEvents(memberId, data);
+        await syncEvalAlarms(memberId); // E2: 평가 일정도 주기 동기화
       } catch (e) {
         console.warn('주기 동기화 실패:', e.message);
       }

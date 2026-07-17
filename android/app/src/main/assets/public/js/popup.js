@@ -136,6 +136,9 @@ const els = {
   settingKeepAlive: document.getElementById('setting-keep-alive'),
   settingGateNotify: document.getElementById('setting-gate-notify'),
   settingEvalLead: document.getElementById('setting-eval-lead'),
+  settingEvalAutosync: document.getElementById('setting-eval-autosync'),
+  settingEvalInstcdRow: document.getElementById('setting-eval-instcd-row'),
+  settingEvalInstcd: document.getElementById('setting-eval-instcd'),
   btnSettingsSave: document.getElementById('btn-settings-save'),
   btnSettingsCancel: document.getElementById('btn-settings-cancel'),
 
@@ -1206,6 +1209,9 @@ function openSettings() {
   els.settingKeepAlive.checked = currentSettings.keepAliveEnabled !== false;
   els.settingGateNotify.checked = currentSettings.gateNotifyEnabled !== false; // G1
   els.settingEvalLead.value = currentSettings.evalLeadMinutes ?? 30; // E1
+  els.settingEvalAutosync.checked = currentSettings.evalAutoSyncEnabled !== false; // E2
+  els.settingEvalInstcd.value = currentSettings.evalInstCd || ''; // E2 수동 instCd
+  els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
   
   els.settingsModal.classList.add('show');
 }
@@ -1224,7 +1230,9 @@ async function saveSettings() {
     refreshInterval: parseInt(els.settingRefreshInterval.value) || 30,
     keepAliveEnabled: els.settingKeepAlive.checked,
     gateNotifyEnabled: els.settingGateNotify.checked, // G1
-    evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)) // E1
+    evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
+    evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
+    evalInstCd: els.settingEvalInstcd.value.trim() // E2 수동 instCd (빈값=자동 감지)
   };
 
   try {
@@ -1486,6 +1494,10 @@ function setupEventListeners() {
   els.btnSettingsCancel.addEventListener('click', closeSettings);
   els.settingsModal.addEventListener('click', (e) => {
     if (e.target === els.settingsModal) closeSettings();
+  });
+  // E2: 자동 연동 토글 시 수동 instCd 입력란 노출 전환
+  els.settingEvalAutosync.addEventListener('change', () => {
+    els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
   });
 
   // 백그라운드/네이티브 메시지 리스너
