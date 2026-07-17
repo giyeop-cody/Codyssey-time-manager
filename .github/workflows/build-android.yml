@@ -81,6 +81,19 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
 
+      - name: Package Chrome extension (web/)
+        run: |
+          mkdir -p dist
+          (cd web && zip -rq ../dist/codyssey-extension.zip . -x '*.DS_Store')
+          unzip -l dist/codyssey-extension.zip | head -5
+
+      - name: Upload Chrome extension ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: codyssey-extension
+          path: dist/codyssey-extension.zip
+          retention-days: 30
+
       - name: Decode keystore (on tags)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -115,5 +128,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/bundle/release/app-release.aab
+          # 세 파일을 각각 배포: APK(디버그, 설치용) / AAB(릴리스) / 익스텐션 ZIP
+          files: |
+            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/bundle/release/app-release.aab
+            dist/codyssey-extension.zip
           generate_release_notes: true
