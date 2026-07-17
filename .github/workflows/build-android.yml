@@ -3,6 +3,7 @@ name: Build Android APK
 on:
   push:
     branches: [main, master]
+    tags: ['v*']  # N2: 태그 푸시 시 릴리스 빌드+GitHub Release 자동 생성
   pull_request:
     branches: [main, master]
   workflow_dispatch:  # 수동 실행 가능
