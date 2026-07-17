@@ -111,11 +111,9 @@ const els = {
   alarmsList: document.getElementById('alarms-list'),
   alarmsEmpty: document.getElementById('alarms-empty'),
 
-  // 평가 알람 등록 (E1)
-  evalTitleInput: document.getElementById('eval-title-input'),
-  evalDatetimeInput: document.getElementById('eval-datetime-input'),
-  evalLeadInput: document.getElementById('eval-lead-input'),
-  btnAddEval: document.getElementById('btn-add-eval'),
+  // 평가 알람 (E2: 서버 목록 자동 연동 — S3: 수동 등록 UI 제거)
+  evalSyncStatus: document.getElementById('eval-sync-status'),
+  btnSyncEval: document.getElementById('btn-sync-eval'),
 
   // 권한 배너
   permissionBanner: document.getElementById('permission-banner'),
@@ -160,7 +158,7 @@ let keepAliveEnabled = true;
 let exitAlarmEndMinutes = null;
 let goalAlarmEndMinutes = null;
 let currentViewDate = new Date(); // 캘린더용
-let evalLeadInitialized = false; // E1: 평가 사전 알림 기본값 1회 주입용
+let currentEvalSync = null; // S4: 평가 연동 상태 (GET_STATUS 응답의 evalSync)
 
 // ===== 크롬 런타임 메시지 전송 헬퍼 =====
 function sendMessage(type, data = {}) {
@@ -225,7 +223,8 @@ async function loadDashboard(forceRefresh = false) {
     currentMemberId = response.memberId;
     currentParsed = response.parsed;
     currentSettings = response.settings;
-    
+    currentEvalSync = response.evalSync || null; // S4: 평가 연동 상태
+
     updateDashboardUI();
     checkNotificationPermission();
     updateLastUpdateTime();
@@ -285,10 +284,14 @@ function updateDashboardUI() {
   els.dailyRemain.textContent = `남음: ${minutesToTimeStr(Math.max(0, dailyMax - realtimeRecognized))}`;
   els.dailyRemain.className = `remain ${Math.max(0, dailyMax - realtimeRecognized) > 0 ? 'warning' : 'ok'}`;
 
-  // 입실 기록 누락 경고 (R5)
+  // 입실 기록 누락 경고 (R5) + S1: 낡은 미퇴실 세션 제외 안내
   if (els.dataWarning) {
     if (currentParsed.hasMissingEntry) {
       els.dataWarning.textContent = '⚠️ 입실 기록 누락이 감지되었습니다. 출입 내역이 실제와 다를 수 있습니다.';
+      els.dataWarning.style.display = 'block';
+    } else if (currentParsed.staleOpenSession) {
+      const st = currentParsed.staleOpenSession;
+      els.dataWarning.textContent = `⚠️ ${st.dateStr} ${st.entry} 입실 기록에 퇴실이 없어 오래된 세션으로 판단, 실시간 누적에서 제외했습니다. 퇴실 처리 여부를 확인해주세요.`;
       els.dataWarning.style.display = 'block';
     } else {
       els.dataWarning.style.display = 'none';
@@ -320,14 +323,49 @@ function updateDashboardUI() {
   resetAllCalculations();
   updateCalcModeUI(); // 토글 모드에 맞는 패널 표시
 
-  // E1: 평가 등록 폼의 사전 알림 기본값을 설정값으로 1회 주입 (사용자 입력 유지)
-  if (!evalLeadInitialized && els.evalLeadInput) {
-    els.evalLeadInput.value = currentSettings.evalLeadMinutes ?? 30;
-    evalLeadInitialized = true;
-  }
+  // S4: 평가 연동 상태 표시
+  renderEvalSyncStatus();
 
   // 알람 목록 로드 및 렌더링
   loadAndRenderAlarms();
+}
+
+// S4: 평가 연동 상태 한 줄 표시 (수동 등록 폼을 대체)
+function renderEvalSyncStatus() {
+  const el = els.evalSyncStatus;
+  if (!el) return;
+  if (currentSettings && currentSettings.evalAutoSyncEnabled === false) {
+    el.textContent = '평가 일정 자동 연동이 꺼져 있습니다. (설정에서 켤 수 있습니다)';
+    return;
+  }
+  const s = currentEvalSync;
+  const stamp = (t) => {
+    const d = new Date(t);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  if (s && s.lastError) {
+    const when = s.fetchedAt ? ` (${stamp(s.fetchedAt)})` : '';
+    el.textContent = `⚠️ 연동 실패${when}: ${describeEvalSyncError(s.lastError)}`;
+    return;
+  }
+  if (!s || !s.fetchedAt) {
+    el.textContent = '아직 평가 일정을 가져오지 못했습니다. 잠시 후 자동으로 확인합니다.';
+    return;
+  }
+  el.textContent = `✅ ${stamp(s.fetchedAt)} 확인 완료 · 예정된 평가 알람 ${s.items}건 (신규 감지 시 + 시작 전 알림)`;
+}
+
+// S4: 평가 연동 오류 코드 → 사용자용 한글 설명
+function describeEvalSyncError(err) {
+  const e = String(err || '');
+  if (/AUTH_REQUIRED|NOT_LOGGED_IN|30[12378]|401|403/.test(e)) {
+    return '로그인 세션이 만료되었거나 확인할 수 없습니다. 로그아웃 후 다시 로그인해주세요.';
+  }
+  if (/no_instcd/.test(e)) return '기관 코드(instCd)를 찾지 못했습니다. 설정에서 직접 입력해주세요.';
+  if (/no_member/.test(e)) return '로그인 정보가 없습니다. 다시 로그인해주세요.';
+  if (/NETWORK_PLUGIN|unavailable/i.test(e)) return '기기 네트워크 기능을 사용할 수 없습니다.';
+  if (/api_-1|Failed to fetch|NetworkError|timeout/i.test(e)) return '네트워크 연결 상태를 확인해주세요.';
+  return e;
 }
 
 // 실시간 인정 시간 계산 (서버 규칙: 일 12시간 캡 — shared-attendance.js 참조)
@@ -540,55 +578,8 @@ function formatEvalWhen(ms) {
   return `${date} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-// E1: 평가 알람 등록
-async function addEvalAlarm() {
-  const title = els.evalTitleInput.value.trim() || '평가';
-  const whenMs = new Date(els.evalDatetimeInput.value).getTime();
-  if (!els.evalDatetimeInput.value || isNaN(whenMs)) {
-    alert('평가 일시를 선택해주세요.');
-    els.evalDatetimeInput.focus();
-    return;
-  }
-  const leadMinutes = Number(els.evalLeadInput.value);
-  if (isNaN(leadMinutes) || leadMinutes < 0 || leadMinutes > 1440) {
-    alert('사전 알림 시간은 0~1440분 사이로 입력해주세요.');
-    els.evalLeadInput.focus();
-    return;
-  }
-  if (whenMs - leadMinutes * 60000 <= Date.now()) {
-    alert('알림 시각(평가 시간 - 사전 알림)이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.');
-    return;
-  }
-
-  const hasPerm = await requestNotificationPermission();
-  if (!hasPerm) return;
-
-  try {
-    const response = await sendMessage('SET_EVAL_ALARM', { title, whenMs, leadMinutes });
-    if (response.success) {
-      els.evalTitleInput.value = '';
-      els.evalDatetimeInput.value = '';
-      showNotification('평가 알람 등록', `${title} — ${leadMinutes}분 전인 ${formatEvalWhen(response.triggerTime)}에 알림이 울립니다.`);
-      await loadAndRenderAlarms();
-      // M5: 정확 알람 권한 없음(Android) — 안내 재사용
-      if (response.exact === false) {
-        setTimeout(() => {
-          alert('정확한 알람 권한이 꺼져 있어 알림 시각이 몇 분 늦어질 수 있습니다.\n알림 권한 설정에서 "정확한 알람"을 허용해주세요.');
-          if (window.CodysseyNative && window.CodysseyNative.isNative) {
-            window.CodysseyNative.requestExactAlarmPermission().catch(() => {});
-          }
-        }, 300);
-      }
-    } else {
-      alert(response.reason === 'past'
-        ? '알림 시각이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.'
-        : `평가 알람 등록에 실패했습니다. (${response.error || '알 수 없는 오류'})`);
-    }
-  } catch (error) {
-    console.error('Add eval alarm error:', error);
-    alert('평가 알람 등록 중 오류가 발생했습니다.');
-  }
-}
+// (S3) E1 수동 평가 등록 UI/핸들러 제거 — 평가 알람은 서버 목록 자동 연동(E2)이 유일 경로
+// ※ SET_EVAL_ALARM 메시지 핸들러는 호환용으로 background/adapter에 유지
 
 // 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
 window.cancelAlarmFromList = async function(alarmName) {
@@ -1149,7 +1140,8 @@ function updateKeepAliveUI() {
   }
   
   els.keepAliveStatus.classList.add('show');
-  els.keepAliveText.textContent = keepAliveEnabled ? '로그인 유지: 활성' : '로그인 유지: 비활성';
+  // B4: 입·퇴실 감지/평가 연동이 켜져 있으면 그 15분 주기 조회가 세션을 유지하므로 별도 핑은 생략됨
+  els.keepAliveText.textContent = keepAliveEnabled ? '로그인 유지: 활성 (감지 켜짐 시 감지 조회로 대체)' : '로그인 유지: 비활성';
   if (els.keepAliveIndicator) {
     els.keepAliveIndicator.classList.toggle('active', keepAliveEnabled);
   }
@@ -1238,7 +1230,6 @@ async function saveSettings() {
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
     currentSettings = settings;
-    els.evalLeadInput.value = settings.evalLeadMinutes; // E1: 새 기본값을 등록 폼에 반영
     closeSettings();
     updateDashboardUI();
     updateKeepAliveUI();
@@ -1254,12 +1245,16 @@ async function performLogin(email, password) {
   // 1. Android (Capacitor 네이티브) 경로
   if (window.CodysseyNative && window.CodysseyNative.isNative) {
     const pre = await window.CodysseyNative.preCheckLogin(email);
-    if (pre.status >= 400) throw new Error('사전 인증 실패');
+    if (pre.status >= 400) throw new Error(`사전 인증 실패 (HTTP ${pre.status})`);
     const fromValue = pre.body?.result?.from || '';
 
     const auth = await window.CodysseyNative.authenticate(email, password, fromValue);
     if (auth.status >= 400) {
-      throw new Error(auth.body?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+      throw new Error(auth.body?.message || `로그인에 실패했습니다. (HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
+    }
+    // 리다이렉트 대상이 로그인 페이지면 인증 실패 (익스텐션 final URL 판정과 동일)
+    if (auth.location && /login/i.test(auth.location) && !/authenticate/i.test(auth.location)) {
+      throw new Error(`로그인에 실패했습니다. (로그인 페이지 회귀: HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
     }
     // L1: 네트워크는 성공이어도 본문의 실패 코드 확인 (서버가 200+에러 JSON 반환 대응)
     if (auth.body && typeof auth.body === 'object') {
@@ -1411,6 +1406,7 @@ function setupEventListeners() {
         currentMemberId = response.memberId;
         currentParsed = response.parsed;
         currentSettings = response.settings;
+        currentEvalSync = response.evalSync || null; // S4
         updateDashboardUI();
         checkNotificationPermission();
         updateLastUpdateTime();
@@ -1469,10 +1465,23 @@ function setupEventListeners() {
   els.btnSetGoalAlarm.addEventListener('click', setGoalAlarm);
   els.btnCancelGoalAlarm.addEventListener('click', cancelGoalAlarm);
 
-  // E1: 평가 알람 등록
-  els.btnAddEval.addEventListener('click', addEvalAlarm);
-  els.evalDatetimeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') addEvalAlarm();
+  // S4: 평가 일정 즉시 동기화 (자동 연동 — 수동 등록은 제거됨)
+  els.btnSyncEval.addEventListener('click', async () => {
+    if (els.evalSyncStatus) els.evalSyncStatus.textContent = '평가 일정을 가져오는 중...';
+    try {
+      const res = await sendMessage('SYNC_EVAL_ALARMS');
+      const r = res && res.result;
+      if (r && r.ok !== false) {
+        currentEvalSync = { fetchedAt: Date.now(), items: Number(r.items) || 0, lastError: null };
+      } else {
+        const reason = (r && r.reason) || (res && res.error) || 'unknown';
+        currentEvalSync = { ...(currentEvalSync || {}), lastError: reason };
+      }
+    } catch (e) {
+      currentEvalSync = { ...(currentEvalSync || {}), lastError: String(e && e.message || 'unknown') };
+    }
+    renderEvalSyncStatus();
+    loadAndRenderAlarms();
   });
 
   // 캘린더 네비게이션

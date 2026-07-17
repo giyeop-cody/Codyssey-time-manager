@@ -52,6 +52,13 @@ public class EvalSync {
 
     private static final Set<String> CANCEL_CODES =
             new HashSet<>(Arrays.asList("00004", "00005", "00006")); // 거절/요청취소/완료
+    private static final Set<String> CONFIRMED_CODES =
+            new HashSet<>(Arrays.asList("00002", "00003")); // 확정/진행 — "감지" 알림 대상 (C2)
+
+    // 미상(코드 없음)은 확정으로 간주 — JS isEvalConfirmed와 동일
+    private static boolean isConfirmed(String state) {
+        return state == null || state.isEmpty() || CONFIRMED_CODES.contains(state);
+    }
 
     // shared-attendance.js의 EVAL_DT_*_KEYS와 동일 순서
     private static final String[] DT_FULL_KEYS = {
@@ -118,7 +125,7 @@ public class EvalSync {
         Calendar from = (Calendar) today.clone();
         from.add(Calendar.DAY_OF_MONTH, -1);
         Calendar to = (Calendar) today.clone();
-        to.add(Calendar.DAY_OF_MONTH, 30);
+        to.add(Calendar.DAY_OF_MONTH, 365); // C1: 30일 밖 평가도 잡히는 즉시 등록 (JS와 동일 범위)
 
         String url = SCHEDULE_API + "/schedule/scheduleAllList/?"
                 + "mbrId=" + enc(memberId) + "&instCd=" + enc(instCd)
@@ -163,6 +170,7 @@ public class EvalSync {
                     si.whenMs = p.optLong("whenMs", 0);
                     si.leadMinutes = p.optInt("leadMinutes", 30);
                     si.title = p.optString("title", "평가");
+                    si.state = p.optString("state", "");
                     if (!si.key.isEmpty()) prevItems.add(si);
                 }
             }
@@ -197,11 +205,15 @@ public class EvalSync {
                     cancelAuto(context, prefs, existing.name);
                 }
                 long triggerAt = Math.max(it.whenMs - lead * 60000L, now + 5000);
+                // B9: 평가 알람의 지연 발화 허용 상한을 lead+5분으로 — '평가 시작+5분'까지는 늦게도 알림
+                //     (익스텐션 handleEvalAlarmFired 규칙과 통일, 기본 15분 K3은 출입 알람용)
                 AlarmPlugin.scheduleExactAlarmAt(context, triggerAt, name,
-                        "📋 평가 " + lead + "분 전: " + it.title);
+                        "📋 평가 " + lead + "분 전: " + it.title, lead * 60000L + 5 * 60000L);
                 AlarmPlugin.trackScheduled(context, name);
-                upsertAlarmList(prefs, name, triggerAt, it.title, it.whenMs, lead);
-                if (notifEnabled && notified < MAX_NOTIFY_PER_PASS) {
+                upsertAlarmList(prefs, name, triggerAt, it.title, it.whenMs, lead,
+                        it.state != null ? it.state : "");
+                // C2: 협의중(00001)은 조용히 등록 — 확정/진행(00002/00003) 또는 미상일 때만 알림
+                if (notifEnabled && notified < MAX_NOTIFY_PER_PASS && isConfirmed(it.state)) {
                     notified++;
                     NotificationHelper.showNotification(context,
                             "📋 평가 일정 감지",
@@ -209,16 +221,26 @@ public class EvalSync {
                             "evalnew_" + it.key);
                 }
             } else {
-                // 그대로 유지
+                // 그대로 유지 — 단 C2: 협의중 → 확정/진행 전환은 알람 변경 없이 "확정" 알림만
                 for (int i = 0; i < prevItems.size(); i++) {
-                    if (prevItems.get(i).key.equals(it.key)) {
+                    StateItem pi = prevItems.get(i);
+                    if (pi.key.equals(it.key)) {
+                        if (!isConfirmed(pi.state) && isConfirmed(it.state)
+                                && notifEnabled && notified < MAX_NOTIFY_PER_PASS) {
+                            notified++;
+                            NotificationHelper.showNotification(context,
+                                    "📋 평가 확정",
+                                    formatWhenKo(it.whenMs) + " — " + it.title + " 평가가 확정되었습니다. (" + lead + "분 전 알람 유지)",
+                                    "evalconf_" + it.key + "_" + now);
+                        }
                         JSONObject keep = new JSONObject();
                         keep.put("key", it.key);
-                        keep.put("name", prevItems.get(i).name);
+                        keep.put("name", pi.name);
                         keep.put("whenMs", it.whenMs);
-                        keep.put("leadMinutes", prevItems.get(i).leadMinutes);
+                        keep.put("leadMinutes", pi.leadMinutes);
                         keep.put("title", it.title);
                         keep.put("role", it.role);
+                        keep.put("state", it.state != null ? it.state : "");
                         keep.put("auto", true);
                         nextItems.put(keep);
                     }
@@ -233,6 +255,7 @@ public class EvalSync {
             saved.put("leadMinutes", lead);
             saved.put("title", it.title);
             saved.put("role", it.role);
+            saved.put("state", it.state != null ? it.state : "");
             saved.put("auto", true);
             nextItems.put(saved);
         }
@@ -308,8 +331,12 @@ public class EvalSync {
                 while (it.hasNext()) {
                     String k = it.next();
                     Object v = obj.opt(k);
+                    // S4: 문자염뿐 아니라 숫자형(instCd: 21)도 수용 — JS findInstCd와 동일 규칙
                     if (k.matches("(?i)^inst(cd|code)?$") && v instanceof String && !((String) v).trim().isEmpty()) {
                         return ((String) v).trim();
+                    }
+                    if (k.matches("(?i)^inst(cd|code)?$") && v instanceof Number) {
+                        return String.valueOf(v);
                     }
                     children.add(v);
                 }
@@ -333,6 +360,7 @@ public class EvalSync {
         String title;
         String role;
         long whenMs;
+        String state = ""; // fixedCd — 협의/확정 구분 알림용 (C2)
     }
 
     private static class StateItem {
@@ -341,6 +369,7 @@ public class EvalSync {
         long whenMs;
         int leadMinutes;
         String title;
+        String state = "";
     }
 
     private static class ParsedRows {
@@ -408,6 +437,7 @@ public class EvalSync {
             item.title = title;
             item.role = role;
             item.whenMs = whenMs;
+            item.state = fixed != null ? fixed : ""; // C2: 협의/확정 구분 알림용
             out.items.add(item);
         }
 
@@ -514,6 +544,11 @@ public class EvalSync {
     // ===== 알람 목록(codyssey_alarms) upsert/제거 — JS 목록과 같은 항목 형태 =====
     private static void upsertAlarmList(SharedPreferences prefs, String name, long triggerAt,
                                         String title, long evalWhen, int lead) throws Exception {
+        upsertAlarmList(prefs, name, triggerAt, title, evalWhen, lead, "");
+    }
+
+    private static void upsertAlarmList(SharedPreferences prefs, String name, long triggerAt,
+                                        String title, long evalWhen, int lead, String state) throws Exception {
         JSONArray arr = readAlarmList(prefs);
         JSONArray kept = new JSONArray();
         for (int i = 0; i < arr.length(); i++) {
@@ -531,6 +566,7 @@ public class EvalSync {
         entry.put("evalWhen", evalWhen);
         entry.put("leadMinutes", lead);
         entry.put("auto", true);
+        entry.put("state", state != null ? state : "");
         entry.put("createdAt", System.currentTimeMillis());
         kept.put(entry);
         prefs.edit().putString(ALARMS_KEY, kept.toString()).apply();

@@ -228,6 +228,12 @@ public class AlarmPlugin extends Plugin {
 
     // K7/K4 연계: 부트 복원 등 컨텍스트만 있는 곳에서도 사용할 수 있도록 정적 공개
     public static void scheduleExactAlarmAt(Context ctx, long triggerTimeMillis, String id, String label) {
+        scheduleExactAlarmAt(ctx, triggerTimeMillis, id, label, 0L);
+    }
+
+    // staleWindowMs > 0 이면 그 값이 K3(지연 발화 무시) 상한을 대신함 — 평가 알람은
+    // '평가 시작+5분'까지 늦게도 알리는 규칙(익스텐션과 통일)을 위해 lead+5분을 전달 (B9)
+    public static void scheduleExactAlarmAt(Context ctx, long triggerTimeMillis, String id, String label, long staleWindowMs) {
         AlarmManager alarmManager = (AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
         if (alarmManager == null) return;
 
@@ -235,6 +241,9 @@ public class AlarmPlugin extends Plugin {
         intent.putExtra("label", label);
         intent.putExtra("id", id);
         intent.putExtra("triggerTime", triggerTimeMillis); // K3: 수신 측 지연 발화 판정용
+        if (staleWindowMs > 0) {
+            intent.putExtra("staleWindowMs", staleWindowMs);
+        }
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(

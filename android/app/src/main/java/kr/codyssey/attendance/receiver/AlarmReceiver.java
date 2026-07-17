@@ -41,8 +41,10 @@ public class AlarmReceiver extends BroadcastReceiver {
 
         // K3: 기기 전원이 꺼져 있던 사이 예정 시각이 지나 WorkManager가 뒤늦게 발화한 경우
         // (예: 어제 18:00 알림이 다음날 아침에 울림) — 정리만 하고 알림/이벤트는 생략
+        // B9: 평가 알람처럼 개별 상한이 실린 경우엔 그 값을 사용 (익스텐션의 '평가+5분' 규칙과 통일)
         long triggerTime = intent.getLongExtra("triggerTime", 0);
-        if (triggerTime > 0 && System.currentTimeMillis() - triggerTime > STALE_WINDOW_MS) {
+        long staleWindow = intent.getLongExtra("staleWindowMs", STALE_WINDOW_MS);
+        if (triggerTime > 0 && System.currentTimeMillis() - triggerTime > staleWindow) {
             return;
         }
 

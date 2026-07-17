@@ -276,8 +276,9 @@ async function ryDoSyncEvalAlarms(memberId, settingsIn) {
   const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
     ? state.items : [];
 
+  // C1: 어제~+365일 (앱/익스텐션과 동일 범위)
   const from = new Date(); from.setDate(from.getDate() - 1);
-  const to = new Date(); to.setDate(to.getDate() + 30);
+  const to = new Date(); to.setDate(to.getDate() + 365);
   const res = await ryMsg('EVAL_SCHEDULE', {
     instCd, fromYmd: ryYmdDot(from), toYmd: ryYmdDot(to)
   });
@@ -312,12 +313,19 @@ async function ryDoSyncEvalAlarms(memberId, settingsIn) {
         alarmName: name, title: it.title, whenMs: it.whenMs, leadMinutes: lead, auto: true,
         triggerOverride: triggerAt
       });
-      if (notifOn && notified < 3) {
+      // C2: 협의중(00001)은 조용히 등록 — 확정/진행 또는 미상일 때만 알림
+      if (notifOn && notified < 3 && isEvalConfirmed(it.state)) {
         notified++;
         await ryNotify('📋 평가 일정 감지', `${ryFormatWhenKo(it.whenMs)} — ${it.title} (${lead}분 전 알람 등록)`);
       }
     } else if (existing) {
-      nextItems.push(existing);
+      // C2: 협의중 → 확정/진행 전환 시 "확정" 알림
+      if (!isEvalConfirmed(existing.state || '') && isEvalConfirmed(it.state)
+          && notifOn && notified < 3) {
+        notified++;
+        await ryNotify('📋 평가 확정', `${ryFormatWhenKo(it.whenMs)} — ${it.title} 평가가 확정되었습니다. (${lead}분 전 알람 유지)`);
+      }
+      nextItems.push({ ...existing, ...it, name: existing.name });
       continue;
     }
     nextItems.push({ ...it, name, leadMinutes: lead, auto: true });

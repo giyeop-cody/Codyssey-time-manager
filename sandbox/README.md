@@ -84,3 +84,20 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 ```
 생성물(`popup-sandbox.html`)은 커밋 대상이 아닙니다 (소스는 `sandbox/harness.js` + `scripts/build-sandbox.js`).
 
+
+## 부록: api.usr.codyssey.kr 인증·CORS 실측 (2026-07-18 프로브)
+
+사용자 제보("scheduleAllList가 403")의 원인 확정용 비인증 프로브 결과:
+
+| 요청 | 응답 | 해석 |
+|---|---|---|
+| POST scheduleAllList (Origin 없음, 쿠키 없음) | **302** → `http://api.usr.codyssey.kr/login` (+ `Set-Cookie: JSESSIONID=...; Domain=codyssey.kr; SameSite=None; Secure`) | 미인증은 로그인 리다이렉트 (403 아님) |
+| POST scheduleAllList + `Origin: https://codyssey.kr` | **403 `Invalid CORS request`** | 허용 origin이 아니면 403 |
+| OPTIONS + `Origin: https://usr.codyssey.kr` | 200, `ACAO: https://usr.codyssey.kr`, `Allow-Credentials: true` | **공식 웹앱 origin만 허용** |
+| GET /rest/user/info/detail + `Origin: chrome-extension://...` | **403 `Invalid CORS request`** | 임의 origin 부착 시 즉시 403 |
+| POST ams `/rest/login/pre-check`, `/authenticate` ± `Origin: https://ams.codyssey.kr` | 200/401 (모두 정상 응답) | AMS 로그인 origin도 허용 목록에 있음 |
+
+결론:
+- **세션 쿠키는 `JSESSIONID` · `Domain=codyssey.kr`** — *.codyssey.kr 전 서브도메인에 자동 송신 (SameSite=None+Secure라 cross-site fetch도 withCredentials면 가능). 기존 "host-only 쿠키" 가설보다 좋은 조건.
+- **서버가 403을 내는 유일한 경로는 "허용되지 않은 Origin 헤더"** — 우리 클라이언트(크롬 익스텐션 fetch / 네이티브 HttpURLConnection)는 Origin 헤더가 붙지 않으므로 메커니즘상 정상. 브라우저 주소창에 URL을 직접 붙여 넣으면 302→/login 흐름(또는 http→:80 비정상 리다이렉트)으로 이어지는데, 이것은 미인증 상태의 정상 동작.
+- 그래도 **실패 가시성**이 없으면 사용자가 원인을 알 수 없으므로, 14차에서 팝업에 평가 연동 상태(시각/건수/실패 사유)를 표시하고 본문 없는 POST의 Content-Type을 제거함(S4).

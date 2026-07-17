@@ -26,6 +26,8 @@ import {
   findInstCd,
   parseScheduleRows,
   diffEvalItems,
+  isEvalConfirmed,
+  mergeDetailLists,
   EVAL_AUTO_ID_PREFIX
 } from './shared-attendance.js';
 
@@ -110,24 +112,27 @@ async function clearAttendanceCaches() {
 }
 
 // ===== API 호출 (세션 쿠키 포함) =====
+// ※ 본문 없는 POST에는 options.skipContentType 사용 — Content-Type: application/json을 달면
+//   실측 동작(axios post(url, null))과 달라지고 CORS simple-request 범위도 벗어남 (S4 방어)
 async function fetchWithAuth(url, options = {}) {
-  const defaultOptions = {
+  const { skipContentType, ...rest } = options;
+  const baseOptions = {
     credentials: 'include', // 중요: 세션 쿠키(JSESSIONID) 자동 포함
     redirect: 'manual', // 302를 직접 감지하기 위해 자동 팔로우 방지
     headers: {
       'Accept': 'application/json',
-      'Content-Type': 'application/json',
-      ...options.headers
+      ...(skipContentType ? {} : { 'Content-Type': 'application/json' }),
+      ...(rest.headers || {})
     }
   };
-  let res = await fetch(url, { ...defaultOptions, ...options });
+  let res = await fetch(url, { ...baseOptions, ...rest, headers: baseOptions.headers });
 
   // 정상 리다이렉트(codyssey 도메인 남부)는 1회 수동 추적 (N10)
   // ※ cross-origin 리다이렉트는 opaqueredirect라 Location을 읽을 수 없음 — 그 경우 인증 오류로 분류
   if (res.status >= 300 && res.status < 400 && res.type !== 'opaqueredirect') {
     const location = res.headers.get('location') || '';
     if (location.includes('codyssey.kr') && !/login/i.test(location)) {
-      res = await fetch(location, defaultOptions);
+      res = await fetch(location, baseOptions);
     } else {
       throw new Error('AUTH_REQUIRED');
     }
@@ -298,7 +303,8 @@ async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
   const qs = `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
     + `&bgngYmd=${ymdDot(fromDate)}&endYmd=${ymdDot(toDate)}&scheduleType=request`;
   const res = await fetchWithAuth(`${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?${qs}`, {
-    method: 'POST' // 실측: 본문 없이 쿼리스트링만 (axios post(url, null, {params})와 동일)
+    method: 'POST', // 실측: 본문 없이 쿼리스트링만 (axios post(url, null, {params})와 동일)
+    skipContentType: true // S4: 본문 없는데 JSON Content-Type을 달지 않음 (실측 동작과 동일화)
   });
   if (!res.ok) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status}`);
   return await readJsonResponse(res, 'EVAL_SCHEDULE');
@@ -367,8 +373,9 @@ async function doSyncEvalAlarms(memberId) {
     const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
       ? state.items : [];
 
+    // C1: 조회 범위를 어제~+365일로 — 30일 밖 평가도 잡히는 즉시 알람 등록 ("평가가 잡혔을 때" 기대 충족)
     const from = new Date(); from.setDate(from.getDate() - 1);
-    const to = new Date(); to.setDate(to.getDate() + 30);
+    const to = new Date(); to.setDate(to.getDate() + 365);
     const raw = await fetchEvalSchedule(memberId, instCd, from, to);
     const reqList = (raw && raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];
     const parsed = parseScheduleRows(reqList);
@@ -403,9 +410,11 @@ async function doSyncEvalAlarms(memberId) {
           evalTitle: it.title,
           evalWhen: it.whenMs,
           leadMinutes: lead,
-          auto: true
+          auto: true,
+          state: it.state || ''
         });
-        if (settings.notificationsEnabled && notified < 3) {
+        // C2: 협의중(00001)은 조용히 등록 — 확정/진행(00002/00003) 또는 상태 미상일 때만 "감지" 알림
+        if (settings.notificationsEnabled && notified < 3 && isEvalConfirmed(it.state)) {
           notified++;
           await showNotification(
             '📋 평가 일정 감지',
@@ -414,7 +423,18 @@ async function doSyncEvalAlarms(memberId) {
           );
         }
       } else if (existing) {
-        nextItems.push(existing);
+        // C2: 협의중 → 확정/진행 전환은 알람 변경 없이 "확정" 알림만
+        const prevState = existing.state || '';
+        if (!isEvalConfirmed(prevState) && isEvalConfirmed(it.state)
+            && settings.notificationsEnabled && notified < 3) {
+          notified++;
+          await showNotification(
+            '📋 평가 확정',
+            `${formatEvalWhenKo(it.whenMs)} — ${it.title} 평가가 확정되었습니다. (${lead}분 전 알람 유지)`,
+            memberId
+          );
+        }
+        nextItems.push({ ...existing, ...it, name: existing.name });
         continue;
       }
       nextItems.push({ ...it, name, leadMinutes: lead, auto: true });
@@ -446,8 +466,25 @@ async function doSyncEvalAlarms(memberId) {
     return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
   } catch (e) {
     console.warn('평가 일정 동기화 실패:', e.message);
+    // S4: 실패 사유를 상태에 남김 — 팝업이 "연동 실패 원인"을 표시 (기존 항목/알람은 유지)
+    try {
+      const cur = (await getStorage([EVAL_STATE_KEY]))[EVAL_STATE_KEY] || {};
+      await setStorage({
+        [EVAL_STATE_KEY]: { ...cur, lastError: String(e.message || 'unknown'), lastErrorAt: Date.now() }
+      });
+    } catch (e2) { /* 상태 기록 실패는 무시 */ }
     return { ok: false, reason: e.message };
   }
+}
+
+// GET_STATUS 팝업 표시용 평가 동기화 상태 요약 (S4)
+function summarizeEvalSyncState(state) {
+  if (!state) return { fetchedAt: 0, items: 0, lastError: null };
+  return {
+    fetchedAt: state.fetchedAt || 0,
+    items: Array.isArray(state.items) ? state.items.length : 0,
+    lastError: state.lastError || null
+  };
 }
 
 // ===== 알람 관리 (이름 생성/파싱은 shared-attendance.js 단일 소스 사용) =====
@@ -659,30 +696,39 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           }
 
           const now = new Date();
+          const force = message.force === true;
           // J1: force면 캐시 바이패스 (수동 새로고침 의도 존중)
-          const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, message.force === true);
+          const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, force);
           const parsed = parseAttendance(data, now);
 
-          // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
-          processGateEvents(memberId, data).catch(() => {});
-          // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
-          syncEvalAlarms(memberId).catch(() => {});
-
-          // 월 경계 입실(R2/L4): 이달 데이터에서 입실 중이 아니면 전월 말 데이터 확인
-          // (월초 3일 제한 제거 — 월 어느 날짜든 전월 말 API 1회로 안전하게 판정)
-          if (!parsed.isCurrentlyIn) {
+          // 전월 데이터가 필요한 경우를 한 번의 조회로 합침:
+          // ①이달에 입실 중이 아님(R2/L4 월 경계 입실 확인) ②월 초 1~2일(G1 '어제'가 전월에 걸침 — B8 공백)
+          // W7: force 새로고침 시 전월도 캐시 바이패스 (기존엔 당월만 force라 전월이 낡은 캐시였음)
+          let gateSource = data;
+          if (!parsed.isCurrentlyIn || now.getDate() <= 2) {
             try {
               const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-              const prevData = await fetchAttendance(memberId, prev.getFullYear(), prev.getMonth() + 1);
-              applyOvernightFromPrevMonth(parsed, prevData);
+              const prevData = await fetchAttendance(memberId, prev.getFullYear(), prev.getMonth() + 1, force);
+              if (!parsed.isCurrentlyIn) applyOvernightFromPrevMonth(parsed, prevData);
+              if (now.getDate() <= 2) gateSource = mergeDetailLists(prevData, data);
             } catch (e) {
               console.warn('전월 데이터 확인 실패:', e);
             }
           }
 
+          // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
+          processGateEvents(memberId, gateSource).catch(() => {});
+          // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
+          syncEvalAlarms(memberId).catch(() => {});
+
           const settings = await getSettings();
           const alarms = await getActiveAlarms(memberId);
-          sendResponse({ success: true, memberId, parsed, settings, alarms });
+          // S4: 평가 연동 상태도 함께 반환 — 팝업이 실패 원인(403/세션 만료/instCd 등)을 표시
+          const evalState = (await getStorage([EVAL_STATE_KEY]))[EVAL_STATE_KEY] || null;
+          sendResponse({
+            success: true, memberId, parsed, settings, alarms,
+            evalSync: summarizeEvalSyncState(evalState)
+          });
           break;
         }
 
@@ -865,6 +911,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         case 'UPDATE_SETTINGS': {
           await saveSettings(message.settings);
           await syncKeepAliveAlarm(); // J2: keep-alive 토글을 알람에 즉시 반영
+          await syncPeriodicSyncAlarm(); // 감지/평가 토글을 주기 알람에 즉시 반영
           // E2: 평가 연동 토글/기본 시점(분) 변경을 자동 알람에 즉시 반영 (lead 변경 시 재예약)
           getMemberId()
             .then(id => (id ? syncEvalAlarms(id) : null))
@@ -890,6 +937,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             await saveSettings(settingsAtLogout);
           }
           await syncKeepAliveAlarm(); // J2 알람도 해제
+          await syncPeriodicSyncAlarm(); // Q4 연계 — 로그아웃 후 불필요한 주기 알람 해제
           const all = await getStorage(null);
           const keysToRemove = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.CACHE));
           if (keysToRemove.length) {
@@ -992,8 +1040,23 @@ async function migrateLegacyAlarms() {
   }
 }
 
-// 주기적 백그라운드 동기화 (G1: 입·퇴실 감지를 위해 15분 간격으로 조회 — 알림 지연 상한)
-chrome.alarms.create('periodic_sync', { periodInMinutes: 15 });
+// 주기적 백그라운드 동기화 (G1: 입·퇴실 감지 / E2: 평가 연동)
+// 필요한 기능이 하나도 없으면 알람 자체를 만들지 않음 — 배터리·트래픽 보호, keep-alive 핑과도 역할 분리
+async function syncPeriodicSyncAlarm() {
+  try {
+    const settings = await getSettings();
+    // keepAlive '단독'은 keepalive_ping(25분)이 담당하므로 여기서는 감지/평가 연동만
+    const need = settings.gateNotifyEnabled !== false
+      || settings.evalAutoSyncEnabled !== false;
+    const existing = await chrome.alarms.get('periodic_sync');
+    if (need && !existing) {
+      chrome.alarms.create('periodic_sync', { periodInMinutes: 15 });
+    } else if (!need && existing) {
+      await chrome.alarms.clear('periodic_sync');
+    }
+  } catch (e) { console.warn('periodic_sync 동기화 실패:', e); }
+}
+syncPeriodicSyncAlarm(); // SW 기동 시점에 설정과 알람 상태 일치
 
 // J2: keep-alive 핑을 서비스 워커 알람으로 관리 — 팝업 생명주기와 무관하게 동작.
 // (기존 popup.js 타이머는 팝업이 열린 동안에만 유효 → 설정과 실제 동작이 어긋났음)
@@ -1002,9 +1065,14 @@ async function syncKeepAliveAlarm() {
   try {
     const settings = await getSettings();
     const existing = await chrome.alarms.get(KEEPALIVE_ALARM);
-    if (settings.keepAliveEnabled && !existing) {
+    // 입·퇴실 감지 또는 평가 연동이 켜져 있으면 15분 주기 인증 조회가 세션을 유지하므로
+    // 별도 핑은 keepAlive '단독'일 때만 생성 (B4/W6 — 핑 중복 제거)
+    const solo = settings.keepAliveEnabled
+      && settings.gateNotifyEnabled === false
+      && settings.evalAutoSyncEnabled === false;
+    if (solo && !existing) {
       chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 25 });
-    } else if (!settings.keepAliveEnabled && existing) {
+    } else if (!solo && existing) {
       await chrome.alarms.clear(KEEPALIVE_ALARM);
     }
   } catch (e) {
@@ -1016,19 +1084,35 @@ syncKeepAliveAlarm(); // SW 기동 시점에 설정과 알람 상태 일치
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'periodic_sync') {
     const memberId = await getMemberId();
-    if (memberId) {
+    if (!memberId) return;
+    const settings = await getSettings();
+    if (settings.gateNotifyEnabled !== false) {
       try {
         // G1: 캐시 무효화만 하던 주기 동기화를 실제 조회 + 입·퇴실 감지로 전환
         const now = new Date();
         const data = await fetchAttendance(memberId, now.getFullYear(), now.getMonth() + 1, true);
-        await processGateEvents(memberId, data);
-        await syncEvalAlarms(memberId); // E2: 평가 일정도 주기 동기화
+        // B8: 월 초 1~2일은 전월 말 데이터를 합쳐 '어제'(전월) 스냅샷 비교 공백 방지
+        let gateSource = data;
+        if (now.getDate() <= 2) {
+          try {
+            const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+            const prevData = await fetchAttendance(memberId, prev.getFullYear(), prev.getMonth() + 1);
+            gateSource = mergeDetailLists(prevData, data);
+          } catch (e) { /* 당월 데이터만으로 계속 진행 */ }
+        }
+        await processGateEvents(memberId, gateSource);
+        // keepAlive가 켜져 있어도 이 인증 조회가 세션을 유지하므로 별도 핑은 만들지 않음 (B4/W6)
       } catch (e) {
-        console.warn('주기 동기화 실패:', e.message);
+        console.warn('주기 입·퇴실 감지 실패:', e.message);
       }
+    }
+    if (settings.evalAutoSyncEnabled !== false) {
+      await syncEvalAlarms(memberId).catch(() => {}); // E2: 평가 일정도 주기 동기화
     }
   }
   // J2: keep-alive 핑 — 세션 터치 (응답 본문은 불필요, 만료 시 정리)
+  // ※ 입·퇴실 감지/평가 연동이 하나라도 켜져 있으면 15분 주기 인증 조회가 세션을 유지하므로
+  //   이 알람은 keepAlive '단독' 케이스에만 생성됨 (W6 중복 핑 제거)
   if (alarm.name === KEEPALIVE_ALARM) {
     const settings = await getSettings();
     if (!settings.keepAliveEnabled) {

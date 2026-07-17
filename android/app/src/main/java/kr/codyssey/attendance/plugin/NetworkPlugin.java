@@ -176,7 +176,10 @@ public class NetworkPlugin extends Plugin {
 
         // 기본 헤더
         conn.setRequestProperty("Accept", "application/json");
-        conn.setRequestProperty("Content-Type", "application/json");
+        // S4: 본문이 없는 요청(평가 일정 POST 등)은 Content-Type을 달지 않음 — 실측 클라이언트 동작과 동일화
+        if (body != null) {
+            conn.setRequestProperty("Content-Type", "application/json");
+        }
 
         // 커스텀 헤더
         if (headers != null) {
@@ -249,11 +252,29 @@ public class NetworkPlugin extends Plugin {
             for (String cookie : setCookies) {
                 cookieManager.setCookie(origin, cookie);
             }
+            // L9+: Domain 속성이 없는 세션 쿠키는 "설정한 호스트에만" 묶이는데, 로그인 성공 쿠키가
+            // api.ams 전용(host-only)이면 api.usr(출입/평가 API) 요청에 쿠키가 안 실려
+            // 로그인 직후 NOT_LOGGED_IN이 된다 (로그인 불가 현상). Domain=.codyssey.kr 쿠키는
+            // CookieManager가 이미 서브도메인 공유하므로, Domain 없는 쿠키만 api.usr에 앵커한다.
+            if (!"api.usr.codyssey.kr".equals(conn.getURL().getHost()) && isAllowedHost(conn.getURL().getHost())) {
+                for (String cookie : setCookies) {
+                    if (!cookie.toLowerCase(java.util.Locale.ROOT).contains("domain=")) {
+                        cookieManager.setCookie("https://api.usr.codyssey.kr", cookie);
+                    }
+                }
+            }
             cookieManager.flush();
         }
 
         StringBuilder response = new StringBuilder();
-        java.io.InputStream in = responseCode >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        // 302 등 바디 없는 응답에서 getInputStream이 예외를 던지는 단말 대응 — 본문 실패가
+        // 로그인 실패로 오인되지 않도록 본문 읽기는 방어적으로 (쿠키 저장은 위에서 완료)
+        java.io.InputStream in = null;
+        try {
+            in = responseCode >= 400 ? conn.getErrorStream() : conn.getInputStream();
+        } catch (Exception ignored) {
+            in = null;
+        }
         if (in != null) {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
                 char[] buffer = new char[4096];
@@ -272,6 +293,11 @@ public class NetworkPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("status", responseCode);
         result.put("data", response.toString());
+        // 리다이렉트 대상 노출 — JS가 "로그인 페이지로 회귀"를 판정할 수 있게 (익스텐션 final URL 판정과 동일 목적)
+        String location = conn.getHeaderField("Location");
+        if (location != null && !location.isEmpty()) {
+            result.put("location", location);
+        }
 
         // JSON 파싱 시도
         try {

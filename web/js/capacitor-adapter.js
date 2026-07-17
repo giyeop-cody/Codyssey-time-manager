@@ -18,6 +18,8 @@ import {
   findInstCd,
   parseScheduleRows,
   diffEvalItems,
+  isEvalConfirmed,
+  mergeDetailLists,
   EVAL_AUTO_ID_PREFIX
 } from './shared-attendance.js';
 
@@ -183,7 +185,11 @@ import {
 
   async function notificationIdFor(idKey) {
     if (ONESHOT_NOTIF_KEY_RE.test(idKey)) {
-      return (Date.now() % 2000000000) | 0;
+      // W2: 키에 박힌 생성 시각으로 id를 "결정적"으로 계산 — create와 clear가 같은 id를 얻음
+      //     (기존은 Date.now() 재계산이라 clear가 다른 id를 지워 알림이 남았음)
+      // W3: 카운터형(1000~)과 네임스페이스 분리 — 1e9 대역으로 이동 (충돌·23일 주기 제거)
+      const embedded = Number(idKey.split('_')[1]) || Date.now();
+      return (1000000000 + (embedded % 1000000000)) | 0;
     }
     try {
       const map = (await getPrefs(NOTIF_ID_MAP_KEY)) || {};
@@ -195,8 +201,8 @@ import {
       await setPrefs(NOTIF_ID_MAP_KEY, map);
       return next;
     } catch (e) {
-      // 저장소 실패 시에도 알림은 떠야 함 — 시간 기반 폴리곤
-      return (Date.now() % 2000000000) | 0;
+      // 저장소 실패 시에도 알림은 떠야 함 — 시간 기반 폴리곤 (W3: 1e9 대역)
+      return (1000000000 + (Date.now() % 1000000000)) | 0;
     }
   }
 
@@ -235,17 +241,23 @@ import {
 
         const parsed = result.parsed;
 
+        // 전월 데이터가 필요한 경우를 한 번의 조회로 합침 (background.js와 동일 규칙):
+        // ①이달에 입실 중이 아님(R2/L4) ②월 초 1~2일(G1 '어제'가 전월에 걸침 — B8)
+        // W7: force 시 전월도 캐시 바이패스
+        let gateSource = parsed.rawDetailList;
+        if (!parsed.isCurrentlyIn || now.getDate() <= 2) {
+          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1, message.force === true);
+          if (prevResult.raw) {
+            if (!parsed.isCurrentlyIn) applyOvernightFromPrevMonth(parsed, prevResult.raw);
+            if (now.getDate() <= 2) gateSource = mergeDetailLists(prevResult.raw, parsed.rawDetailList);
+          }
+        }
+
         // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
-        processGateEvents(memberId, parsed.rawDetailList).catch(() => {});
+        processGateEvents(memberId, gateSource).catch(() => {});
         // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
         syncEvalAlarms(memberId).catch(() => {});
-
-        // 월 경계 입실(R2/L4): 이달 데이터에 입실 중이 없으면 전월 말 확인 (월초 제한 제거)
-        if (!parsed.isCurrentlyIn) {
-          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-          const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1);
-          if (prevResult.raw) applyOvernightFromPrevMonth(parsed, prevResult.raw);
-        }
 
         const settings = await getSettings();
         await syncKeepAliveWork(settings); // N7: keep-alive 설정과 백그라운드 작업 동기화
@@ -255,7 +267,9 @@ import {
           memberId,
           parsed,
           settings,
-          alarms: await getStoredAlarms()
+          alarms: await getStoredAlarms(),
+          // S4: 평가 연동 상태 (네이티브 EvalSync.java와 같은 prefs 키 공유)
+          evalSync: summarizeEvalSyncState(await getPrefs(EVAL_STATE_KEY))
         };
       }
 
@@ -756,8 +770,9 @@ import {
       const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
         ? state.items : [];
 
+      // C1: 어제~+365일 (30일 밖 평가도 잡히는 즉시 등록)
       const from = new Date(); from.setDate(from.getDate() - 1);
-      const to = new Date(); to.setDate(to.getDate() + 30);
+      const to = new Date(); to.setDate(to.getDate() + 365);
       const raw = await fetchEvalSchedule(memberId, instCd, from, to);
       const reqList = (raw && raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];
       const parsed = parseScheduleRows(reqList);
@@ -801,10 +816,12 @@ import {
             evalWhen: it.whenMs,
             leadMinutes: lead,
             auto: true,
+            state: it.state || '',
             createdAt: now
           });
           await setPrefs(STORE_KEYS.ALARMS, kept);
-          if (settings.notificationsEnabled && notified < 3) {
+          // C2: 협의중(00001)은 조용히 등록 — 확정/진행(00002/00003) 또는 미상일 때만 "감지" 알림
+          if (settings.notificationsEnabled && notified < 3 && isEvalConfirmed(it.state)) {
             notified++;
             await scheduleLocalNotification(
               '📋 평가 일정 감지',
@@ -813,7 +830,18 @@ import {
             );
           }
         } else if (existing) {
-          nextItems.push(existing);
+          // C2: 협의중 → 확정/진행 전환 시 "확정" 알림 (알람 재예약 없이 안내)
+          const prevState = existing.state || '';
+          if (!isEvalConfirmed(prevState) && isEvalConfirmed(it.state)
+              && settings.notificationsEnabled && notified < 3) {
+            notified++;
+            await scheduleLocalNotification(
+              '📋 평가 확정',
+              `${formatEvalWhenKo(it.whenMs)} — ${it.title} 평가가 확정되었습니다. (${lead}분 전 알람 유지)`,
+              `evalconf_${it.key}_${now}`
+            );
+          }
+          nextItems.push({ ...existing, ...it, name: existing.name });
           continue;
         }
         nextItems.push({ ...it, name, leadMinutes: lead, auto: true });
@@ -843,8 +871,25 @@ import {
       return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
     } catch (e) {
       console.warn('[Adapter] 평가 일정 동기화 실패:', e.message);
+      // S4: 실패 사유를 상태에 남김 — 팝업이 "연동 실패 원인"을 표시 (기존 항목/알람은 유지)
+      try {
+        const cur = (await getPrefs(EVAL_STATE_KEY)) || {};
+        await setPrefs(EVAL_STATE_KEY, {
+          ...cur, lastError: String(e.message || 'unknown'), lastErrorAt: Date.now()
+        });
+      } catch (e2) { /* 상태 기록 실패는 무시 */ }
       return { ok: false, reason: e.message };
     }
+  }
+
+  // GET_STATUS 팝업 표시용 평가 동기화 상태 요약 (S4)
+  function summarizeEvalSyncState(state) {
+    if (!state) return { fetchedAt: 0, items: 0, lastError: null };
+    return {
+      fetchedAt: state.fetchedAt || 0,
+      items: Array.isArray(state.items) ? state.items.length : 0,
+      lastError: state.lastError || null
+    };
   }
 
   function safeJson(s) {
@@ -865,12 +910,12 @@ import {
     preCheckLogin: async function(userId) {
       if (!this.isNative) throw new Error('NATIVE_NOT_AVAILABLE');
       const res = await Plugins.NetworkPlugin.preCheckLogin({ userId });
-      return { status: res.status || 0, body: res.json || safeJson(res.data) || {} };
+      return { status: res.status || 0, body: res.json || safeJson(res.data) || {}, location: res.location || '' };
     },
     authenticate: async function(userId, password, from) {
       if (!this.isNative) throw new Error('NATIVE_NOT_AVAILABLE');
       const res = await Plugins.NetworkPlugin.authenticate({ userId, password, from: from || '' });
-      return { status: res.status || 0, body: res.json || safeJson(res.data) || {} };
+      return { status: res.status || 0, body: res.json || safeJson(res.data) || {}, location: res.location || '' };
     },
     // M5: 정확 알람 권한 설정 화면 열기 (Android 12+)
     requestExactAlarmPermission: async function() {
@@ -888,7 +933,9 @@ import {
   }
 
   // ===== Q5: 하드웨어 뒤로가기 처리 (미처리 시 앱이 바로 종료됨) =====
-  if (isCapacitor && Plugins.App && Plugins.App.addListener) {
+  // W5: 재진입/중복 로드 시 리스너가 두 번 등록되지 않도록 단일 등록 가드
+  if (isCapacitor && Plugins.App && Plugins.App.addListener && !window.__codysseyBackButtonHooked) {
+    window.__codysseyBackButtonHooked = true;
     try {
       Plugins.App.addListener('backButton', ({ canGoBack }) => {
         if (canGoBack) {

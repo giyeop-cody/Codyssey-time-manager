@@ -95,7 +95,10 @@ public class CookieManager {
             conn.setReadTimeout(15000);
             conn.setInstanceFollowRedirects(false); // 302(세션 만료)를 status로 확인하기 위함
             conn.setRequestProperty("Accept", "application/json");
-            conn.setRequestProperty("Content-Type", "application/json");
+            // S4: 본문이 없는 요청(scheduleAllList 등)은 Content-Type 생략 — 실측 동작과 동일화
+            if (bodyString != null) {
+                conn.setRequestProperty("Content-Type", "application/json");
+            }
             if (cookies != null && !cookies.isEmpty()) {
                 conn.setRequestProperty("Cookie", cookies);
             }

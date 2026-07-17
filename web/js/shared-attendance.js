@@ -73,16 +73,38 @@ export function parseEntryTimestamp(dateStr, entryTime) {
   return isNaN(ts) ? null : ts;
 }
 
-// 마지막 입실부터 현재까지 경과 분 (자정 경계 안전)
+// 미퇴실(열린) 세션이 "현재 입실 중"으로 인정되는 최대 시간 — 서버 일 12시간 캡 + 1시간 여유.
+// 이 시간을 넘긴 미퇴실 세션은 퇴실 태그 누락/자동 퇴실 등 낡은 기록으로 보고 입실 중에서 제외한다.
+// (이전엔 날짜와 무관하게 영구 누적되어, 며칠 전 미퇴실 세션 때문에 "입실 중 · 12시간 채움"으로 표시되는 결함 — S1)
+export const MAX_OPEN_SESSION_MS = 13 * 60 * 60 * 1000;
+export const MAX_OPEN_SESSION_MINUTES = MAX_OPEN_SESSION_MS / 60000;
+export function isOpenSessionFresh(entryTs, nowMs = Date.now()) {
+  return !!entryTs && entryTs <= nowMs && (nowMs - entryTs) <= MAX_OPEN_SESSION_MS;
+}
+
+// 마지막 입실부터 현재까지 경과 분 (자정 경계 안전, S1: 개방 세션 상한 캡)
 export function elapsedSinceEntry(parsed, nowMs = Date.now()) {
   if (!parsed || !parsed.isCurrentlyIn) return 0;
   if (parsed.entryTimestamp) {
-    return Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000));
+    if (!isOpenSessionFresh(parsed.entryTimestamp, nowMs)) return 0; // 낡은 개방 세션 이중 방어
+    return Math.min(
+      Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000)),
+      MAX_OPEN_SESSION_MINUTES
+    );
   }
   if (parsed.lastInTime === null) return 0;
   const now = new Date(nowMs);
   const nowMin = now.getHours() * 60 + now.getMinutes();
   return Math.max(0, nowMin - parsed.lastInTime);
+}
+
+// 두 월 데이터의 detail_list를 하나로 병합 (월 경계 입실·야간 퇴실 감지용 — B8)
+export function mergeDetailLists(a, b) {
+  const al = (a && (a.detail_list || a.result || a.data)) || [];
+  const bl = (b && (b.detail_list || b.result || b.data)) || [];
+  if (!al.length) return b;
+  if (!bl.length) return a;
+  return { detail_list: [...al, ...bl] };
 }
 
 // ===== 서버 규칙(일별 12시간 캡) 기준 실시간/예측 계산 =====
@@ -117,8 +139,9 @@ export function projectedMonthly(parsed, additionalMinutes, nowMs = Date.now()) 
 // ===== 출입기록 파싱 =====
 // targetDate 기준 월의 detail_list를 파싱.
 // - 세션은 입실 시각순 정렬해 상태 판정 (순서 뒤집힌 응답 대응)
-// - 퇴실 누락 세션은 날짜와 무관하게 "현재 입실 중"으로 감지 (전날 입실 포함)
-export function parseAttendance(data, targetDate = new Date()) {
+// - 퇴실 누락 세션이 "현재 입실 중"이려면 입실 시각이 MAX_OPEN_SESSION_MS 이내여야 함 (S1)
+//   → 더 오래된 미퇴실 세션은 낡은 기록으로 간주하고 staleOpenSession에만 남김
+export function parseAttendance(data, targetDate = new Date(), nowMs = Date.now()) {
   const detailList = (data && (data.detail_list || data.result || data.data)) || [];
   const year = targetDate.getFullYear();
   const month = targetDate.getMonth() + 1;
@@ -131,6 +154,7 @@ export function parseAttendance(data, targetDate = new Date()) {
   let isCurrentlyIn = false;
   let entryTimestamp = null;
   let hasMissingEntry = false;
+  let staleOpenSession = null; // S1: 최근 미퇴실 세션 중 인정 한도(13h)를 넘긴 낡은 세션 (진단용)
   const dailyBreakdown = {};
 
   for (const day of detailList) {
@@ -155,10 +179,17 @@ export function parseAttendance(data, targetDate = new Date()) {
       const isMissing = session.is_missing === true;
 
       if (isMissing && session.missing_type === 'exit' && entryMin !== null) {
-        isCurrentlyIn = true;
-        lastInTime = entryMin;
-        lastOutTime = null;
-        entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
+        const ts = parseEntryTimestamp(dateStr, session.entry_time);
+        if (isOpenSessionFresh(ts, nowMs)) {
+          // 유효한 개방 세션 — 현재 입실 중
+          isCurrentlyIn = true;
+          lastInTime = entryMin;
+          lastOutTime = null;
+          entryTimestamp = ts;
+        } else {
+          // S1: 13시간 이상 경과한 미퇴실 세션은 낡은 기록 (퇴실 태그 누락/자동 퇴실)
+          if (ts) staleOpenSession = { dateStr, entry: session.entry_time };
+        }
       } else if (isMissing && session.missing_type === 'entry') {
         hasMissingEntry = true;
       } else if (entryMin !== null && exitMin !== null && dateStr === todayStr) {
@@ -180,6 +211,7 @@ export function parseAttendance(data, targetDate = new Date()) {
     isCurrentlyIn,
     entryTimestamp,
     hasMissingEntry,
+    staleOpenSession,
     dailyBreakdown,
     rawDetailList: detailList
   };
@@ -187,7 +219,9 @@ export function parseAttendance(data, targetDate = new Date()) {
 
 // 전월 데이터에서 미퇴실 세션 감지 (월 경계 입실 — R2)
 // parsed에 입실 중 세션이 없을 때만 적용. 변경 시 true 반환.
-export function applyOvernightFromPrevMonth(parsed, prevMonthData) {  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
+// S1: MAX_OPEN_SESSION_MS(13h) 이내 개방 세션만 유효 — 더 오래된 전월 미퇴실은 낡은 기록
+export function applyOvernightFromPrevMonth(parsed, prevMonthData, nowMs = Date.now()) {
+  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
   const detailList = prevMonthData.detail_list || prevMonthData.result || prevMonthData.data || [];
 
   // 뒤에서부터(최근 날짜 우선) 퇴실 누락 세션 탐색
@@ -198,10 +232,15 @@ export function applyOvernightFromPrevMonth(parsed, prevMonthData) {  if (!parse
     for (const session of (day.sessions || [])) {
       const entryMin = timeStrToMinutes(session.entry_time);
       if (session.is_missing === true && session.missing_type === 'exit' && entryMin !== null) {
+        const ts = parseEntryTimestamp(dateStr, session.entry_time);
+        if (!isOpenSessionFresh(ts, nowMs)) {
+          if (ts) parsed.staleOpenSession = { dateStr, entry: session.entry_time };
+          return false; // 가장 최근 미퇴실 세션조차 낡았으면 더 오래된 것은 볼 필요 없음
+        }
         parsed.isCurrentlyIn = true;
         parsed.lastInTime = entryMin;
         parsed.lastOutTime = null;
-        parsed.entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
+        parsed.entryTimestamp = ts;
         return true;
       }
     }
@@ -420,8 +459,16 @@ export function validateEvalAlarm(whenMs, leadMinutes, nowMs = Date.now()) {
 export const EVAL_AUTO_ID_PREFIX = 'auto_'; // codyssey_eval_auto_{key} — 수동 등록(e...)과 구분
 export const EVAL_CANCEL_FIXED_CODES = ['00004', '00005', '00006']; // 거절/요청취소/완료 → 알람 대상 아님
 export const EVAL_GUBUN_VALUE = 'EV'; // scdlGubunCd === 'EV' 인 행만 평가 (AM/EXAM/MT 등 제외)
+// C2: "평가 일정 감지" 알림은 확정/진행(00002/00003) 상태일 때만 — 00001(요청·협의중)은
+// 알람만 조용히 등록 (파기 가능성이 있는 협의 시간으로 미리 알리지 않음). 미상(코드 없음)은 알림.
+export const EVAL_CONFIRMED_STATES = ['00002', '00003'];
+export function isEvalConfirmed(state) {
+  return !state || EVAL_CONFIRMED_STATES.includes(state);
+}
 
 // 멤버 정보 응답 어디에 있든 instCd를 재귀 탐색 (키 이름만 확실하다는 전제)
+// S4: 숫자형(instCd: 21)도 수용 (JSON number로 오는 변종 대비 — 자동 감지 실패로
+// 평가 동기화가 no_instcd 상태로 멈추는 경로 방지. 실패 시 설정 수동 입력 안내와 병행)
 export function findInstCd(root) {
   if (!root || typeof root !== 'object') return null;
   const stack = [root];
@@ -431,7 +478,10 @@ export function findInstCd(root) {
     if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
     seen.add(cur);
     for (const [k, v] of Object.entries(cur)) {
-      if (/^inst(cd|code)?$/i.test(k) && typeof v === 'string' && v.trim()) return v.trim();
+      if (/^inst(cd|code)?$/i.test(k)) {
+        if (typeof v === 'string' && v.trim()) return v.trim();
+        if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+      }
     }
     for (const v of Object.values(cur)) {
       if (v && typeof v === 'object') stack.push(v);
@@ -573,7 +623,7 @@ export function parseScheduleRows(rawList) {
     const key = (idParts.length ? idParts.join('_') : `${whenMs}_${detail}_${reqUsr}`)
       .replace(/[^A-Za-z0-9_.-]/g, '_');
 
-    items.push({ key, title, role, whenMs });
+    items.push({ key, title, role, whenMs, state: fixed || '' }); // state=고정코드(협의/확정 구분 알림용)
   }
 
   // key 중복 제거(앞쪽 유지) + 시각순 정렬

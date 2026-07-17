@@ -17,6 +17,8 @@ import {
   projectedMonthly,
   parseAttendance,
   applyOvernightFromPrevMonth,
+  isOpenSessionFresh,
+  MAX_OPEN_SESSION_MS,
   getTodayString,
   buildAlarmName,
   legacyAlarmName,
@@ -166,7 +168,9 @@ test('parseAttendance: 퇴실 누락 세션 → 현재 입실 중, 순서 뒤집
     session('10:00', '11:00'),
     session('14:00', null, true, 'exit')
   ])] };
-  const parsed = parseAttendance(data);
+  // S1: 명시적 nowMs 주입 — 테스트 실행 시각에 무관하게 결정적
+  const nowMs = parseEntryTimestamp(today, '23:00');
+  const parsed = parseAttendance(data, new Date(), nowMs);
   assert.equal(parsed.isCurrentlyIn, true);
   assert.equal(parsed.lastInTime, 14 * 60);
   assert.equal(parsed.entryTimestamp, parseEntryTimestamp(today, '14:00'));
@@ -178,7 +182,8 @@ test('parseAttendance: 세션이 뒤집혀 와도 입실 시각순으로 판정'
     session('14:00', null, true, 'exit'),
     session('09:00', '10:00')
   ])] };
-  const parsed = parseAttendance(data);
+  const nowMs = parseEntryTimestamp(today, '23:00'); // S1: 결정적 nowMs
+  const parsed = parseAttendance(data, new Date(), nowMs);
   assert.equal(parsed.isCurrentlyIn, true);
   assert.equal(parsed.lastInTime, 14 * 60);
 });
@@ -230,7 +235,9 @@ test('applyOvernightFromPrevMonth: 전월 말일 미퇴실 세션 감지', () =>
   const lastDay = new Date(PM_Y, Number(PM_M), 0).getDate();
   prevData.detail_list[1].date = `${PM_Y}-${PM_M}-${String(Math.min(31, lastDay)).padStart(2, '0')}`;
 
-  const applied = applyOvernightFromPrevMonth(parsed, prevData);
+  // S1: 입실 시점 + 90분을 now로 — 전월 말일이 실제 now 기준 stale이라도 결정적으로 fresh
+  const freshNow = parseEntryTimestamp(prevData.detail_list[1].date, '22:30') + 90 * 60000;
+  const applied = applyOvernightFromPrevMonth(parsed, prevData, freshNow);
   assert.equal(applied, true);
   assert.equal(parsed.isCurrentlyIn, true);
   assert.equal(parsed.lastInTime, 22 * 60 + 30);
@@ -495,6 +502,8 @@ import {
   extractEvalDateTimeMs,
   parseScheduleRows,
   diffEvalItems,
+  isEvalConfirmed,
+  mergeDetailLists,
   EVAL_AUTO_ID_PREFIX
 } from '../web/js/shared-attendance.js';
 
@@ -621,6 +630,38 @@ test('parseScheduleRows: 2자리 연도(YY/MM/DD) 폴곤 + scdlBgngDt(일시형)
   assert.equal(items[1].whenMs, new Date(2026, 6, 26, 11, 30).getTime());
 });
 
+// ===== 13차: C2 — fixedCd 상태를 항목에 보존 → 협의중(00001)은 조용히 등록, 확정 전환 감지 =====
+test('parseScheduleRows: 항목에 state(fixedCd) 보존 + isEvalConfirmed 규칙', () => {
+  const rows = [
+    { scdlGubunCd: 'EV', mtlEvlSn: '91', fixedCd: '00001', bgngYmd: '2026.07.20', bgngTm: '14:00', title: '협의중 평가' },
+    { scdlGubunCd: 'EV', mtlEvlSn: '92', fixedCd: '00002', bgngYmd: '2026.07.21', bgngTm: '14:00', title: '확정 평가' },
+    { scdlGubunCd: 'EV', mtlEvlSn: '93', bgngYmd: '2026.07.22', bgngTm: '14:00', title: '상태 미상 평가' } // fixedCd 없음
+  ];
+  const { items } = parseScheduleRows(rows);
+  assert.equal(items.length, 3);
+  assert.equal(items[0].state, '00001');
+  assert.equal(items[1].state, '00002');
+  assert.equal(items[2].state, '');
+  assert.equal(isEvalConfirmed(items[0].state), false); // 협의중 → 조용히
+  assert.equal(isEvalConfirmed(items[1].state), true);  // 확정 → 알림
+  assert.equal(isEvalConfirmed(items[2].state), true);  // 미상 → 알림
+});
+
+// W2: 원샷 알림 키에 박힌 시각으로 id를 결정적으로 계산하는 규칙 (배경: clear 시 다른 id)
+// — notificationIdFor는 adapter 남부 함수라 규칙만 로컬 모사해 검증
+test('원샷 알림 id 규칙: 키의 시각 재사용 + 카운터 네임스페이스와 분리(W2/W3)', () => {
+  const oneshotId = (idKey) => {
+    const embedded = Number(idKey.split('_')[1]) || Date.now();
+    return (1000000000 + (embedded % 1000000000)) | 0;
+  };
+  const key = 'notif_1721234567890';
+  assert.equal(oneshotId(key), oneshotId(key)); // create/clear 동일 id (W2)
+  assert.ok(oneshotId(key) >= 1000000000);       // 1e9 대역 (W3)
+  assert.ok(oneshotId(key) < 2000000000);
+  const counterId = 1001; // NOTIF_ID_BASE+1
+  assert.ok(oneshotId(key) !== counterId);
+});
+
 test('diffEvalItems: added/removed/changed(시각·lead·제목) 판정', () => {
   const prev = [
     { key: 'a', whenMs: 100, title: 't1', leadMinutes: 30, name: 'codyssey_eval_auto_a' },
@@ -644,3 +685,81 @@ test('diffEvalItems: added/removed/changed(시각·lead·제목) 판정', () => 
   assert.equal(diff2.changed.length, 1);
   assert.deepEqual(diffEvalItems(prev, next, 30).added.length, 1);
 });
+// ===== S1(14차): 13시간 이상 경과한 미퇴실 세션은 낡은 기록 — 입실 중/실시간 누적에서 제외 =====
+test('isOpenSessionFresh: 13시간 경계 + 미래 시각', () => {
+  const base = new Date(2026, 6, 18, 22, 0, 0).getTime();
+  assert.equal(isOpenSessionFresh(base - 13 * 3600 * 1000, base), true);  // 정확히 13h → 인정
+  assert.equal(isOpenSessionFresh(base - (13 * 3600 * 1000 + 1), base), false); // 초과 → 낡음
+  assert.equal(isOpenSessionFresh(base + 60000, base), false); // 미래 시각 방어
+  assert.equal(isOpenSessionFresh(null, base), false);
+  assert.equal(MAX_OPEN_SESSION_MS, 13 * 60 * 60 * 1000);
+});
+
+test('parseAttendance(S1): 어제 10:03 미퇴실 세션은 입실 중 아님 — 12시간 캡 표시 방지', () => {
+  // 사용자 제보 재현: 입실 중이 아닌데 12시간 채움 + '입실 10:03' 표시
+  const data = { detail_list: [
+    dayEntry('2026-07-17', '08:00:00', [session('10:03', null, true, 'exit')]) // 퇴실 누락
+  ] };
+  const target = new Date(2026, 6, 18); // 7월 파싱 대상
+  const nowMs = new Date(2026, 6, 18, 22, 3, 0).getTime(); // 36시간 경과 시점
+  const parsed = parseAttendance(data, target, nowMs);
+  assert.equal(parsed.isCurrentlyIn, false);         // 입실 중이면 안 됨
+  assert.equal(parsed.entryTimestamp, null);
+  assert.equal(parsed.staleOpenSession.dateStr, '2026-07-17'); // 진단 정보는 남김
+  assert.equal(parsed.staleOpenSession.entry, '10:03');
+  // 실시간 누적 0 — 서버 확정분(dailyTotal) 외에 살아있는 누적이 없어야 함 (12시간 캡 표시 방지)
+  assert.equal(elapsedSinceEntry(parsed, nowMs), 0);
+  assert.equal(recognizedToday(parsed, nowMs), parsed.dailyTotal); // TZ 무관 불변식
+  assert.equal(recognizedMonthly(parsed, nowMs), parsed.monthlyTotal); // 월도 서버 확정분 그대로
+});
+
+test('parseAttendance(S1): 8시간 전 미퇴실 세션은 여전히 입실 중 (정상 진행)', () => {
+  const data = { detail_list: [
+    dayEntry(today, '02:00:00', [session('09:00', null, true, 'exit')])
+  ] };
+  const nowMs = parseEntryTimestamp(today, '17:00'); // 입실 후 8시간
+  const parsed = parseAttendance(data, new Date(), nowMs);
+  assert.equal(parsed.isCurrentlyIn, true);
+  assert.equal(parsed.staleOpenSession, null);
+  assert.equal(elapsedSinceEntry(parsed, nowMs), 8 * 60);
+});
+
+test('parseAttendance(S1): 낡은 세션과 새 개방 세션이 섞여도 새 세션만 입실 중', () => {
+  const data = { detail_list: [
+    dayEntry('2026-07-17', '08:00:00', [session('10:03', null, true, 'exit')]), // 낡음
+    dayEntry('2026-07-18', '02:00:00', [session('14:00', null, true, 'exit')])  // 새 세션
+  ] };
+  const nowMs = new Date(2026, 6, 18, 22, 3, 0).getTime();
+  const parsed = parseAttendance(data, new Date(2026, 6, 18), nowMs);
+  assert.equal(parsed.isCurrentlyIn, true);
+  assert.equal(parsed.lastInTime, 14 * 60);
+  assert.ok(parsed.staleOpenSession); // 낡은 세션은 진단에 기록
+});
+
+test('applyOvernightFromPrevMonth(S1): 전월 미퇴실이 13시간 이상 경과하면 미적용', () => {
+  const parsed = parseAttendance({ detail_list: [] });
+  const prevData = { detail_list: [
+    dayEntry(`${PM_Y}-${PM_M}-28`, '00:00:00', [session('10:03', null, true, 'exit')])
+  ] };
+  const staleNow = parseEntryTimestamp(`${PM_Y}-${PM_M}-28`, '10:03') + 40 * 3600 * 1000; // 40시간 후
+  assert.equal(applyOvernightFromPrevMonth(parsed, prevData, staleNow), false);
+  assert.equal(parsed.isCurrentlyIn, false);
+  assert.equal(parsed.staleOpenSession.entry, '10:03'); // 낡은 세션 진단 기록
+});
+
+test('elapsedSinceEntry(S1): stale entryTimestamp는 이중 방어로 0 + 13h 상한 캡', () => {
+  const now = Date.now();
+  const stale = { isCurrentlyIn: true, entryTimestamp: now - 20 * 3600 * 1000, lastInTime: null };
+  assert.equal(elapsedSinceEntry(stale, now), 0); // freshness 게이트
+  // parsed에 freshness 없이 직접 주입된 경우의 상한 확인용 — 12.9h는 그대로
+  const near = { isCurrentlyIn: true, entryTimestamp: now - 774 * 60000, lastInTime: null };
+  assert.equal(elapsedSinceEntry(near, now), 774);
+});
+
+// ===== S4(14차): findInstCd 숫자형 수용 =====
+test('findInstCd(S4): 숫자형 instCd도 문자열로 반환', () => {
+  assert.equal(findInstCd({ result: { instCd: 21 } }), '21');
+  assert.equal(findInstCd({ result: { instCd: '00021' } }), '00021'); // 문자열 우선 (앞자리 0 보존)
+  assert.equal(findInstCd({ result: { instCd: 0 } }), '0'); // 숫자는 그대로 문자열화
+});
+

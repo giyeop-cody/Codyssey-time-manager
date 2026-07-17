@@ -23,7 +23,10 @@ public class SyncWorker extends Worker {
         try {
             // keep-alive가 켜져 있을 때만 세션 유지 핑 (G1 도입으로 주기 작업이 상시화되어도
             // keep-alive opt-in 의미는 그대로 유지 — 출입 조회(GateCheck)와 세션 핑은 별개)
-            if (isKeepAliveEnabled(getApplicationContext())) {
+            // B4/W6: 입·퇴실 감지가 켜져 있으면 GateCheck의 인증 조회가 세션을 유지하므로 핑 생략
+            boolean keepAliveEnabled = isKeepAliveEnabled(getApplicationContext());
+            boolean gateEnabled = isGateNotifyEnabled(getApplicationContext());
+            if (keepAliveEnabled && !gateEnabled) {
                 CookieManager.pingKeepAlive(getApplicationContext());
             }
 
@@ -54,6 +57,18 @@ public class SyncWorker extends Worker {
             return new org.json.JSONObject(settingsJson).optBoolean("keepAliveEnabled", false);
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private boolean isGateNotifyEnabled(Context context) {
+        try {
+            android.content.SharedPreferences prefs =
+                    context.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE);
+            String settingsJson = prefs.getString("settings", null);
+            if (settingsJson == null) return true; // 기본 ON (설정 저장 전 부팅 포함)
+            return new org.json.JSONObject(settingsJson).optBoolean("gateNotifyEnabled", true);
+        } catch (Exception e) {
+            return true;
         }
     }
 }
