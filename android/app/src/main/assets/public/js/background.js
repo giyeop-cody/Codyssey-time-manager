@@ -11,6 +11,7 @@ import {
   buildAlarmName,
   legacyAlarmName,
   parseAlarmName,
+  equivalentAlarmNames,
   formatEndMinutes,
   isAlarmStale
 } from './shared-attendance.js';
@@ -252,6 +253,25 @@ async function cancelExitAlarm(memberId, endMinutes, type = 'exit') {
   await setStorage({ [CONFIG.STORAGE_KEYS.ALARMS + memberId]: alarmList });
 }
 
+// 문제2 수정: 저장된 "실제 이름"으로 해제 — 신/구형 이름 모두 정리하고,
+// 어떤 계정 키에 저장됐든 알람 저장소 전수 스캔으로 확실히 제거
+async function cancelAlarmByName(alarmName) {
+  const names = equivalentAlarmNames(alarmName);
+  for (const n of names) {
+    try { await chrome.alarms.clear(n); } catch (e) { /* 무시 */ }
+  }
+
+  const all = await getStorage(null);
+  const alarmKeys = Object.keys(all).filter(k => k.startsWith(CONFIG.STORAGE_KEYS.ALARMS));
+  for (const key of alarmKeys) {
+    const list = all[key] || [];
+    const kept = list.filter(a => !a || !names.includes(a.name));
+    if (kept.length !== list.length) {
+      await setStorage({ [key]: kept });
+    }
+  }
+}
+
 async function getActiveAlarms(memberId) {
   const alarms = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
   const list = alarms[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
@@ -449,13 +469,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
         // --- 알람 해제 ---
         case 'CANCEL_ALARM': {
+          // 문제2 수정: memberId로 이름을 재계산하지 않고 "목록에 저장된 실제 이름"으로 해제.
+          // (세션 만료/계정 전환 등으로 memberId가 달라도 저장된 알람과 반드시 일치)
+          if (message.alarmName) {
+            await cancelAlarmByName(message.alarmName);
+            sendResponse({ success: true });
+            break;
+          }
+          // 하위 호환(endMinutes/type): 목록에서 해당 항목의 실제 이름을 우선 찾아 해제
           const memberId = await getMemberId();
           if (!memberId) {
             sendResponse({ success: false, error: 'NOT_LOGGED_IN' });
             return;
           }
           const { endMinutes, alarmType } = message;
-          await cancelExitAlarm(memberId, endMinutes, alarmType || 'exit');
+          const stored = await getStorage([CONFIG.STORAGE_KEYS.ALARMS + memberId]);
+          const listForFind = stored[CONFIG.STORAGE_KEYS.ALARMS + memberId] || [];
+          const found = listForFind.find(a =>
+            a && a.endMinutes === endMinutes && (a.type || 'exit') === (alarmType || 'exit'));
+          if (found && found.name) {
+            await cancelAlarmByName(found.name);
+          } else {
+            await cancelExitAlarm(memberId, endMinutes, alarmType || 'exit');
+          }
           sendResponse({ success: true });
           break;
         }

@@ -5,7 +5,8 @@
 
 import {
   parseAttendance,
-  applyOvernightFromPrevMonth
+  applyOvernightFromPrevMonth,
+  equivalentAlarmNames
 } from './shared-attendance.js';
 
 (function() {
@@ -308,19 +309,46 @@ import {
       }
 
       case 'CANCEL_ALARM': {
+        // 문제2 수정: memberId로 이름을 재계산하지 않고 "목록에 저장된 실제 이름"으로 해제.
+        // (memberId가 'unknown'이거나 계정 전환 시 실제 이름과 불일치해 해제가 무음 실패하던 결함)
+        if (message.alarmName) {
+          const names = equivalentAlarmNames(message.alarmName);
+          if (Plugins.AlarmPlugin) {
+            for (const n of names) {
+              try { await Plugins.AlarmPlugin.cancel({ id: n }); } catch (e) { /* 무시 */ }
+            }
+          }
+          const keptByName = (await getStoredAlarms()).filter(a => !a || !names.includes(a.name));
+          await setPrefs(STORE_KEYS.ALARMS, keptByName);
+          return { success: true };
+        }
+
+        // 하위 호환(endMinutes/type): 목록에서 해당 항목의 실제 이름을 우선 찾아 해제
         const endMinutes = message.endMinutes;
         const type = message.alarmType || 'exit';
-        const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
-        const alarmName = `codyssey_alarm_${memberId}_${type}_${endMinutes}`;
-        const legacyName = `codyssey_exit_${memberId}_${endMinutes}`;
+        const alarmsNow = await getStoredAlarms();
+        const found = alarmsNow.filter(a =>
+          a && a.endMinutes === endMinutes && (a.type || 'exit') === type);
+
+        const namesToCancel = new Set();
+        if (found.length > 0) {
+          for (const item of found) {
+            for (const n of equivalentAlarmNames(item.name)) namesToCancel.add(n);
+          }
+        } else {
+          // 목록에 없으면 기존처럼 이름을 재계산(폴곤)
+          const memberId = (await getPrefs(STORE_KEYS.MEMBER_ID)) || 'unknown';
+          namesToCancel.add(`codyssey_alarm_${memberId}_${type}_${endMinutes}`);
+          namesToCancel.add(`codyssey_exit_${memberId}_${endMinutes}`);
+        }
 
         if (Plugins.AlarmPlugin) {
-          try { await Plugins.AlarmPlugin.cancel({ id: alarmName }); } catch (e) { /* 무시 */ }
-          try { await Plugins.AlarmPlugin.cancel({ id: legacyName }); } catch (e) { /* 무시 */ }
+          for (const n of namesToCancel) {
+            try { await Plugins.AlarmPlugin.cancel({ id: n }); } catch (e) { /* 무시 */ }
+          }
         }
-        const alarms = (await getStoredAlarms())
-          .filter(a => a.name !== alarmName && a.name !== legacyName);
-        await setPrefs(STORE_KEYS.ALARMS, alarms);
+        const kept = alarmsNow.filter(a => !a || !namesToCancel.has(a.name));
+        await setPrefs(STORE_KEYS.ALARMS, kept);
         return { success: true };
       }
 

@@ -143,6 +143,7 @@ let currentParsed = null;
 let currentSettings = null;
 let refreshTimer = null;
 let realtimeTimer = null;
+let alarmListTimer = null; // 문제1: 알람 목록 자동 갱신
 let keepAliveTimer = null;
 let keepAliveEnabled = true;
 let exitAlarmEndMinutes = null;
@@ -218,6 +219,7 @@ async function loadDashboard(forceRefresh = false) {
     updateLastUpdateTime();
     updateKeepAliveUI();
     startRealtimeUpdate();
+    startAlarmListRefresh(); // 문제1: 알람 목록 주기 갱신
     renderCalendar(); // 캘린더 렌더링
     
     showDashboard();
@@ -341,6 +343,22 @@ function stopRealtimeUpdate() {
   }
 }
 
+// 문제1: 팝업을 열어둔 채 알람이 울리고 지나가도 목록이 스스로 정리되도록
+// (1분 간격으로 GET_ALARMS → 서버측 K8 정리 + renderAlarms의 시간 지남 필터)
+function startAlarmListRefresh() {
+  clearAlarmListRefresh();
+  alarmListTimer = setInterval(() => {
+    loadAndRenderAlarms();
+  }, 60 * 1000);
+}
+
+function clearAlarmListRefresh() {
+  if (alarmListTimer) {
+    clearInterval(alarmListTimer);
+    alarmListTimer = null;
+  }
+}
+
 function updateRealtimeUI() {
   if (!currentParsed?.isCurrentlyIn || !currentParsed?.lastInTime) {
     els.realtimeStatus.classList.remove('show');
@@ -453,23 +471,25 @@ async function loadAndRenderAlarms() {
 }
 
 function renderAlarms(alarms) {
-  if (!alarms || alarms.length === 0) {
+  // 문제1 수정: 렌더 시점에도 시간 지남 항목은 제거 — 어떤 경로(구버전 데이터/걸러지지 않은 응답)로든
+  // "(시간 지남)" 유령 항목이 화면에 남지 않도록 최종 방어선을 둠
+  const nowRender = Date.now();
+  const liveAlarms = (alarms || []).filter(a => a && typeof a.time === 'number' && a.time > nowRender);
+
+  if (liveAlarms.length === 0) {
     els.alarmsList.innerHTML = '<div class="alarms-empty">설정된 알람이 없습니다.</div>';
     els.alarmsCount.textContent = '0개';
     return;
   }
   
-  els.alarmsCount.textContent = `${alarms.length}개`;
+  els.alarmsCount.textContent = `${liveAlarms.length}개`;
   
   const now = Date.now();
-  els.alarmsList.innerHTML = alarms.map(alarm => {
-    const isPast = alarm.time < now;
+  els.alarmsList.innerHTML = liveAlarms.map(alarm => {
     const timeStr = formatEndMinutes(alarm.endMinutes);
     const label = alarm.label || '알람';
     const type = alarm.type || (label.includes('퇴실') ? 'exit' : 'goal');
-    const remainingMs = alarm.time - now;
-    const remainingMin = Math.max(0, Math.ceil(remainingMs / 60000));
-    const remainingStr = remainingMin > 0 ? ` (${remainingMin}분 후)` : ' (시간 지남)';
+    const remainingMin = Math.max(1, Math.ceil((alarm.time - now) / 60000));
     const createdStr = alarm.createdAt
       ? new Date(alarm.createdAt).toLocaleString()
       : new Date(alarm.time).toLocaleString();
@@ -478,21 +498,21 @@ function renderAlarms(alarms) {
       <div class="alarm-item ${type}" data-end-minutes="${alarm.endMinutes}" data-alarm-type="${type}">
         <div class="alarm-info">
           <div class="alarm-label">${label}</div>
-          <div class="alarm-time">${timeStr}${remainingStr}</div>
+          <div class="alarm-time">${timeStr} (${remainingMin}분 후)</div>
           <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
         <div class="alarm-actions">
-          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList(${alarm.endMinutes}, '${type}')">해제</button>
+          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList('${alarm.name}')">해제</button>
         </div>
       </div>
     `;
   }).join('');
 }
 
-// 전역 함수로 노출 (onclick에서 호출하기 위해)
-window.cancelAlarmFromList = async function(endMinutes, alarmType = 'exit') {
+// 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
+window.cancelAlarmFromList = async function(alarmName) {
   try {
-    await sendMessage('CANCEL_ALARM', { endMinutes, alarmType });
+    await sendMessage('CANCEL_ALARM', { alarmName });
     showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
     await loadAndRenderAlarms();
     // 계산기 버튼 상태도 동기화
@@ -1235,6 +1255,7 @@ async function logout() {
     stopRealtimeUpdate();
     stopKeepAlive();
     clearRefreshTimer();
+    clearAlarmListRefresh();
     await sendMessage('LOGOUT');
     currentMemberId = null;
     currentParsed = null;
@@ -1289,7 +1310,7 @@ function setupEventListeners() {
       await performLogin(email, password);
 
       // Q1: 세션 전환 — 저장된 이전 memberId/캐시 폐기 후 신선 조회
-      // (다른 계정으로 로그인필시 이전 mbrId로 API를 호출하는 스테일 방지)
+      // (다른 계정으로 로그인 시 이전 mbrId로 API를 호출하는 스테일 방지)
       await sendMessage('CLEAR_MEMBER_ID');
       window.calendarParsed = null;
 
@@ -1435,4 +1456,5 @@ window.addEventListener('beforeunload', () => {
   stopRealtimeUpdate();
   stopKeepAlive();
   clearRefreshTimer();
+  clearAlarmListRefresh();
 });

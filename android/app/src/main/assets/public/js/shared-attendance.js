@@ -238,3 +238,15 @@ export function parseAlarmName(name) {
   }
   return null;
 }
+
+// 이름 재계산 없이 해제(cancel) 가능하도록, 같은 알람의 신/구형 이름 쌍을 반환 (문제2 수정)
+// - memberId를 다시 조립하지 않고 "이미 저장된 이름"만으로 해제할 때
+//   양쪽 명명 규칙을 모두 정리하기 위함
+export function equivalentAlarmNames(name) {
+  if (!name || typeof name !== 'string') return [];
+  const parsed = parseAlarmName(name);
+  if (!parsed) return [name]; // 파싱 불가라도 주어진 이름 자체는 해제 시도
+  const modern = buildAlarmName(parsed.memberId, parsed.type, parsed.endMinutes);
+  const legacy = legacyAlarmName(parsed.memberId, parsed.endMinutes);
+  return modern === legacy ? [modern] : [modern, legacy];
+}

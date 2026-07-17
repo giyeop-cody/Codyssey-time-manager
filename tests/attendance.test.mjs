@@ -309,3 +309,30 @@ test('isAlarmStale: 15분 초과 지연만 stale', async () => {
   assert.equal(isAlarmStale(0, now), false);                 // 정보 없음 → 정상 간주
   assert.equal(isAlarmStale(null, now), false);
 });
+
+// ===== 문제2: equivalentAlarmNames (이름 재계산 없는 해제용 신/구형 쌍) =====
+test('equivalentAlarmNames: 신형 이름 → [신형, 구형] 쌍', async () => {
+  const { equivalentAlarmNames } = await import('../web/js/shared-attendance.js');
+  assert.deepEqual(
+    equivalentAlarmNames('codyssey_alarm_100_exit_1080'),
+    ['codyssey_alarm_100_exit_1080', 'codyssey_exit_100_1080']
+  );
+});
+
+test('equivalentAlarmNames: 구형 이름 → [신형, 구형] 동일 쌍 (순서 무관 의미)', async () => {
+  const { equivalentAlarmNames } = await import('../web/js/shared-attendance.js');
+  const names = equivalentAlarmNames('codyssey_exit_100_1080');
+  assert.ok(names.includes('codyssey_exit_100_1080'));
+  assert.ok(names.includes('codyssey_alarm_100_exit_1080'));
+  assert.equal(names.length, 2);
+});
+
+test('equivalentAlarmNames: goal 타입도 대응 + 파싱 불가도 자기 자신은 반환', async () => {
+  const { equivalentAlarmNames } = await import('../web/js/shared-attendance.js');
+  const names = equivalentAlarmNames('codyssey_alarm_7_goal_1560');
+  assert.ok(names.includes('codyssey_alarm_7_goal_1560'));
+  assert.ok(names.includes('codyssey_exit_7_1560')); // 구형은 exit 단일 타입
+  assert.deepEqual(equivalentAlarmNames('some_random_alarm'), ['some_random_alarm']);
+  assert.deepEqual(equivalentAlarmNames(''), []);
+  assert.deepEqual(equivalentAlarmNames(null), []);
+});

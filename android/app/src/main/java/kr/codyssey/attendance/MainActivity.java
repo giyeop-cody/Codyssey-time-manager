@@ -20,7 +20,7 @@ public class MainActivity extends BridgeActivity {
         instance = this;
 
         // 커스텀 Capacitor 플러그인 등록 (반드시 super.onCreate 전에 호출)
-        // Q8: NotificationPlugin은 JS 미사용 데드 브리지였기에 util.NotificationHelper로 대첩
+        // Q8: NotificationPlugin은 JS 미사용 데드 브리지였기에 util.NotificationHelper로 대체
         registerPlugin(NetworkPlugin.class);
         registerPlugin(AlarmPlugin.class);
 
