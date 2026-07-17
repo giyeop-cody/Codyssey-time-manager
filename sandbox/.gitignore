@@ -1,0 +1,4 @@
+# 중계 서버가 실행 중 생성하는 표지식 정보 파일 — 절대 커밋 금지
+relay_kv.json
+relay_cookies.txt
+popup-sandbox.html
