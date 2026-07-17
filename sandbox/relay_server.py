@@ -217,6 +217,18 @@ def fetch_eval_schedule(member_id, inst_cd, from_ymd, to_ymd):
     return data
 
 
+def fetch_eval_alarm_list(page=1, page_per_rows=30):
+    # E3(15차): 알림함 목록 — 실측 페이로드 {"page":N,"pagePerRows":M} (사용자 제공 명세)
+    body = json.dumps({'page': page, 'pagePerRows': page_per_rows}).encode('utf-8')
+    _, _, text = http_request(
+        f'{LMS_BASE}/alarm/alarmList/list', method='POST', data=body,
+        headers={'Content-Type': 'application/json'})
+    data = json_or_none(text)
+    if not isinstance(data, dict):
+        raise AuthRequired()
+    return data
+
+
 def summarize_eval_rows(raw):
     """샌드박스 실데이터 확인용 — reqList 각 행의 핵심 필드만 축약."""
     rows = (((raw or {}).get('result') or {}).get('reqList'))
@@ -412,6 +424,13 @@ def handle_msg(msg):
         # 샌드박스 실데이터 확인용 축약 (필드명/상태코드 검증) — 원문 raw도 그대로 전달
         return {'success': True, 'raw': raw, 'rows': summarize_eval_rows(raw),
                 'host': LMS_BASE}
+
+    if t == 'EVAL_ALARM_LIST':
+        mid = ensure_member_id()
+        if not mid:
+            return {'success': False, 'error': 'NOT_LOGGED_IN'}
+        raw = fetch_eval_alarm_list(msg.get('page') or 1, msg.get('pagePerRows') or 30)
+        return {'success': True, 'raw': raw, 'host': LMS_BASE}
 
     if t == 'LOCAL_NOTIFY':
         return {'success': True}  # 팝업(하네스)이 직접 표시

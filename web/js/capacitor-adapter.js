@@ -20,7 +20,12 @@ import {
   diffEvalItems,
   isEvalConfirmed,
   mergeDetailLists,
-  EVAL_AUTO_ID_PREFIX
+  EVAL_AUTO_ID_PREFIX,
+  parseEvalNoticeAlarms,
+  filterNewEvalNotices,
+  EVAL_NOTICE_PAGE_PER_ROWS,
+  EVAL_NOTICE_DEDUP_MS,
+  EVAL_NOTICE_SEEN_TTL_MS
 } from './shared-attendance.js';
 
 (function() {
@@ -758,13 +763,150 @@ import {
     return evalSyncInFlight;
   }
 
+  // 15차(E3): 스케줄 채널 + 알림함 채널 이원화 — 한쪽 실패필도 다른 채널로 감지
   async function doSyncEvalAlarms(memberId) {
+    if (!memberId || !Plugins.AlarmPlugin) return { ok: false, reason: 'unavailable' };
+    const settings = await getSettings();
+    if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
+
+    let schedErr = null;
+    let schedInfo = null;
+    let noticeErr = null;
+    let noticeInfo = null;
     try {
-      if (!memberId || !Plugins.AlarmPlugin) return { ok: false, reason: 'unavailable' };
-      const settings = await getSettings();
-      if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
-      const instCd = await resolveInstCd();
-      if (!instCd) return { ok: false, reason: 'no_instcd' };
+      schedInfo = await syncEvalScheduleChannel(memberId, settings);
+    } catch (e) {
+      schedErr = String(e.message || 'unknown');
+      console.warn('[Adapter] 평가 동기화(스케줄 채널) 실패:', schedErr);
+    }
+    try {
+      noticeInfo = await syncEvalNoticeChannel(memberId, settings);
+    } catch (e) {
+      noticeErr = String(e.message || 'unknown');
+      console.warn('[Adapter] 평가 동기화(알림함 채널) 실패:', noticeErr);
+    }
+
+    // S4/15차: 채널별 실패 사유 병합 기록
+    try {
+      const cur = (await getPrefs(EVAL_STATE_KEY)) || {};
+      const merged = { ...cur };
+      if (schedErr) { merged.lastError = schedErr; merged.lastErrorAt = Date.now(); }
+      else { delete merged.lastError; delete merged.lastErrorAt; }
+      if (noticeErr) { merged.alarmError = noticeErr; merged.alarmErrorAt = Date.now(); }
+      else { delete merged.alarmError; delete merged.alarmErrorAt; }
+      if (noticeInfo) merged.noticeFresh = noticeInfo.fresh;
+      await setPrefs(EVAL_STATE_KEY, merged);
+    } catch (e2) { /* 상태 기록 실패는 무시 */ }
+
+    return {
+      ok: !schedErr || !noticeErr,
+      ...(schedInfo || {}),
+      reason: schedErr || undefined,
+      noticeError: noticeErr || undefined,
+      noticeFresh: noticeInfo ? noticeInfo.fresh : undefined
+    };
+  }
+
+  // E3(15차): 알림함(alarmList/list) 평가 감지 채널 — body으로 페이로드 전송
+  const EVAL_NOTICE_STATE_KEY = 'eval_notice_seen';
+
+  async function fetchEvalNoticeList(page = 1, pagePerRows = EVAL_NOTICE_PAGE_PER_ROWS) {
+    if (!Plugins.NetworkPlugin) throw new Error('NETWORK_PLUGIN_UNAVAILABLE');
+    const res = await Plugins.NetworkPlugin.fetch({
+      url: `${EVAL_SCHEDULE_API}/alarm/alarmList/list`,
+      method: 'POST',
+      body: { page, pagePerRows } // 실측 페이로드 (사용자 제공 명세)
+    });
+    if (isAuthStatus(res.status)) {
+      await clearSessionIdentity();
+      throw new Error('NOT_LOGGED_IN');
+    }
+    if (res.status !== 200) throw new Error(`EVAL_NOTICE_API_ERROR_${res.status || 0}`);
+    const json = res.json || safeJson(res.data);
+    if (!json) throw new Error('EVAL_NOTICE_PARSE_ERROR');
+    return json;
+  }
+
+  async function upsertEvalAlarmEntryNative(entry) {
+    const alarms = await getStoredAlarms();
+    const kept = alarms.filter(a => !a || a.name !== entry.name);
+    kept.push(entry);
+    await setPrefs(STORE_KEYS.ALARMS, kept);
+  }
+
+  async function syncEvalNoticeChannel(memberId, settings) {
+    const raw = await fetchEvalNoticeList(1);
+    const list = (raw && raw.result && (raw.result.list || raw.result.items)) || raw.list || [];
+    const items = parseEvalNoticeAlarms(list);
+    const seen = ((await getPrefs(EVAL_NOTICE_STATE_KEY)) || {}).ids || {};
+    const fresh = filterNewEvalNotices(seen, items);
+    let notified = 0;
+    let scheduled = 0;
+
+    if (fresh.length) {
+      const lead = settings.evalLeadMinutes ?? 30;
+      const now = Date.now();
+      const currentAlarms = (await getStoredAlarms())
+        .filter(a => a && a.type === 'eval' && typeof a.evalWhen === 'number');
+
+      for (const it of fresh) {
+        seen[it.pstartSn] = { whenMs: it.whenMs, title: it.title, firstSeenAt: now };
+
+        // E3 중복 방지: 스케줄 채널이 같은 평가(±2분)를 이미 알람으로 잡았으면 캐시만
+        const covered = currentAlarms.some(a => Math.abs(a.evalWhen - it.whenMs) <= EVAL_NOTICE_DEDUP_MS);
+        if (covered) continue;
+        if (it.whenMs <= now) continue;
+
+        const name = buildEvalAlarmName(EVAL_AUTO_ID_PREFIX + it.key);
+        const triggerAt = Math.max(it.whenMs - lead * 60000, now + 5000);
+        if (Plugins.AlarmPlugin) {
+          await Plugins.AlarmPlugin.schedule({
+            triggerTimeMillis: triggerAt,
+            label: `📋 평가 ${lead}분 전: ${it.title}`,
+            id: name
+          });
+        }
+        await upsertEvalAlarmEntryNative({
+          name,
+          time: triggerAt,
+          label: `📋 ${it.title}`,
+          endMinutes: null,
+          type: 'eval',
+          evalTitle: it.title,
+          evalWhen: it.whenMs,
+          leadMinutes: lead,
+          auto: true,
+          state: it.state || '',
+          createdAt: now
+        });
+        currentAlarms.push({ evalWhen: it.whenMs, type: 'eval' });
+        scheduled++;
+        if (settings.notificationsEnabled && notified < 3) {
+          notified++;
+          // 안정 id — 캐시 쓰기 전 재실행돼도 같은 알림 id로 중복 표시되지 않음
+          await scheduleLocalNotification(
+            '📋 평가 일정 감지',
+            `${formatEvalWhenKo(it.whenMs)} — ${it.title} (알림함 감지 · ${lead}분 전 알람 등록)`,
+            `evalnotice_${it.pstartSn}`
+          );
+        }
+      }
+
+      // seen 캐시 프루닝 + 저장
+      const cutoff = Date.now() - EVAL_NOTICE_SEEN_TTL_MS;
+      for (const k of Object.keys(seen)) {
+        if ((seen[k].firstSeenAt || 0) < cutoff) delete seen[k];
+      }
+      await setPrefs(EVAL_NOTICE_STATE_KEY, { ids: seen, updatedAt: Date.now() });
+    }
+    return { ok: true, fresh: fresh.length, notified, scheduled, total: items.length };
+  }
+
+  // 채널1: scheduleAllList (기존 E2 로직)
+  async function syncEvalScheduleChannel(memberId, settings) {
+    const instCd = await resolveInstCd();
+    if (!instCd) throw new Error('no_instcd');
+    try {
 
       const state = await getPrefs(EVAL_STATE_KEY);
       const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
@@ -870,25 +1012,19 @@ import {
       });
       return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
     } catch (e) {
-      console.warn('[Adapter] 평가 일정 동기화 실패:', e.message);
-      // S4: 실패 사유를 상태에 남김 — 팝업이 "연동 실패 원인"을 표시 (기존 항목/알람은 유지)
-      try {
-        const cur = (await getPrefs(EVAL_STATE_KEY)) || {};
-        await setPrefs(EVAL_STATE_KEY, {
-          ...cur, lastError: String(e.message || 'unknown'), lastErrorAt: Date.now()
-        });
-      } catch (e2) { /* 상태 기록 실패는 무시 */ }
-      return { ok: false, reason: e.message };
+      throw e; // 실패 병합 기록은 오케스트레이터(doSyncEvalAlarms)에서 일원 처리
     }
   }
 
-  // GET_STATUS 팝업 표시용 평가 동기화 상태 요약 (S4)
+  // GET_STATUS 팝업 표시용 평가 동기화 상태 요약 (S4/15차: 알림함 채널 오류 포함)
   function summarizeEvalSyncState(state) {
-    if (!state) return { fetchedAt: 0, items: 0, lastError: null };
+    if (!state) return { fetchedAt: 0, items: 0, lastError: null, alarmError: null };
     return {
       fetchedAt: state.fetchedAt || 0,
       items: Array.isArray(state.items) ? state.items.length : 0,
-      lastError: state.lastError || null
+      lastError: state.lastError || null,
+      alarmError: state.alarmError || null,
+      noticeFresh: state.noticeFresh || 0
     };
   }
 

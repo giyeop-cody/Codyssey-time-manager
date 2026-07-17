@@ -115,6 +115,23 @@ public class EvalSync {
         long fetchedAt = state.optLong("fetchedAt", 0);
         if (System.currentTimeMillis() - fetchedAt < THROTTLE_MS) return;
 
+        // E3(15차): 알림함 채널 — instCd 불필요, 스케줄 채널 실패(403/세션 만료 등)와 무관하게 시도
+        int noticeFresh = 0;
+        String noticeError = null;
+        try {
+            noticeFresh = syncNoticeChannel(context, prefs, lead, notifEnabled);
+        } catch (Exception e) {
+            noticeError = "notice_" + (e.getMessage() != null ? e.getMessage() : "error");
+        }
+        state.put("noticeFresh", noticeFresh);
+        if (noticeError != null) {
+            state.put("alarmError", noticeError);
+            state.put("alarmErrorAt", System.currentTimeMillis());
+        } else {
+            state.remove("alarmError");
+            state.remove("alarmErrorAt");
+        }
+
         String instCd = resolveInstCd(context, prefs, settings);
         if (instCd == null || instCd.isEmpty()) {
             recordSkip(prefs, state, "no_instcd");
@@ -281,8 +298,158 @@ public class EvalSync {
         newState.put("fetchedAt", now);
         newState.put("skipped", parsed.skipped);
         newState.put("nonEv", parsed.nonEv);
+        newState.put("noticeFresh", noticeFresh);
+        if (noticeError != null) {
+            newState.put("alarmError", noticeError);
+            newState.put("alarmErrorAt", System.currentTimeMillis());
+        }
         if (parsed.sampleKeys != null) newState.put("sampleKeys", parsed.sampleKeys);
         prefs.edit().putString(STATE_KEY, newState.toString()).apply();
+    }
+
+    // ===== E3(15차): 알림함(alarm/alarmList/list) 평가 감지 채널 =====
+    // - "평가 지정" 시스템 알림(실측 sysDivCd 00017 등)에서 평가예정일시를 읽어
+    //   신규 1걸당 1회 알림 + N분 전 알람 등록. pstartSn 캐시로 중복 알림 방지.
+    // - 스케줄 채널(scheduleAllList)이 이미 잡은 평가(±2분)는 캐시만 (중복 알람/알림 방지)
+    private static final String NOTICE_STATE_KEY = "eval_notice_seen";
+    private static final Pattern NOTICE_WHEN_RE = Pattern.compile(
+            "평가예정일시\\s*[:：]\\s*(20\\d\\d)-(0[1-9]|1[0-2])-(0[1-9]|[12]\\d|3[01])[ T]([01]\\d|2[0-3]):([0-5]\\d)(?::([0-5]\\d))?");
+
+    private static int syncNoticeChannel(Context context, SharedPreferences prefs, int lead,
+                                         boolean notifEnabled) throws Exception {
+        JSONObject payload = new JSONObject();
+        payload.put("page", 1);
+        payload.put("pagePerRows", 30); // JS EVAL_NOTICE_PAGE_PER_ROWS
+        CookieManager.HttpResult res = CookieManager.httpRequest(
+                context, SCHEDULE_API + "/alarm/alarmList/list", "POST", payload.toString());
+        if (res.status != 200) throw new Exception("api_" + res.status);
+
+        JSONObject raw = new JSONObject(res.body);
+        JSONObject result = raw.optJSONObject("result");
+        JSONArray rows = result != null ? result.optJSONArray("list") : raw.optJSONArray("list");
+        if (rows == null) return 0;
+
+        JSONObject seenRoot = readJson(prefs.getString(NOTICE_STATE_KEY, null));
+        JSONObject ids = seenRoot.optJSONObject("ids");
+        if (ids == null) ids = new JSONObject();
+
+        long now = System.currentTimeMillis();
+        int fresh = 0;
+        int notified = 0;
+        JSONArray alarmList = readAlarmList(prefs); // 스케줄 채널 포함 전체 알람 목록
+
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject row = rows.optJSONObject(i);
+            if (row == null) continue;
+            long snL = row.optLong("pstartSn", -1);
+            if (snL < 0) continue;
+            String sn = String.valueOf(snL);
+            if (ids.has(sn)) continue;
+
+            String bodyText = unescapeAlarmHtml(row.optString("pstartCn", ""));
+            if (!bodyText.contains("평가예정일시")) continue; // 종료/포인트/레벨 등 배제
+            Matcher wm = NOTICE_WHEN_RE.matcher(bodyText);
+            if (!wm.find()) continue;
+
+            String title0 = row.optString("pstartTitlNm", "");
+            if ((title0.contains("종료") || title0.contains("취소"))
+                    && !(title0.contains("지정") || title0.contains("배정") || title0.contains("안내"))) {
+                continue; // 종료/취소 변종 방어 (JS parseEvalNoticeAlarms와 동일 규칙)
+            }
+
+            Calendar cal = Calendar.getInstance();
+            cal.clear();
+            cal.set(Integer.parseInt(wm.group(1)), Integer.parseInt(wm.group(2)) - 1,
+                    Integer.parseInt(wm.group(3)), Integer.parseInt(wm.group(4)),
+                    Integer.parseInt(wm.group(5)), wm.group(6) != null ? Integer.parseInt(wm.group(6)) : 0);
+            long whenMs = cal.getTimeInMillis();
+
+            String requester = noticeField(bodyText, "요청자")
+                    .replaceAll("\\s*\\([^)]*\\)\\s*$", "").trim(); // 이름(이메일) → 이름
+            String project = noticeField(bodyText, "프로젝트명");
+            String role = (title0 + " " + bodyText).contains("동료평가자") ? "A" : "";
+            StringBuilder bits = new StringBuilder();
+            if ("A".equals(role)) bits.append("평가자");
+            if (!requester.isEmpty()) {
+                if (bits.length() > 0) bits.append(" · ");
+                bits.append("요청자: ").append(requester);
+            }
+            String title = (project.isEmpty() ? "평가" : project)
+                    + (bits.length() > 0 ? " (" + bits + ")" : "");
+
+            fresh++;
+            JSONObject rec = new JSONObject();
+            rec.put("whenMs", whenMs);
+            rec.put("title", title);
+            rec.put("firstSeenAt", now);
+            ids.put(sn, rec);
+
+            // 중복 방지: 같은 시각(±2분)의 eval 알람이 이미 있으면 캐시만
+            boolean covered = false;
+            for (int j = 0; j < alarmList.length(); j++) {
+                JSONObject a = alarmList.optJSONObject(j);
+                if (a == null || !"eval".equals(a.optString("type", ""))) continue;
+                long ew = a.optLong("evalWhen", 0);
+                if (ew > 0 && Math.abs(ew - whenMs) <= 2 * 60000L) { covered = true; break; }
+            }
+            if (covered || whenMs <= now) continue;
+
+            String name = "codyssey_eval_auto_notice_" + sn;
+            long triggerAt = Math.max(whenMs - lead * 60000L, now + 5000);
+            // B9와 동일 허용 상한 (lead+5분)
+            AlarmPlugin.scheduleExactAlarmAt(context, triggerAt, name,
+                    "📋 평가 " + lead + "분 전: " + title, lead * 60000L + 5 * 60000L);
+            AlarmPlugin.trackScheduled(context, name);
+            upsertAlarmList(prefs, name, triggerAt, title, whenMs, lead, "");
+            JSONObject justAdded = new JSONObject(); // 동일 pass 내 dedup 정확도
+            justAdded.put("type", "eval");
+            justAdded.put("evalWhen", whenMs);
+            alarmList.put(justAdded);
+
+            if (notifEnabled && notified < MAX_NOTIFY_PER_PASS) {
+                notified++;
+                NotificationHelper.showNotification(context,
+                        "📋 평가 일정 감지",
+                        formatWhenKo(whenMs) + " — " + title + " (알림함 감지 · " + lead + "분 전 알람 등록)",
+                        "evalnotice_" + sn);
+            }
+        }
+
+        // seen 캐시 프루닝(90일) + 저장
+        long cutoff = now - 90L * 24 * 3600 * 1000;
+        List<String> drop = new ArrayList<>();
+        java.util.Iterator<String> keys = ids.keys();
+        while (keys.hasNext()) {
+            String k = keys.next();
+            JSONObject r = ids.optJSONObject(k);
+            if (r == null || r.optLong("firstSeenAt", 0) < cutoff) drop.add(k);
+        }
+        for (String k : drop) ids.remove(k);
+        seenRoot.put("ids", ids);
+        seenRoot.put("updatedAt", now);
+        prefs.edit().putString(NOTICE_STATE_KEY, seenRoot.toString()).apply();
+        return fresh;
+    }
+
+    // JS unescapeAlarmHtml과 동일 규칙 (엔티티 디코드 → <br> 개행 → 태그 제거 → &amp; 마지막)
+    private static String unescapeAlarmHtml(String s) {
+        if (s == null) return "";
+        return s.replaceAll("(?i)&lt;", "<")
+                .replaceAll("(?i)&gt;", ">")
+                .replaceAll("(?i)&quot;", "\"")
+                .replaceAll("(?i)&#0?39;|(?i)&#x27;", "'")
+                .replaceAll("(?i)&nbsp;", " ")
+                .replaceAll("(?i)<\\s*br\\s*/?\\s*>", "\n")
+                .replaceAll("<[^>]+>", "")
+                .replaceAll("(?i)&amp;", "&")
+                .replace("\r", "");
+    }
+
+    // 라인 필드("label : value") 추출 — 개행까지
+    private static String noticeField(String text, String label) {
+        Matcher m = Pattern.compile("(?m)^\\s*" + Pattern.quote(label) + "\\s*[:：]\\s*(.+)$")
+                .matcher(text);
+        return m.find() ? m.group(1).trim() : "";
     }
 
     // 실패 시 fetchedAt만 갱신 (내용 유지) — 세션 만료 등에서 15분마다 두드리지 않게

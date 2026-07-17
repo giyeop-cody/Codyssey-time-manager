@@ -101,3 +101,16 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 - **세션 쿠키는 `JSESSIONID` · `Domain=codyssey.kr`** — *.codyssey.kr 전 서브도메인에 자동 송신 (SameSite=None+Secure라 cross-site fetch도 withCredentials면 가능). 기존 "host-only 쿠키" 가설보다 좋은 조건.
 - **서버가 403을 내는 유일한 경로는 "허용되지 않은 Origin 헤더"** — 우리 클라이언트(크롬 익스텐션 fetch / 네이티브 HttpURLConnection)는 Origin 헤더가 붙지 않으므로 메커니즘상 정상. 브라우저 주소창에 URL을 직접 붙여 넣으면 302→/login 흐름(또는 http→:80 비정상 리다이렉트)으로 이어지는데, 이것은 미인증 상태의 정상 동작.
 - 그래도 **실패 가시성**이 없으면 사용자가 원인을 알 수 없으므로, 14차에서 팝업에 평가 연동 상태(시각/건수/실패 사유)를 표시하고 본문 없는 POST의 Content-Type을 제거함(S4).
+
+## 부록 2: 알림함 평가 감지 채널 (E3, 15차) — /alarm/alarmList/list 실측
+
+사용자 제공 실측 명세(2026-07-14 데이터):
+- `POST https://api.usr.codyssey.kr/alarm/alarmList/list` — 본문 JSON `{"page":1,"pagePerRows":10}`
+- 응답 `result.list[]` + `result.paginator` (최신순)
+- 평가 지정 알림 식별: 본문(`pstartCn`)에 **`평가예정일시 : YYYY-MM-DD HH:MM:SS`** 가 있는 행
+  - 실측: sysDivCd `00017` "동료평가자로 지정 되었습니다." (요청자/Discord ID/프로젝트명/학습과정명/단위문제명 필드 포함)
+  - 종료 계열(00020)은 '평가종료일시'라 자연 제외. 포인트/레벨 계열(00055~58)도 제외됨
+- 설계: 신규 pstartSn을 seen 캐시에 기록(90일 보존) → **신규 1건당 1회 알림 + lead 분 전 알람**.
+  스케줄 채널(scheduleAllList)이 이미 잡은 평가(±2분)는 조용히 캐시만 — 이중 알람/알림 방지.
+- 서버 확인(2026-07-18 프로브): POST no-Origin → 302(미인증 정상) / Origin usr.codyssey.kr 허용 / 그 외 Origin → 403.
+  즉 알림함도 스케줄 API와 동일한 보안 정책 (세션 쿠키 `JSESSIONID Domain=codyssey.kr` 필요).

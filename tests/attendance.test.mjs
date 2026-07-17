@@ -19,6 +19,9 @@ import {
   applyOvernightFromPrevMonth,
   isOpenSessionFresh,
   MAX_OPEN_SESSION_MS,
+  parseEvalNoticeAlarms,
+  filterNewEvalNotices,
+  unescapeAlarmHtml,
   getTodayString,
   buildAlarmName,
   legacyAlarmName,
@@ -761,5 +764,64 @@ test('findInstCd(S4): 숫자형 instCd도 문자열로 반환', () => {
   assert.equal(findInstCd({ result: { instCd: 21 } }), '21');
   assert.equal(findInstCd({ result: { instCd: '00021' } }), '00021'); // 문자열 우선 (앞자리 0 보존)
   assert.equal(findInstCd({ result: { instCd: 0 } }), '0'); // 숫자는 그대로 문자열화
+});
+// ===== E3(15차): 알림함(alarmList) 평가 감지 — 사용자 제공 실측 샘플 기반 =====
+function noticeRow(over) {
+  return Object.assign({
+    regDt: '2026-07-14 11:45', pstartSn: 686132,
+    pstartTitlNm: '동료평가자로 지정 되었습니다.',
+    pstartCn: '안녕하세요.&lt;br/&gt;동료평가 일정이 지정되어 아래와 같이 안내 드립니다.&lt;br/&gt;&lt;평가일정&gt;&lt;br/&gt;요청자 : 김우종(woojuro3@naver.com)&lt;br/&gt;Discord ID : wilderif&lt;br/&gt;평가예정일시 : 2026-07-14 15:00:00&lt;br/&gt;프로젝트명 : AI/SW 기초 (AI/SW Basic)&lt;br/&gt;학습과정명 : 클라우드와 AI API (Cloud &amp; AI API)&lt;br/&gt;단위문제명 : AI 기반 Git 커밋 &amp; PR 자동 생성기 개발',
+    ntcDivCd: '00101', sysDivCd: '00017', readYn: 'N'
+  }, over);
+}
+
+test('unescapeAlarmHtml: 엔티티/br 디코드', () => {
+  const t = unescapeAlarmHtml('a&lt;br/&gt;b &amp; c&lt;br&gt;d');
+  assert.equal(t, 'a\nb & c\nd');
+});
+
+test('parseEvalNoticeAlarms: 00017 동료평가자 지정 → 시각/역할/요청자 추출', () => {
+  const items = parseEvalNoticeAlarms([noticeRow({})], new Date(2026, 6, 14, 12, 0).getTime());
+  assert.equal(items.length, 1);
+  const it = items[0];
+  assert.equal(it.key, 'notice_686132');
+  assert.equal(it.role, 'A'); // 동료평가자
+  assert.equal(it.requester, '김우종'); // (이메일) 분리
+  assert.equal(it.project, 'AI/SW 기초 (AI/SW Basic)');
+  assert.equal(it.discordId, 'wilderif');
+  assert.equal(it.whenMs, new Date(2026, 6, 14, 15, 0, 0).getTime());
+  assert.equal(it.past, false); // 12:00 기준 미래
+  assert.equal(it.title, 'AI/SW 기초 (AI/SW Basic) (평가자 · 요청자: 김우종)');
+});
+
+test('parseEvalNoticeAlarms: 종료(00020)·포인트(00057) 계열은 제외', () => {
+  const rows = [
+    noticeRow({ pstartSn: 1, pstartTitlNm: 'AI/SW 기초 과정이 평가종료 되었습니다.', sysDivCd: '00020',
+      pstartCn: '...평가종료일시 :2026-07-14 13:45...' }), // 평가"종료"일시 — 본문 신호 없음
+    noticeRow({ pstartSn: 2, pstartTitlNm: '포인트 획득 알림', sysDivCd: '00057',
+      pstartCn: '100 포인트를 획득하셨습니다!' }),
+    noticeRow({ pstartSn: 3, pstartTitlNm: '레벨업 알림', sysDivCd: '00055', pstartCn: '3 레벨이 되었습니다.' })
+  ];
+  const items = parseEvalNoticeAlarms(rows);
+  assert.equal(items.length, 0);
+});
+
+test('parseEvalNoticeAlarms: 과거 알림은 past 표시, sn 없는 행/형식 불량은 스킵', () => {
+  const rows = [
+    noticeRow({}), // 15:00 — 기준시각보다 과거
+    noticeRow({ pstartSn: null }),
+    noticeRow({ pstartSn: 9, pstartCn: '평가예정일시 : 형식이상' })
+  ];
+  const items = parseEvalNoticeAlarms(rows, new Date(2026, 6, 14, 18, 0).getTime());
+  assert.equal(items.length, 1);
+  assert.equal(items[0].past, true);
+});
+
+test('filterNewEvalNotices: seen 캐시에 없는 것만 반환', () => {
+  const items = parseEvalNoticeAlarms([
+    noticeRow({ pstartSn: 100 }), noticeRow({ pstartSn: 101 })
+  ], new Date(2026, 6, 14, 10, 0).getTime());
+  const fresh = filterNewEvalNotices({ '100': { whenMs: 1 } }, items);
+  assert.deepEqual(fresh.map(i => i.pstartSn), ['101']);
 });
 

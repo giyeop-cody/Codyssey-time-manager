@@ -660,3 +660,112 @@ export function diffEvalItems(prevItems, nextItems, leadMinutes) {
   }
   return { added, removed, changed };
 }
+
+// ============================================================
+// E3: 알림함(alarm/alarmList/list) 기반 평가 감지 채널 (15차)
+// - "평가가 잡혔다"는 시스템 알림(알림함)에서 평가 정보를 읽어 알람을 잡는 보조 채널
+// - 실측 샘플(2026-07-14, 사용자 제공): sysDivCd 00017 "동료평가자로 지정 되었습니다."
+//   pstartCn: <평가일정> 요청자 / Discord ID / 평가예정일시(YYYY-MM-DD HH:MM:SS) /
+//             프로젝트명 / 학습과정명 / 단위문제명 (HTML 엔티티·<br/> 포함)
+// - 선별 규칙: 본문에서 "평가예정일시" 시각을 파싱할 수 있는 행만 채택
+//   (sysDivCd 00017 선호하되 미상의 변종 코드도 본문 신호로 수용)
+// - "평가종료"(00020) 등 종료 계열은 '평가예정일시'가 아니라 '평가종료일시'라 자연 제외
+// - 캐시(pstartSn)로 신규 1회만 알림 → N분 전 알람까지 이어지는 흐름은 각 클라이언트가 구현
+// ============================================================
+export const EVAL_NOTICE_SYS_CODES = ['00017']; // 실측: 동료평가자 지정
+export const EVAL_NOTICE_PAGE_PER_ROWS = 30; // 최신 알림 1페이지 이상 여유 있게
+export const EVAL_NOTICE_DEDUP_MS = 2 * 60 * 1000; // 스케줄 채널 알람과 같은 평가로 볼 시각 오차
+export const EVAL_NOTICE_SEEN_TTL_MS = 90 * 24 * 3600 * 1000; // seen 캐시 보존 기간
+
+// 알림 본문 HTML 디코드: 엔티티 풀고 <br>은 개행, 나머지 태그는 제거
+export function unescapeAlarmHtml(s) {
+  if (!s || typeof s !== 'string') return '';
+  return s
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&#x27;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/gi, '&') // 다른 치환 뒤에 &amp; 처리 (연속 엔티티 안전)
+    .replace(/\r/g, '');
+}
+
+// 라인 필드(label : value) 추출 — 개행까지. 괄호 안 부가정보(이메일)는 분리해 반환
+function noticeField(text, label, groupLabels = []) {
+  const labels = [label, ...groupLabels].join('|');
+  const m = text.match(new RegExp(`^\\s*(?:${labels})\\s*[:：]\\s*(.+)$`, 'm'));
+  return m ? m[1].trim() : '';
+}
+
+export function parseEvalNoticeDateTimeMs(text) {
+  const m = text.match(/평가예정일시\s*[:：]\s*(20\d\d)-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[ T]([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?/);
+  if (!m) return null;
+  return new Date(
+    Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : 0
+  ).getTime();
+}
+
+// alarmList result.list[] → 평가 지정 알림만 [{key, pstartSn, title, whenMs, role, ...}]
+export function parseEvalNoticeAlarms(rawList, nowMs = Date.now()) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const items = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const body = unescapeAlarmHtml(row.pstartCn || '');
+    if (!/평가예정일시/.test(body)) continue; // 본문 신호 — 종료/포인트/레벨 등은 여기서 배제
+    const whenMs = parseEvalNoticeDateTimeMs(body);
+    if (!whenMs || isNaN(whenMs)) continue;
+
+    const title0 = String(row.pstartTitlNm || '').trim();
+    if (/종료|취소/.test(title0) && !/지정|배정|안내/.test(title0)) continue; // 종료/취소 변종 방어
+
+    const requesterRaw = noticeField(body, '요청자');
+    const requester = requesterRaw.replace(/\s*\([^)]*\)\s*$/, '').trim(); // 이름(이메일) → 이름
+    const project = noticeField(body, '프로젝트명');
+    const course = noticeField(body, '학습과정명');
+    const mission = noticeField(body, '단위문제명');
+    const discordId = noticeField(body, 'Discord ID', ['Discord']) || '';
+
+    const role = /동료평가자/.test(title0 + ' ' + body) ? 'A'
+      : /피평가자|평가\s*(요청|신청)/.test(title0 + ' ' + body) ? 'R' : '';
+    const roleLabel = role === 'A' ? '평가자' : role === 'R' ? '피평가자' : '';
+
+    const bits = [];
+    if (roleLabel) bits.push(roleLabel);
+    if (requester) bits.push(`요청자: ${requester}`);
+    const title = `${project || '평가'}${bits.length ? ` (${bits.join(' · ')})` : ''}`;
+
+    const sn = row.pstartSn !== null && row.pstartSn !== undefined ? String(row.pstartSn) : '';
+    if (!sn) continue;
+    items.push({
+      key: `notice_${sn}`,
+      pstartSn: sn,
+      title,
+      whenMs,
+      role,
+      requester,
+      project,
+      course,
+      mission,
+      discordId,
+      readYn: row.readYn || '',
+      sysDivCd: row.sysDivCd || '',
+      regDt: row.regDt || '',
+      past: whenMs <= nowMs
+    });
+  }
+  // 시각순 정렬 + pstartSn 중복 제거(앞쪽 유지)
+  const seen = new Set();
+  return items
+    .sort((a, b) => a.whenMs - b.whenMs)
+    .filter(it => (seen.has(it.pstartSn) ? false : (seen.add(it.pstartSn), true)));
+}
+
+// seen 캐시({sn: {...}}) 대비 신규 알림만 추림
+export function filterNewEvalNotices(seenIds, items) {
+  const seen = seenIds && typeof seenIds === 'object' ? seenIds : {};
+  return (Array.isArray(items) ? items : []).filter(it => it && !seen[it.pstartSn]);
+}

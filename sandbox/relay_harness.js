@@ -265,12 +265,92 @@ async function rySyncEvalAlarms(memberId, settingsIn) {
   return RY.evalInFlight;
 }
 
+// 15차(E3) 미러: 스케줄 채널 + 알림함 채널 이원화 — background.js doSyncEvalAlarms와 동일 구조
 async function ryDoSyncEvalAlarms(memberId, settingsIn) {
   if (!memberId) return { ok: false, reason: 'no_member' };
   const settings = settingsIn || (await ryMsg('GET_SETTINGS')).settings || {};
   if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
+
+  let schedErr = null;
+  let schedInfo = null;
+  let noticeErr = null;
+  let noticeInfo = null;
+  try {
+    schedInfo = await rySyncScheduleChannel(memberId, settings);
+  } catch (e) { schedErr = String(e && e.message || 'unknown'); }
+  try {
+    noticeInfo = await rySyncEvalNoticeChannel(memberId, settings);
+  } catch (e) { noticeErr = String(e && e.message || 'unknown'); }
+
+  const cur = (await ryKvGet('eval_sync_state')) || {};
+  const merged = { ...cur };
+  if (schedErr) { merged.lastError = schedErr; merged.lastErrorAt = Date.now(); }
+  else { delete merged.lastError; delete merged.lastErrorAt; }
+  if (noticeErr) { merged.alarmError = noticeErr; merged.alarmErrorAt = Date.now(); }
+  else { delete merged.alarmError; delete merged.alarmErrorAt; }
+  if (noticeInfo) merged.noticeFresh = noticeInfo.fresh;
+  await ryKvSet('eval_sync_state', merged);
+
+  return {
+    ok: !schedErr || !noticeErr,
+    ...(schedInfo || {}),
+    reason: schedErr || undefined,
+    noticeError: noticeErr || undefined,
+    noticeFresh: noticeInfo ? noticeInfo.fresh : undefined
+  };
+}
+
+// E3(15차) 미러: 알림함 채널 — ryMsg('EVAL_ALARM_LIST') 경유 (background syncEvalNoticeChannel와 동일 규칙)
+async function rySyncEvalNoticeChannel(memberId, settings) {
+  const res = await ryMsg('EVAL_ALARM_LIST', { page: 1, pagePerRows: 30 });
+  if (!res.success) throw new Error(res.error || 'EVAL_NOTICE_FAILED');
+  const raw = res.raw || {};
+  const list = (raw.result && (raw.result.list || raw.result.items)) || raw.list || [];
+  const items = parseEvalNoticeAlarms(list);
+  const seenRoot = (await ryKvGet('eval_notice_seen')) || {};
+  const seen = seenRoot.ids || {};
+  const fresh = filterNewEvalNotices(seen, items);
+  let notified = 0;
+  let scheduled = 0;
+
+  if (fresh.length) {
+    const lead = settings.evalLeadMinutes ?? 30;
+    const now = Date.now();
+    const alarmsRes = await ryMsg('GET_ALARMS');
+    const currentAlarms = ((alarmsRes && alarmsRes.alarms) || [])
+      .filter(a => a && a.type === 'eval' && typeof a.evalWhen === 'number');
+
+    for (const it of fresh) {
+      seen[it.pstartSn] = { whenMs: it.whenMs, title: it.title, firstSeenAt: now };
+      if (currentAlarms.some(a => Math.abs(a.evalWhen - it.whenMs) <= 2 * 60000)) continue; // 스케줄 dedup
+      if (it.whenMs <= now) continue;
+
+      const name = buildEvalAlarmName('auto_' + it.key);
+      const triggerAt = Math.max(it.whenMs - lead * 60000, now + 5000);
+      await ryMsg('SET_EVAL_ALARM', {
+        alarmName: name, title: it.title, whenMs: it.whenMs, leadMinutes: lead, auto: true
+      });
+      currentAlarms.push({ evalWhen: it.whenMs, type: 'eval' });
+      scheduled++;
+      if ((settings.notificationsEnabled !== false) && notified < 3) {
+        notified++;
+        await ryNotify('📋 평가 일정 감지', `${ryFormatWhenKo(it.whenMs)} — ${it.title} (알림함 감지 · ${lead}분 전 알람 등록)`);
+      }
+    }
+
+    const cutoff = Date.now() - 90 * 24 * 3600 * 1000;
+    for (const k of Object.keys(seen)) {
+      if ((seen[k].firstSeenAt || 0) < cutoff) delete seen[k];
+    }
+    await ryKvSet('eval_notice_seen', { ids: seen, updatedAt: Date.now() });
+  }
+  return { ok: true, fresh: fresh.length, notified, scheduled, total: items.length };
+}
+
+// 채널1 미러: scheduleAllList (기존 ryDoSyncEvalAlarms 로직)
+async function rySyncScheduleChannel(memberId, settings) {
   const instCd = await ryResolveInstCd(settings);
-  if (!instCd) return { ok: false, reason: 'no_instcd' };
+  if (!instCd) throw new Error('no_instcd');
 
   const state = await ryKvGet('eval_sync_state');
   const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
@@ -282,7 +362,7 @@ async function ryDoSyncEvalAlarms(memberId, settingsIn) {
   const res = await ryMsg('EVAL_SCHEDULE', {
     instCd, fromYmd: ryYmdDot(from), toYmd: ryYmdDot(to)
   });
-  if (!res.success) return { ok: false, reason: res.error };
+  if (!res.success) throw new Error(res.error || 'EVAL_SCHEDULE_FAILED');
 
   const raw = res.raw || {};
   const reqList = (raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];

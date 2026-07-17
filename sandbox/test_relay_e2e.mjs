@@ -62,6 +62,38 @@ function evalRows() {
   ];
 }
 
+// ---------- E3 알림함 시나리오 (사용자 제공 실측 스키마) ----------
+// 900001: 42번 평가(d2 10:30)와 같은 시각 → 스케줄 채널과 dedup (알림함 알람 생기면 안 됨)
+// 900002: 별도 미래 시각 → 신규 알림 + N분 전 알람 등록
+// 그 외: 평가종료(00020)·포인트(00057)는 무시
+function ymdHms(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:00`;
+}
+const dn1 = inDays(4, 10, 30); // 42번과 동일 시각
+const dn2 = inDays(6, 15, 0);  // 새로운 평가 시각
+function noticeRow(sn, titl, cn, sysCd) {
+  return { pstartSn: sn, pstartTitlNm: titl, pstartCn: cn, sysDivCd: sysCd,
+    ntcDivCd: '00101', readYn: 'N', instCd: '0000373', mbrId: 'tester01',
+    regDt: '2026-07-14 11:45' };
+}
+function noticeBody(whenD, requester) {
+  return '안녕하세요.&lt;br/&gt;동료평가 일정이 지정되어 아래와 같이 안내 드립니다.&lt;br/&gt;'
+    + '&lt;평가일정&gt;&lt;br/&gt;요청자 : ' + requester + '(woo@naver.com)&lt;br/&gt;'
+    + 'Discord ID : wilderif&lt;br/&gt;평가예정일시 : ' + ymdHms(whenD) + '&lt;br/&gt;'
+    + '프로젝트명 : AI/SW 기초 (AI/SW Basic)&lt;br/&gt;학습과정명 : 클라우드와 AI API&lt;br/&gt;'
+    + '단위문제명 : AI 기반 Git 커밋 자동 생성기';
+}
+function noticeRows() {
+  return [
+    noticeRow(900001, '동료평가자로 지정 되었습니다.', noticeBody(dn1, '김우종'), '00017'),
+    noticeRow(900002, '동료평가자로 지정 되었습니다.', noticeBody(dn2, '이수영'), '00017'),
+    noticeRow(900003, 'AI/SW 기초 과정이 평가종료 되었습니다.',
+      '...평가종료일시 :2026-07-14 13:45...', '00020'),
+    noticeRow(900004, '포인트 획득 알림', '100 포인트를 획득하셨습니다!', '00057')
+  ];
+}
+
 const stub = createServer((req, res) => {
   const u = new URL(req.url, 'http://stub');
   const send = (obj, extraHeaders = {}) => {
@@ -83,6 +115,10 @@ const stub = createServer((req, res) => {
   }
   if (u.pathname === '/schedule/scheduleAllList/') {
     return send({ result: { reqList: evalRows(), academicList: [], timeList: [] } });
+  }
+  if (u.pathname === '/alarm/alarmList/list') {
+    return send({ result: { alarmCount: noticeRows().length, list: noticeRows(),
+      paginator: { total: noticeRows().length, currentPage: 1, totalPage: 1, pagePerRows: 30 } } });
   }
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'stub 404', path: u.pathname }));
@@ -210,6 +246,31 @@ async function main() {
   const d1b = inDays(3, 16, 0);
   check('35번 새 시각으로 재등록', b35 && b35.time === d1b.getTime() - 30 * 60000, b35 && b35.time);
   check('42번 알람 해제됨', !b42, (alarms2 || []).map(a => a.name));
+
+  // ---------- 5) E3 알림함 채널 (신규 감지 캐시 + dedup + N분 전 알람) ----------
+  console.log('\n[5] E3 알림함 채널 — 신규 900002 등록, 900001 스케줄 dedup');
+  const seen1 = await kvGet('eval_notice_seen');
+  check('seen 캐시에 900001/900002 기록',
+    !!(seen1 && seen1.ids && seen1.ids['900001'] && seen1.ids['900002']), seen1 && seen1.ids);
+  check('종료(900003)/포인트(900004)는 seen 미기록',
+    !(seen1.ids['900003'] || seen1.ids['900004']));
+  const alarms3 = await kvGet('alarms');
+  const n2 = (alarms3 || []).filter(a => a.name === 'codyssey_eval_auto_notice_900002');
+  check('900002 알람 1건 등록', n2.length === 1, (alarms3 || []).map(a => a.name));
+  check('900002 발화 시각 = 시작 30분 전', n2[0] && n2[0].time === dn2.getTime() - 30 * 60000, n2[0] && n2[0].time);
+  check('900002 제목 = 프로젝트명 + 평가자/요청자 라벨',
+    n2[0] && n2[0].evalTitle === 'AI/SW 기초 (AI/SW Basic) (평가자 · 요청자: 이수영)', n2[0] && n2[0].evalTitle);
+  check('900001 알람 미등록 (스케줄 채널이 42번으로 커버)',
+    !(alarms3 || []).some(a => a.name === 'codyssey_eval_auto_notice_900001'));
+
+  console.log('\n[6] 재동기화 — seen 캐시로 알람/알림 중복 없음');
+  const s3 = await send({ type: 'SYNC_EVAL_ALARMS' });
+  const alarms4 = await kvGet('alarms');
+  check('재동기화 성공', s3.ok === true, s3);
+  check('900002 알람이 여전히 1걸뿐',
+    (alarms4 || []).filter(a => a.name === 'codyssey_eval_auto_notice_900002').length === 1);
+  check('알림함 신규 0건 (두 번째는 조용)',
+    (s3.noticeFresh === 0), s3.noticeFresh);
 
   // ---------- 결과 ----------
   console.log(`\n[e2e] PASS ${passed} / FAIL ${failed}`);

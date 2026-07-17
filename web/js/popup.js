@@ -348,11 +348,15 @@ function renderEvalSyncStatus() {
     el.textContent = `⚠️ 연동 실패${when}: ${describeEvalSyncError(s.lastError)}`;
     return;
   }
+  let base;
   if (!s || !s.fetchedAt) {
-    el.textContent = '아직 평가 일정을 가져오지 못했습니다. 잠시 후 자동으로 확인합니다.';
-    return;
+    base = '아직 평가 일정을 가져오지 못했습니다. 잠시 후 자동으로 확인합니다.';
+  } else {
+    base = `✅ ${stamp(s.fetchedAt)} 확인 완료 · 예정된 평가 알람 ${s.items}건`;
+    if (s.noticeFresh) base += ` · 알림함 신규 감지 ${s.noticeFresh}건`;
   }
-  el.textContent = `✅ ${stamp(s.fetchedAt)} 확인 완료 · 예정된 평가 알람 ${s.items}건 (신규 감지 시 + 시작 전 알림)`;
+  if (s && s.alarmError) base += ' · ⚠️ 알림함 채널 오류 (스케줄 채널은 정상)';
+  el.textContent = base;
 }
 
 // S4: 평가 연동 오류 코드 → 사용자용 한글 설명
