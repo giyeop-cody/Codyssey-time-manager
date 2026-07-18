@@ -12,7 +12,9 @@ import {
   minutesToHHMM,
   formatEndMinutes,
   getTodayString,
-  SERVER_DAILY_CAP_MINUTES
+  SERVER_DAILY_CAP_MINUTES,
+  describeLoginServerError,
+  shouldRetryTrimmedPassword
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -39,6 +41,7 @@ const els = {
   loginBtn: document.getElementById('login-btn'),
   loginError: document.getElementById('login-error'),
   loginLoading: document.getElementById('login-loading'),
+  loginOfficialLink: document.getElementById('login-official-link'),
 
   // 대시보드
   dashboard: document.getElementById('dashboard'),
@@ -1254,7 +1257,9 @@ async function performLogin(email, password) {
 
     const auth = await window.CodysseyNative.authenticate(email, password, fromValue);
     if (auth.status >= 400) {
-      throw new Error(auth.body?.message || `로그인에 실패했습니다. (HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
+      // L2: 서버 문구(E0000 "등록되지 않은 회원입니다." 등)를 원인별 안내로 해석 (16차 실측 매트릭스 근거)
+      const mapped = describeLoginServerError(auth.status, auth.body);
+      throw new Error(mapped || auth.body?.message || `로그인에 실패했습니다. (HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
     }
     // 리다이렉트 대상이 로그인 페이지면 인증 실패 (익스텐션 final URL 판정과 동일)
     if (auth.location && /login/i.test(auth.location) && !/authenticate/i.test(auth.location)) {
@@ -1265,7 +1270,8 @@ async function performLogin(email, password) {
       const failed = auth.body.success === false
         || (typeof auth.body.code === 'number' && auth.body.code >= 400);
       if (failed) {
-        throw new Error(auth.body.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+        const mapped = describeLoginServerError(auth.status, auth.body);
+        throw new Error(mapped || auth.body.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
       }
     }
     return;
@@ -1328,7 +1334,8 @@ async function performLogin(email, password) {
       || (typeof bodyJson.code === 'string' && /^[45]\d\d/.test(bodyJson.code))
       || (bodyJson.error && !bodyJson.result);
     if (failed) {
-      throw new Error(bodyJson.message || bodyJson.errorMessage || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+      const mapped = describeLoginServerError(loginResponse.status, bodyJson);
+      throw new Error(mapped || bodyJson.message || bodyJson.errorMessage || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
     }
   }
 
@@ -1397,7 +1404,23 @@ function setupEventListeners() {
     showLoginLoading();
 
     try {
-      await performLogin(email, password);
+      let trimmedRetry = false;
+      try {
+        await performLogin(email, password);
+        // L2: 모바일 IME/자동완성이 비밀번호 앞뒤에 공백을 넣는 사례가 흔함 — 공백 제거 후 1회 자동 재시도
+      } catch (firstError) {
+        if (shouldRetryTrimmedPassword(password, firstError && firstError.message)) {
+          await performLogin(email, password.trim());
+          trimmedRetry = true;
+        } else {
+          throw firstError;
+        }
+      }
+      if (trimmedRetry) {
+        els.loginPassword.value = '';
+        showNotification('로그인 완료', '비밀번호 앞뒤 공백을 제거하고 로그인했습니다.');
+      }
+      els.loginOfficialLink?.classList.remove('show');
 
       // Q1: 세션 전환 — 저장된 이전 memberId/캐시 폐기 후 신선 조회
       // (다른 계정으로 로그인 시 이전 mbrId로 API를 호출하는 스테일 방지)
@@ -1424,9 +1447,24 @@ function setupEventListeners() {
     } catch (error) {
       console.error('Login error:', error);
       showLoginError(error.message || '로그인 처리 중 오류가 발생했습니다.');
+      // L2: 인증 계열 실패 시 공식 사이트 확인 경로 제공 (비밀번호 찾기/재설정)
+      els.loginOfficialLink?.classList.add('show');
     } finally {
       setLoginButtonLoading(false);
     }
+  });
+
+  // L2: 공식 사이트 바로가기 — 공식 로그인 확인 + 비밀번호 찾기/재설정용
+  els.loginOfficialLink?.addEventListener('click', async () => {
+    const url = 'https://ams.codyssey.kr/loginForm';
+    try {
+      const app = window.Capacitor?.Plugins?.App;
+      if (window.CodysseyNative?.isNative && app?.openUrl) {
+        await app.openUrl({ url });
+        return;
+      }
+    } catch (e) { /* 폴아웃: window.open */ }
+    window.open(url, '_blank', 'noopener');
   });
 
   // 대시보드 버튼들 (⟳는 캐시를 우회해서 강제 갱신 — J1)

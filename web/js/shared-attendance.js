@@ -769,3 +769,32 @@ export function filterNewEvalNotices(seenIds, items) {
   const seen = seenIds && typeof seenIds === 'object' ? seenIds : {};
   return (Array.isArray(items) ? items : []).filter(it => it && !seen[it.pstartSn]);
 }
+
+// ===== L2(16차): 로그인 서버 오류 해석 =====
+// 실측(sandbox/README 부록 3): AMS /authenticate는 401 + {message_code, success:false, message}로 거부.
+//  - 등록된 이메일 + 비번 불일치 → "등록되지 않은 회원입니다." (문구는 오해 소지가 크지만
+//    미등록 이메일에는 "입력하신 아이디 혹은 비밀번호가 일치하지 않습니다."가 나가므로 구분됨)
+//  - 5회 연속 실패 → message_code "E0001", 10분 잠금
+// 공식 사이트도 이 message를 그대로 alert하므로 동일 문구가 공식 사이트에서도 노출된다.
+// 반환: 안내 문구(줄바꿈 포함) 또는 null(특별 매핑 없음 — 호출부가 원문 표시).
+export function describeLoginServerError(status, body) {
+  const msg = (body && typeof body.message === 'string') ? body.message : '';
+  const code = body ? (body.message_code || body.code || '') : '';
+  if (code === 'E0001' || /입력정보가 틀려|로그인이 제한/.test(msg)) {
+    return '5회 이상 입력 정보가 틀려 10분간 로그인이 제한됩니다. 잠시 후 다시 시도해주세요.';
+  }
+  if (/등록되지 않은 회원/.test(msg)) {
+    return '비밀번호가 일치하지 않거나, 이 계정에 비밀번호가 등록되어 있지 않습니다.\n'
+      + '· 비밀번호를 다시 확인해주세요 (대소문자 · 한/영 키 · 앞뒤 공백).\n'
+      + '· Google/네이버 등 소셜 계정으로 가입했다면 비밀번호가 없을 수 있습니다 — 공식 사이트(ams.codyssey.kr)의 "비밀번호 찾기"에서 먼저 설정해주세요.\n'
+      + '· 공식 사이트에서도 같은 문구가 나오면 비밀번호 재설정이 필요합니다.\n'
+      + '(서버 응답: ' + msg + ')';
+  }
+  return null;
+}
+
+// 비밀번호 앞뒤 공백으로 인한 오입력 재시도 판정 (모바일 IME 자동 공백 대응)
+export function shouldRetryTrimmedPassword(rawPassword, errorMessage) {
+  if (typeof rawPassword !== 'string' || rawPassword === rawPassword.trim()) return false;
+  return /등록되지 않은 회원|일치하지 않습니다|비밀번호/.test(errorMessage || '');
+}

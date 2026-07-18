@@ -114,3 +114,44 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
   스케줄 채널(scheduleAllList)이 이미 잡은 평가(±2분)는 조용히 캐시만 — 이중 알람/알림 방지.
 - 서버 확인(2026-07-18 프로브): POST no-Origin → 302(미인증 정상) / Origin usr.codyssey.kr 허용 / 그 외 Origin → 403.
   즉 알림함도 스케줄 API와 동일한 보안 정책 (세션 쿠키 `JSESSIONID Domain=codyssey.kr` 필요).
+
+## 부록 3: 로그인 거부 실측과 원인 분석 (16차 — "등록되지 않은 회원입니다." 제보 대응)
+
+**증상**: 앱 로그인 화면에 "등록되지 않은 회원입니다." — 본인 계정이 분명히 존재하는데.
+
+**결론 요약**: 우리 앱의 요청 형식 문제가 아니다. 서버가 "등록된 이메일 + 비밀번호 해결 실패"에 복내는 문구가
+`등록되지 않은 회원입니다.`이다. 즉 **① 비밀번호 오입력, 또는 ② 소셜(Google/네이버) 가입 계정이라 비밀번호 미등록**.
+공식 사이트(ams.codyssey.kr/loginForm)도 이 서버 문구를 그대로 표시하므로, 공식 사이트에서 같은 오류가 나면 계정 상태 문제로 확정.
+
+### 실측 프로브 (2026-07-18, 비인증)
+
+| 요청 (모두 정상 형식 확인됨) | 응답 |
+|---|---|
+| POST `/rest/login/pre-check` `{userId}` (등록/미등록 무관) | 항상 200 `{result:{from:"MBR_BAS"}}` — 계정 존재 여부 미검증 |
+| POST `/authenticate` 등록 이메일 + 틀린 비번 | 401 E0000 **`등록되지 않은 회원입니다.`** |
+| POST `/authenticate` 미등록 이메일 + 틀린 비번 | 401 E0000 `입력하신 아이디 혹은 비밀번호가 일치하지 않습니다.` |
+| from=MBR_BAS / 공란 / 생략, aliasNm 후보, `X-Requested-With`, 세션 선취득, api.usr 호스트 | 전부 동일하게 401 — **요청 변형으로 서버 인식이 바뀌지 않음** |
+
+→ "등록된 이메일인지"를 서버가 구분해서 다른 문구를 복낸다. 문구와 달리 이 경우는
+"자격증명(비밀번호) 해결 실패"를 뜻한다.
+
+### 공식 클라이언트 근거 (ams.codyssey.kr 번들)
+
+- 로그인 폼: `POST {base}/authenticate` — `URLSearchParams{userId,password[,aliasNm]}`,
+  헤더 `X-Requested-With: XMLHttpRequest`, `maxRedirects:0` → 성공 시 `Location`로 이동.
+- 오류 처리: `response.data.message`를 **그대로** 표시 / `E0001`이면 10분 잠금 안내 /
+  `code:"INSTITUTION_MISMATCH"`이면 기관 로그인 페이지로 이동.
+
+### 16차 대응
+
+1. 팝업이 서버 문구를 해석해 원인별 안내로 치환 (`describeLoginServerError`, shared 단일 소스):
+   - `등록되지 않은 회원` → 비밀번호 재확인 + 소셜 가입 시 비밀번호 미등록 가능성 + 공식 사이트 "비밀번호 찾기" 안내 (원문 병기)
+   - `E0001` → 10분 잠금 안내
+2. 모바일 IME/자동완성의 비밀번호 앞뒤 공백 오입력 → 공백 제거 1회 자동 재시도 (`shouldRetryTrimmedPassword`)
+3. 로그인 실패 시 **"공식 사이트에서 로그인 · 비밀번호 찾기"** 버튼 표시 (네이티브: 시스템 브라우저로 ams.codyssey.kr/loginForm 열기)
+
+### 사용자 확인 절차 (실계정 필요 — L1 잔여 분)
+
+1. 공식 사이트(ams.codyssey.kr)에서 이메일+비밀번호 로그인 시도
+2. 같은 문구 → **비밀번호 찾기로 재설정** 후 앱 로그인 (소셜 가입 계정은 이 절차로 비밀번호 신설)
+3. 공식 사이트에선 성공·앱에선 실패 → 실패 문구(16차부터 HTTP 코드/사유 표시)를 회수해 추가 분석

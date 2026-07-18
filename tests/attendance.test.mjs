@@ -23,6 +23,8 @@ import {
   filterNewEvalNotices,
   unescapeAlarmHtml,
   getTodayString,
+  describeLoginServerError,
+  shouldRetryTrimmedPassword,
   buildAlarmName,
   legacyAlarmName,
   parseAlarmName,
@@ -825,3 +827,35 @@ test('filterNewEvalNotices: seen 캐시에 없는 것만 반환', () => {
   assert.deepEqual(fresh.map(i => i.pstartSn), ['101']);
 });
 
+
+// ===== L2(16차): 로그인 서버 오류 해석 =====
+
+test('describeLoginServerError: E0001 잠금 매핑', () => {
+  const r1 = describeLoginServerError(401, { message_code: 'E0001', success: false, message: 'locked' });
+  assert.ok(/10분간 로그인이 제한/.test(r1));
+  const r2 = describeLoginServerError(401, { message: '5회 이상 입력정보가 틀려 10분간 로그인이 제한됩니다.' });
+  assert.ok(/10분간 로그인이 제한/.test(r2));
+});
+
+test('describeLoginServerError: "등록되지 않은 회원입니다" → 비밀번호 안내로 해석', () => {
+  // 실측(부록 3): 등록된 이메일 + 비번 불일치 시 서버가 복내는 문구
+  const r = describeLoginServerError(401, { message_code: 'E0000', success: false, message: '등록되지 않은 회원입니다.' });
+  assert.ok(/비밀번호가 일치하지 않거나/.test(r), r);
+  assert.ok(/비밀번호 찾기/.test(r), r);
+  assert.ok(/소셜 계정/.test(r), r);
+  assert.ok(/서버 응답: 등록되지 않은 회원입니다\./.test(r), '원문 보존');
+});
+
+test('describeLoginServerError: 그 외 문구는 null (호출부가 원문 사용)', () => {
+  assert.equal(describeLoginServerError(401, { message_code: 'E0000', success: false, message: '입력하신 아이디 혹은 비밀번호가 일치하지 않습니다.' }), null);
+  assert.equal(describeLoginServerError(500, null), null);
+  assert.equal(describeLoginServerError(0, {}), null);
+});
+
+test('shouldRetryTrimmedPassword: 공백 포함 + 인증 오류일 때만 재시도', () => {
+  assert.equal(shouldRetryTrimmedPassword('pass ', '등록되지 않은 회원입니다.'), true);
+  assert.equal(shouldRetryTrimmedPassword(' pass', '입력하신 아이디 혹은 비밀번호가 일치하지 않습니다.'), true);
+  assert.equal(shouldRetryTrimmedPassword('pass', '등록되지 않은 회원입니다.'), false);
+  assert.equal(shouldRetryTrimmedPassword('pass ', '네트워크 오류'), false);
+  assert.equal(shouldRetryTrimmedPassword(null, '등록되지 않은 회원입니다.'), false);
+});

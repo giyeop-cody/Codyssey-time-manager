@@ -142,8 +142,11 @@ body {
 .login-links { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; }
 .login-links a { color: var(--accent-teal); text-decoration: none; }
 .login-links a:hover { text-decoration: underline; }
-.login-error { display: none; padding: 10px; background: rgba(244,67,54,0.1); border: 1px solid rgba(244,67,54,0.3); border-radius: var(--radius-sm); color: var(--accent-red); font-size: 12px; }
+.login-error { display: none; padding: 10px; background: rgba(244,67,54,0.1); border: 1px solid rgba(244,67,54,0.3); border-radius: var(--radius-sm); color: var(--accent-red); font-size: 12px; white-space: pre-line; }
 .login-error.show { display: block; }
+.login-official-link { display: none; margin-top: 12px; width: 100%; padding: 10px; background: none; border: 1px dashed rgba(255,255,255,0.25); border-radius: var(--radius-sm); color: var(--text-secondary, #9aa0a6); font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s; }
+.login-official-link:hover { color: var(--accent-teal); border-color: var(--accent-teal); }
+.login-official-link.show { display: block; }
 .login-loading { display: none; text-align: center; color: var(--text-muted); margin-top: 16px; }
 .login-loading.show { display: block; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border-light); border-top-color: var(--accent-teal); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
