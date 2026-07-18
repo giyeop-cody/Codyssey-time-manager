@@ -1436,7 +1436,7 @@ function updateKeepAliveUI() {
   }
   
   els.keepAliveStatus.classList.add('show');
-  // B4: 입·퇴실 감지/평가 연동이 켜져 있으면 그 15분 주기 조회가 세션을 유지하므로 별도 핑은 생략됨
+  // B4: 입·퇴실 감지/평가 연동이 켜져 있으면 그 5분 주기 조회가 세션을 유지하므로 별도 핑은 생략됨
   els.keepAliveText.textContent = keepAliveEnabled ? '로그인 유지: 활성 (감지 켜짐 시 감지 조회로 대체)' : '로그인 유지: 비활성';
   if (els.keepAliveIndicator) {
     els.keepAliveIndicator.classList.toggle('active', keepAliveEnabled);
@@ -1500,7 +1500,7 @@ function openSettings() {
   els.settingEvalAutosync.checked = currentSettings.evalAutoSyncEnabled !== false; // E2
   els.settingEvalInstcd.value = currentSettings.evalInstCd || ''; // E2 수동 instCd
   els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
-  els.settingDash.checked = currentSettings.dashEnabled !== false; // W7/28차: 백그라운드 감지(15분 주기) 기본 켬
+  els.settingDash.checked = currentSettings.dashEnabled !== false; // W7/28차: 백그라운드 감지(5분 주기) 기본 켬
   refreshDashStatusUI();
   
   els.settingsModal.classList.add('show');
@@ -1568,7 +1568,7 @@ async function saveSettings() {
     evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
     evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
     evalInstCd: els.settingEvalInstcd.value.trim(), // E2 수동 instCd (빈값=자동 감지)
-    dashEnabled: els.settingDash.checked // W7/28차: 백그라운드 감지(15분 주기)
+    dashEnabled: els.settingDash.checked // W7/28차: 백그라운드 감지(5분 주기)
   };
 
   // W7: 네이티브 즉시 반영 — 설정 저장과 같은 동작으로 상시 감지/알람 소리 적용

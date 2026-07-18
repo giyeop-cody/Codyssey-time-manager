@@ -32,11 +32,13 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        // 28차: 1분 FGS 폐기 — 주기 동기화는 WorkManager(15분)가 유일 경로.
+        // 30차: 감지 체계 = 5분 틱 체인(주) + WorkManager 15분(백업).
         // dash_enabled(백그라운드 감지)가 꺼져 있으면 재예약하지 않음.
         if (isPeriodicSyncEnabled(context) && PollingPlugin.isEnabled(context)) {
+            SyncTickReceiver.ensureChain(context);
             PollingPlugin.ensurePeriodicSync(context);
         } else {
+            SyncTickReceiver.cancelChain(context);
             WorkManager.getInstance(context).cancelUniqueWork("codyssey_periodic_sync");
         }
 

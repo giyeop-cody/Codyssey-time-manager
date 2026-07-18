@@ -1216,7 +1216,8 @@ async function syncPeriodicSyncAlarm() {
       || settings.evalAutoSyncEnabled !== false;
     const existing = await chrome.alarms.get('periodic_sync');
     if (need && !existing) {
-      chrome.alarms.create('periodic_sync', { periodInMinutes: 15 });
+      // 30차: 15분 → 5분 (사용자 지시 — 네이티브 5분 틱과 간격 통일)
+      chrome.alarms.create('periodic_sync', { periodInMinutes: 5 });
     } else if (!need && existing) {
       await chrome.alarms.clear('periodic_sync');
     }
@@ -1231,7 +1232,7 @@ async function syncKeepAliveAlarm() {
   try {
     const settings = await getSettings();
     const existing = await chrome.alarms.get(KEEPALIVE_ALARM);
-    // 입·퇴실 감지 또는 평가 연동이 켜져 있으면 15분 주기 인증 조회가 세션을 유지하므로
+    // 입·퇴실 감지 또는 평가 연동이 켜져 있으면 5분 주기 인증 조회가 세션을 유지하므로
     // 별도 핑은 keepAlive '단독'일 때만 생성 (B4/W6 — 핑 중복 제거)
     const solo = settings.keepAliveEnabled
       && settings.gateNotifyEnabled === false
@@ -1277,7 +1278,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     }
   }
   // J2: keep-alive 핑 — 세션 터치 (응답 본문은 불필요, 만료 시 정리)
-  // ※ 입·퇴실 감지/평가 연동이 하나라도 켜져 있으면 15분 주기 인증 조회가 세션을 유지하므로
+  // ※ 입·퇴실 감지/평가 연동이 하나라도 켜져 있으면 5분 주기 인증 조회가 세션을 유지하므로
   //   이 알람은 keepAlive '단독' 케이스에만 생성됨 (W6 중복 핑 제거)
   if (alarm.name === KEEPALIVE_ALARM) {
     const settings = await getSettings();

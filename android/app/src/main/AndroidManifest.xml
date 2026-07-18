@@ -56,8 +56,14 @@
             </intent-filter>
         </receiver>
 
-        <!-- 28차: PollingService/TickReceiver 제거됨 (1분 FGS 폐지 → WorkManager 15분 주기).
+        <!-- 28차: PollingService/TickReceiver 제거됨 (1분 FGS 폐지).
              구버전 잔재는 MainActivity 초기 실행 시 1회 정리 -->
+
+        <!-- 30차: 5분 감지 틱 수신기 — 브로드캐스트만으로 동작 (FGS·상시 알림 없음) -->
+        <receiver
+            android:name="kr.codyssey.attendance.receiver.SyncTickReceiver"
+            android:exported="false"
+            android:enabled="true" />
 
         <!-- 25차: 알람 울림 전담 서비스 (최대 1분 반복 재생 + 해제 고정 알림) -->
         <service

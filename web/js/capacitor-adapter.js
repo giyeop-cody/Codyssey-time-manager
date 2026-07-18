@@ -1120,7 +1120,7 @@ import {
     Plugins.LocalNotifications.requestPermissions().catch(() => {});
   }
 
-  // ===== W7/28차: 백그라운드 감지 복원 — WorkManager 15분 주기 (기본 켬, 1분 FGS는 28차에서 폐기) =====
+  // ===== W7/28/30차: 백그라운드 감지 복원 — 5분 틱 체인 + 15분 백업 (기본 켬, 1분 FGS는 폐기) =====
   if (isCapacitor && Plugins.PollingPlugin) {
     getPrefs(STORE_KEYS.SETTINGS).then(settings => {
       if (settings && settings.dashEnabled === false) return;

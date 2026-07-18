@@ -32,8 +32,11 @@ public class MainActivity extends BridgeActivity {
         // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 삭제.
         migrateLegacyForegroundMonitor(getApplicationContext());
 
-        // 28차: 백그라운드 감지(dash)가 켜져 있으면 WorkManager 주기 동기화(15분) 보장
+        // 30차: 백그라운드 감지(dash)가 켜져 있으면 5분 틱 체인 + 15분 백업 동기화 보장
         if (PollingPlugin.isEnabled(getApplicationContext())) {
+            try {
+                kr.codyssey.attendance.receiver.SyncTickReceiver.ensureChain(getApplicationContext());
+            } catch (Exception e) { /* 다음 앱 실행에서 재시도 */ }
             try {
                 PollingPlugin.ensurePeriodicSync(getApplicationContext());
             } catch (Exception e) { /* 다음 앱 실행에서 재시도 */ }
@@ -92,7 +95,7 @@ public class MainActivity extends BridgeActivity {
                 if (nm != null) nm.deleteNotificationChannel("codyssey_monitor");
             }
             kr.codyssey.attendance.util.DiagLog.add(ctx, "SVC",
-                    "28차 전환: 1분 상시 감지 FGS 폐기 — 백그라운드 감지는 15분 주기(시스템 최소)로 통합, 상시 알림 없음");
+                    "28차 전환: 1분 상시 감지 FGS 폐기 — 백그라운드 감지는 5분 틱 + 15분 백업으로 통합, 상시 알림 없음");
         } catch (Exception e) { /* 정리 실패는 치명 아님 — 잔존 PI는 수신자 없이 소멸 */ }
         prefs.edit().putBoolean("migrated_28_fgmonitor", true).apply();
     }

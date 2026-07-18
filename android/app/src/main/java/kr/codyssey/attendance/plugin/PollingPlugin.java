@@ -19,25 +19,26 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.util.concurrent.TimeUnit;
 
 import kr.codyssey.attendance.util.DiagLog;
+import kr.codyssey.attendance.receiver.SyncTickReceiver;
 import kr.codyssey.attendance.worker.SyncWorker;
 
 /**
  * 백그라운드 감지(주기 동기화) 제어 + 절전모드 예외 상태/요청 — JS 브릿지.
  *
- * 28차 설계 변경 (사용자 지시):
- *  ① 1분 FGS 상시 감지 폐기 — WorkManager 최소 주기(15분) SyncWorker로 통합.
- *     (SyncWorker가 keep-alive 핑 + GateCheck + EvalSync를 이미 수행)
- *  ② "감지 중" 상시 알림 폐지 — FGS 자체가 없어지므로 상시 알림도 사라짐.
- *  ③ 알람은 계속 AlarmManager 시스템 콜로 1회 등록(AlarmPlugin) — 본 클래스와 무관.
+ * 28차: 1분 FGS 폐기 → 30차: 사용자 지시로 감지 간격을 5분으로 통합.
+ *  구조: SyncTickReceiver(정확 알람 5분 체인, 상시 알림 없음) = 주 경로
+ *       + WorkManager 15분 SyncWorker = 폴트레런스 백업 (둘 다 SyncTasks 실행)
+ *  알람(퇴실/목표/평가)은 계속 AlarmManager 시스템 콜 1회 등록 (AlarmPlugin).
  *
- * startDash/stopDash의 의미 = WorkManager 주기 감지 예약/해제 (dash_enabled 키 유지).
+ * startDash/stopDash의 의미 = 5분 틱 체인 + 백업 주기 작업 예약/해제 (dash_enabled 유지).
  */
 @CapacitorPlugin(name = "PollingPlugin")
 public class PollingPlugin extends Plugin {
 
     private static final String PREFS_NAME = "codyssey_prefs";
     public static final String PERIODIC_WORK_NAME = "codyssey_periodic_sync";
-    private static final int PERIODIC_MINUTES = 15; // WorkManager 최소 주기 = 시스템 갱신 하한
+    public static final int TICK_MINUTES = SyncTickReceiver.TICK_MINUTES; // 5분 (주 경로)
+    private static final int PERIODIC_MINUTES = 15; // WorkManager 백업 주기 (시스템 갱신 하한)
 
     @PluginMethod
     public void startDash(PluginCall call) {
@@ -46,10 +47,12 @@ public class PollingPlugin extends Plugin {
             try {
                 Context ctx = getContext();
                 setEnabled(ctx, true);
-                ensurePeriodicSync(ctx);
+                SyncTickReceiver.ensureChain(ctx);   // 30차: 5분 틱 (주 경로)
+                ensurePeriodicSync(ctx);             // 15분 백업
+                DiagLog.add(ctx, "SVC", "백그라운드 감지 켜짐 — 5분 틱 체인 + 15분 백업 주기 예약");
                 JSObject out = new JSObject();
                 out.put("running", true);
-                out.put("intervalMinutes", PERIODIC_MINUTES);
+                out.put("intervalMinutes", TICK_MINUTES);
                 saved.resolve(out);
             } catch (Exception e) {
                 saved.reject("startDash failed: " + e.getMessage());
@@ -64,7 +67,9 @@ public class PollingPlugin extends Plugin {
             try {
                 Context ctx = getContext();
                 setEnabled(ctx, false);
+                SyncTickReceiver.cancelChain(ctx);
                 WorkManager.getInstance(ctx).cancelUniqueWork(PERIODIC_WORK_NAME);
+                DiagLog.add(ctx, "SVC", "백그라운드 감지 꺼짐 — 5분 틱 체인 + 백업 주기 해제");
                 JSObject out = new JSObject();
                 out.put("running", false);
                 saved.resolve(out);
@@ -102,7 +107,7 @@ public class PollingPlugin extends Plugin {
         SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         JSObject out = new JSObject();
         out.put("enabled", isEnabled(ctx));
-        out.put("intervalMinutes", PERIODIC_MINUTES);
+        out.put("intervalMinutes", TICK_MINUTES);
         out.put("lastTick", prefs.getLong("dash_last_tick", 0));
         // 백그라운드 알람 건강 상태 (설정/진단 UI에서 표시)
         android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
