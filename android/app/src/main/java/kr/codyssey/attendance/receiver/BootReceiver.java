@@ -44,6 +44,11 @@ public class BootReceiver extends BroadcastReceiver {
 
         // L10: 부팅으로 소실된 1회성 알람 복원 (WorkManager 워크는 OS가 유지하므로 주기 동기화만 재등록)
         restoreOneShotAlarms(context);
+
+        // 31차: 지오펜스는 재부팅 시 소실 — 활성 상태면 재등록 (PhysicalCheck.learnNow가 학습한 좌표 사용)
+        try {
+            kr.codyssey.attendance.util.PhyGeofence.startIfEnabled(context);
+        } catch (Exception e) { /* 다음 앱 실행에서 재시도 */ }
     }
 
     // 주기 동기화 필요 여부 = keep-alive 켬 OR 입·퇴실 감지 켬(G1, JS 기본값과 동일하게 기본 true)

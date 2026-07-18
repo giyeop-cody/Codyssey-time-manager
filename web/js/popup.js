@@ -23,6 +23,7 @@ import {
   recognizedTodayOvernightAware,
   recognizedMonthlyOvernightAware,
   overnightStatusSuffix,
+  overnightEvidenceSuffix,
   OVERNIGHT_PREF_KEY
 } from './shared-attendance.js';
 
@@ -158,6 +159,13 @@ const els = {
   btnOvernightStay: document.getElementById('btn-overnight-stay'),
   btnOvernightMissing: document.getElementById('btn-overnight-missing'),
   btnOvernightChange: document.getElementById('btn-overnight-change'),
+  // 31차: 물리 탐지 (베타)
+  settingPhyEnabled: document.getElementById('setting-phy-enabled'),
+  settingPhyCollect: document.getElementById('setting-phy-collect'),
+  settingPhyGeofence: document.getElementById('setting-phy-geofence'),
+  btnPhyLearn: document.getElementById('btn-phy-learn'),
+  btnPhyExport: document.getElementById('btn-phy-export'),
+  settingPhyStatus: document.getElementById('setting-phy-status'),
   btnSessionRelogin: document.getElementById('btn-session-relogin'),
   initSplash: document.getElementById('init-splash'),
   loginDiag: document.getElementById('login-diag'),
@@ -183,6 +191,7 @@ let currentParsed = null;
 // 29차: 자정 롤오버 "임시 기록" — 전날 시작 미퇴실 세션 감지/확인 상태
 let overnightDetection = null;
 let overnightDecision = null; // 'overnight' | 'missing' | null
+let phyInsideForBanner = null; // 31차: 자정 배너 물리 근거 캐시 (true 학원 근처 / false 학원 밖 / null 불명)
 let currentSettings = null;
 let refreshTimer = null;
 let realtimeTimer = null;
@@ -426,11 +435,27 @@ function refreshOvernightState() {
   overnightDetection = detectCrossMidnightOpen(currentParsed);
   overnightDecision = readOvernightDecision(getOvernightDecisionRaw(), overnightDetection, currentMemberId);
   updateOvernightBanner();
+  // 31차: 물리 탐지가 켜져 있으면 배너 문구에 물리 근거 첨부 (비동기 — 도착 시 재렌더)
+  if (overnightDetection) refreshPhyInsideForBanner();
   // 세션이 닫히면(정상 퇴실 처리) 지난 확인 결과는 정리
   if (!overnightDetection && getOvernightDecisionRaw()) {
     persistOvernightDecision(null);
     overnightDecision = null;
   }
+}
+
+// 31차: 네이티브 물리 판정(학원 근처 여부)을 가져와 배너 근거 문구에 반영
+async function refreshPhyInsideForBanner() {
+  phyInsideForBanner = null;
+  try {
+    const phy = window.Capacitor?.Plugins?.PhyPlugin;
+    if (!phy) return;
+    const st = await phy.getPhyStatus();
+    if (st && st.enabled) {
+      phyInsideForBanner = (st.inside === null || st.inside === undefined) ? null : !!st.inside;
+    }
+  } catch (e) { /* 웹/구버전 무시 */ }
+  updateOvernightBanner();
 }
 
 function updateOvernightBanner() {
@@ -441,7 +466,8 @@ function updateOvernightBanner() {
   const d = overnightDetection;
   if (!overnightDecision) {
     els.overnightBannerText.textContent =
-      `🌙 전날 ${d.entryTimeStr} 입실 기록이 자정을 넘겼습니다. 밤샘 근무인가요, 퇴실 누락인가요? (확인 전까지 "임시"로 오늘 집계 제외)`;
+      `🌙 전날 ${d.entryTimeStr} 입실 기록이 자정을 넘겼습니다. 밤샘 근무인가요, 퇴실 누락인가요? (확인 전까지 "임시"로 오늘 집계 제외)`
+      + overnightEvidenceSuffix(phyInsideForBanner); // 31차: 물리 근거 첨부
     els.overnightBannerActions.style.display = 'flex';
     els.btnOvernightChange.style.display = 'none';
   } else if (overnightDecision === 'overnight') {
@@ -1158,7 +1184,7 @@ async function calculateExitTime() {
       els.exitWarning.classList.remove('show');
     }
     
-    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
+    // 알람: 26차 — 계산 즉시 자동 등록 (살제는 '해제' 또는 목록에서)
     els.btnSetExitAlarm.style.display = 'block';
     els.btnCancelExitAlarm.style.display = 'none';
     els.exitResult.classList.add('show');
@@ -1227,7 +1253,7 @@ async function calculateGoalTime() {
       els.goalWarning.classList.remove('show');
     }
     
-    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
+    // 알람: 26차 — 계산 즉시 자동 등록 (살제는 '해제' 또는 목록에서)
     els.btnSetGoalAlarm.style.display = 'block';
     els.btnCancelGoalAlarm.style.display = 'none';
     els.goalResult.classList.add('show');
@@ -1399,7 +1425,7 @@ async function autoRegisterAlarm(endMinutes, type, label) {
       label: `${label} (${timeStr})`
     });
     if (response && response.success) {
-      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 삭제 가능)`);
+      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 살제 가능)`);
       if (response.exact === false) {
         alert('정확한 알람 권한이 꺼져 있어 알림 시각이 늦어질 수 있습니다.\n시스템 설정에서 "정확한 알람"을 허용해주세요.');
       }
@@ -1502,8 +1528,37 @@ function openSettings() {
   els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
   els.settingDash.checked = currentSettings.dashEnabled !== false; // W7/28차: 백그라운드 감지(5분 주기) 기본 켬
   refreshDashStatusUI();
+  refreshPhyStatusUI(); // 31차: 물리 탐지 상태/토글 동기화
   
   els.settingsModal.classList.add('show');
+}
+
+// 31차: 물리 탐지 상태 요약 (설정 화면 표시 + 토글 초기값 동기화)
+async function refreshPhyStatusUI() {
+  if (!els.settingPhyStatus) return;
+  const phy = window.Capacitor?.Plugins?.PhyPlugin;
+  if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !phy) {
+    els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능 — 베타 수집은 앱에서만)';
+    [els.settingPhyEnabled, els.settingPhyCollect, els.settingPhyGeofence, els.btnPhyLearn, els.btnPhyExport]
+      .forEach(el => { if (el) el.disabled = true; });
+    return;
+  }
+  try {
+    const st = await phy.getPhyStatus();
+    if (els.settingPhyEnabled) els.settingPhyEnabled.checked = !!st.enabled;
+    if (els.settingPhyCollect) els.settingPhyCollect.checked = !!st.collect;
+    if (els.settingPhyGeofence) els.settingPhyGeofence.checked = !!st.geofence;
+    const insideTxt = (st.inside === null || st.inside === undefined)
+      ? '판정 중' : (st.inside ? '학원 근처' : '학원 밖');
+    let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건 · 샘플 ${st.samples}건`;
+    txt += st.fine ? ' · 위치 권한 ✅' : ' · 위치 권한 없음 ⚠️';
+    if (st.enabled && !st.fine) txt += ' — 토글을 껐다 켜면 권한 요청';
+    if (st.geofence) txt += st.backgroundLocation ? ' · 항상 허용 ✅' : ' · 항상 허용 필요 ⚠️';
+    if (st.activity && st.activity !== 'unknown') txt += ` · 활동 ${st.activity}`;
+    els.settingPhyStatus.textContent = txt;
+  } catch (e) {
+    els.settingPhyStatus.textContent = '상태 조회 실패 (구버전 앱)';
+  }
 }
 
 // W7: 상시 감지 상태 요약 (설정: 켜짐 · 마지막 감지 HH:mm · 절전 예외 여부)
@@ -1817,6 +1872,47 @@ function setupEventListeners() {
       await window.CodysseyNative?.requestExactAlarmPermission?.();
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 31차: 물리 탐지 토글/버튼 — 즉시 네이티브 반영 (저장 버튼과 무관. 웹/익스텐션은 토글 비활성)
+  els.settingPhyEnabled?.addEventListener('change', async () => {
+    const enabled = els.settingPhyEnabled.checked;
+    try {
+      const r = await window.Capacitor?.Plugins?.PhyPlugin?.setPhyEnabled({ enabled });
+      if (enabled && r && r.fine === false) {
+        showNotification('위치 권한 요청', '학원 근처 감지에 위치 권한이 필요합니다. 요청창에서 허용해 주세요.');
+      }
+    } catch (e) { /* 웹/구버전 무시 */ }
+    setTimeout(refreshPhyStatusUI, 800);
+  });
+  els.settingPhyCollect?.addEventListener('change', async () => {
+    try {
+      await window.Capacitor?.Plugins?.PhyPlugin?.setPhyCollect({ enabled: els.settingPhyCollect.checked });
+    } catch (e) { /* 무시 */ }
+    setTimeout(refreshPhyStatusUI, 500);
+  });
+  els.settingPhyGeofence?.addEventListener('change', async () => {
+    try {
+      const r = await window.Capacitor?.Plugins?.PhyPlugin?.setPhyGeofence({ enabled: els.settingPhyGeofence.checked });
+      if (r && r.needBackground) {
+        showNotification("'항상 허용' 필요", '즉시 감지(지오펜스)는 위치 권한을 "항상 허용"으로 바꿔야 합니다. 앱 설정 화면을 엽니다.');
+        try { await window.Capacitor?.Plugins?.PhyPlugin?.openPhySettings(); } catch (e) { /* 무시 */ }
+      }
+    } catch (e) { /* 무시 */ }
+    setTimeout(refreshPhyStatusUI, 1500);
+  });
+  els.btnPhyLearn?.addEventListener('click', async () => {
+    try {
+      const r = await window.Capacitor?.Plugins?.PhyPlugin?.learnNow();
+      showNotification('학원 신호 학습', (r && r.result) || '완료');
+    } catch (e) { /* 무시 */ }
+    setTimeout(refreshPhyStatusUI, 800);
+  });
+  els.btnPhyExport?.addEventListener('click', async () => {
+    try {
+      const r = await window.Capacitor?.Plugins?.PhyPlugin?.sharePhyExport();
+      if (r) showNotification('내보내기 준비 완료', '공유 시트가 열립니다. 개발자에게 전달해 주세요.');
+    } catch (e) { /* 무시 */ }
   });
 
   // 22차: 세션 만료 배너의 재로그인 — 배너는 유지하되 로그인 폼으로 전환해 재인증 유도

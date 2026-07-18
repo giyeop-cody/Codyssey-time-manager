@@ -1010,3 +1010,100 @@ test('29차 overnightStatusSuffix: 괄호 표기 (임시/밤샘/누락)', () => 
   assert.equal(overnightStatusSuffix(null, null), '');
   assert.equal(OVERNIGHT_PREF_KEY, 'overnight_decision');
 });
+
+// ===== 31차(C안): 물리 탐지 판정 엔진 (PhysicalCheck.java 미러와 동일 규칙) =====
+import {
+  scorePhySignals,
+  physicalDecision,
+  overnightEvidenceSuffix,
+  PHY_WEIGHT_SSID,
+  PHY_WEIGHT_BSSID,
+  PHY_WEIGHT_CELL,
+  PHY_THRESHOLD_INSIDE,
+  PHY_STREAK_FLIP,
+  PHY_SCORE_CAP
+} from '../web/js/shared-attendance.js';
+
+const PHY_LEARNED = [
+  { kind: 'ssid', value: 'Jungle-5F', hits: 10 },
+  { kind: 'bssid', value: 'aa:bb:cc:dd:ee:ff', hits: 8 },
+  { kind: 'cell', value: 'lte:12345-678', hits: 12 }
+];
+
+test('31차 점수: SSID 2 / BSSID 3 / 셀 1 가중 합산 + 상한 ' + PHY_SCORE_CAP, () => {
+  assert.equal(PHY_WEIGHT_SSID, 2);
+  assert.equal(PHY_WEIGHT_BSSID, 3);
+  assert.equal(PHY_WEIGHT_CELL, 1);
+  // BSSID 3 + SSID 2 = 5
+  assert.equal(scorePhySignals(
+    { ssid: 'Jungle-5F', bssid: 'AA:BB:CC:DD:EE:FF', cells: [] }, PHY_LEARNED), 5);
+  // 셀만 적중하면 1 — 임계 미달 (S1 오탐 방지)
+  assert.equal(scorePhySignals({ ssid: 'HomeWifi', cells: ['lte:12345-678'] }, PHY_LEARNED), 1);
+  // 상한: 과적중도 캡
+  const manyCells = { cells: ['lte:12345-678', 'a', 'b', 'c', 'd', 'e', 'f'] };
+  const bigLearn = PHY_LEARNED.concat(['a', 'b', 'c', 'd', 'e', 'f'].map(v => ({ kind: 'cell', value: v, hits: 1 })));
+  assert.equal(scorePhySignals(manyCells, bigLearn), PHY_SCORE_CAP);
+  // BSSID 대소문자 무시 매칭
+  assert.ok(scorePhySignals({ bssid: 'aa:BB:cc:DD:ee:ff' }, PHY_LEARNED) >= PHY_WEIGHT_BSSID);
+});
+
+test('31차 판정: 학습 테이블 없으면 판정 보류 (초기 사용자 오탐 방지)', () => {
+  const d = physicalDecision({ inside: null, streakIn: 0, streakOut: 0 },
+    { sessionOpen: true, score: 6, hasSignal: true, hasLearned: false });
+  assert.equal(d.inside, null);
+  assert.equal(d.streakIn, 0);
+  assert.equal(d.streakOut, 0);
+  assert.equal(d.alert, null);
+});
+
+test('31차 S2: 세션 열림 + 학원 밖 연속 ' + PHY_STREAK_FLIP + '회 → 퇴실 누락 의심 알림', () => {
+  let state = { inside: true, streakIn: 2, streakOut: 0 };
+  // 1틱: 학원 밖 후보 — 아직 앋았다 볼 수 있어 알림 없음
+  state = physicalDecision(state, { sessionOpen: true, score: 0, hasSignal: true, hasLearned: true });
+  assert.equal(state.alert, null);
+  assert.equal(state.inside, true); // 연속 1회로는 전환 안 됨
+  // 2틱 연속 → 학원 밖 전환 + 알림
+  state = physicalDecision(state, { sessionOpen: true, score: 0, hasSignal: true, hasLearned: true });
+  assert.equal(state.inside, false);
+  assert.equal(state.alert, 'S2');
+  // 3틱째도 알림 조건은 참 — 당일 1회 제한은 네이티브(phy_alerts)가 담당
+  state = physicalDecision(state, { sessionOpen: true, score: 0, hasSignal: true, hasLearned: true });
+  assert.equal(state.alert, 'S2');
+});
+
+test('31차 S1: 세션 닫힘 + 학원 안 연속 2회 → 입실 누락 의심 알림', () => {
+  let state = { inside: false, streakIn: 0, streakOut: 2 };
+  state = physicalDecision(state, { sessionOpen: false, score: 5, hasSignal: true, hasLearned: true });
+  assert.equal(state.alert, null); // 1틱 — 아직 전환 전
+  state = physicalDecision(state, { sessionOpen: false, score: 5, hasSignal: true, hasLearned: true });
+  assert.equal(state.inside, true);
+  assert.equal(state.alert, 'S1');
+});
+
+test('31차 히스테리시스: 반대 신호 1틱이면 연속 카운터 리셋 (카페 외출 오탐 방지)', () => {
+  let state = { inside: true, streakIn: 5, streakOut: 0 };
+  state = physicalDecision(state, { sessionOpen: true, score: 0, hasSignal: true, hasLearned: true });
+  assert.equal(state.streakOut, 1);
+  // 카페에서 학원으로 복귀 → 신호 회복
+  state = physicalDecision(state, { sessionOpen: true, score: 5, hasSignal: true, hasLearned: true });
+  assert.equal(state.streakOut, 0);
+  assert.equal(state.alert, null);
+  assert.equal(state.inside, true);
+});
+
+test('31차 신호 없음(비행기모드 등): 판정 보류 — 알림 없음', () => {
+  let state = { inside: true, streakIn: 3, streakOut: 1 };
+  state = physicalDecision(state, { sessionOpen: true, score: 0, hasSignal: false, hasLearned: true });
+  assert.equal(state.inside, true); // 상태 보존
+  assert.equal(state.streakIn, 0);
+  assert.equal(state.streakOut, 0);
+  assert.equal(state.alert, null);
+});
+
+test('31차 밤샘 근거 문구: 물리 판정이 자정 확인에 근거를 붙임', () => {
+  assert.match(overnightEvidenceSuffix(true), /밤샘 가능성 높음/);
+  assert.match(overnightEvidenceSuffix(false), /퇴실 누락 가능성 높음/);
+  assert.equal(overnightEvidenceSuffix(null), '');
+  assert.equal(overnightEvidenceSuffix(undefined), '');
+  assert.match(overnightEvidenceSuffix(true), /^\s*\(/); // 앞 공백 + 괄호 시작 (29차 문구 규칙과 동일)
+});

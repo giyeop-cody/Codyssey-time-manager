@@ -934,3 +934,67 @@ export function formatDiagEntry(e) {
   const ss = String(d.getSeconds()).padStart(2, '0');
   return md + ' ' + hh + ':' + mm + ':' + ss + ' [' + (e.tag || '-') + '] ' + (e.msg || '');
 }
+
+// ===== 31차(C안): 물리 탐지 판정 엔진 — android PhysicalCheck.java의 미러 =====
+// 양쪽이 같은 상수/규칙을 유지해야 팝업 표시와 네이티브 알림이 어긋나지 않는다.
+// 값을 바꾸면 PhysicalCheck.java도 함께 바꿀 것.
+export const PHY_WEIGHT_SSID = 2;
+export const PHY_WEIGHT_BSSID = 3;
+export const PHY_WEIGHT_CELL = 1;
+export const PHY_THRESHOLD_INSIDE = 3;
+export const PHY_STREAK_FLIP = 2;   // inside 전환에 필요한 연속 평가 수
+export const PHY_STREAK_ALERT = 2;  // 오탐 방지 — 5분 틱 × 2 = 최소 10분 후 알림
+export const PHY_SCORE_CAP = 6;
+
+// 신호 vs 학습 테이블 적중 점수 (PhysicalCheck.scoreSignals와 동일)
+export function scorePhySignals(signals, locations) {
+  const sig = signals || {};
+  const locs = Array.isArray(locations) ? locations : [];
+  let score = 0;
+  for (const loc of locs) {
+    if (!loc || !loc.kind) continue;
+    if (loc.kind === 'ssid' && sig.ssid && sig.ssid === loc.value) score += PHY_WEIGHT_SSID;
+    else if (loc.kind === 'bssid' && sig.bssid
+             && String(sig.bssid).toLowerCase() === String(loc.value).toLowerCase()) score += PHY_WEIGHT_BSSID;
+    else if (loc.kind === 'cell' && Array.isArray(sig.cells) && sig.cells.includes(loc.value)) score += PHY_WEIGHT_CELL;
+  }
+  return Math.min(score, PHY_SCORE_CAP);
+}
+
+// 1회 평가 → 다음 상태 + 알림 여부 (PhysicalCheck.decide와 동일 규칙)
+// prev: {inside: true|false|null, streakIn, streakOut}
+// obs:  {sessionOpen: true|false|null, score, hasSignal, hasLearned}
+// 반환: {inside, streakIn, streakOut, alert: 'S1'|'S2'|null}
+export function physicalDecision(prev, obs) {
+  const inside = prev && prev.inside !== undefined ? prev.inside : null;
+  const prevIn = (prev && prev.streakIn) || 0;
+  const prevOut = (prev && prev.streakOut) || 0;
+  const o = obs || {};
+
+  let cand = null; // 판정 후보: 학습 테이블이 없거나 신호가 아예 없으면 판정 보류
+  if (o.hasSignal && o.hasLearned) cand = (o.score || 0) >= PHY_THRESHOLD_INSIDE;
+
+  let streakIn = prevIn, streakOut = prevOut, nextInside = inside;
+  if (cand === null) { streakIn = 0; streakOut = 0; }
+  else if (cand) {
+    streakIn = prevIn + 1; streakOut = 0;
+    if (streakIn >= PHY_STREAK_FLIP) nextInside = true;
+  } else {
+    streakOut = prevOut + 1; streakIn = 0;
+    if (streakOut >= PHY_STREAK_FLIP) nextInside = false;
+  }
+
+  let alert = null;
+  if (o.sessionOpen === true && nextInside === false && streakOut >= PHY_STREAK_ALERT) alert = 'S2';
+  else if (o.sessionOpen === false && nextInside === true && streakIn >= PHY_STREAK_ALERT) alert = 'S1';
+
+  return { inside: nextInside, streakIn, streakOut, alert };
+}
+
+// 29차 자정 확인 배너에 붙는 물리 근거 문구 (31차 시너지)
+// inside: true = 학원 신호 감지(밤샘 근거), false = 학원 밖(퇴실 누락 근거), null/기타 = 근거 없음
+export function overnightEvidenceSuffix(inside) {
+  if (inside === true) return ' (물리 근거: 학원 신호 감지 중 — 밤샘 가능성 높음)';
+  if (inside === false) return ' (물리 근거: 학원 신호 없음 — 퇴실 누락 가능성 높음)';
+  return '';
+}

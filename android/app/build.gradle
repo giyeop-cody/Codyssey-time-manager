@@ -71,6 +71,9 @@ dependencies {
 
     // Capacitor core
     implementation project(':capacitor-android')
+
+    // 31차: 물리 탐지(C안) — 지오펜스 + 활동 인식 클라이언트 (Play services)
+    implementation 'com.google.android.gms:play-services-location:21.3.0'
 }
 
 // DO NOT EDIT: managed by "capacitor sync" (Capacitor 플러그인 모듈 의존성 추가)

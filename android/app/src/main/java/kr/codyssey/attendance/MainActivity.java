@@ -9,6 +9,7 @@ import com.getcapacitor.BridgeActivity;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
+import kr.codyssey.attendance.plugin.PhyPlugin;
 import kr.codyssey.attendance.plugin.PollingPlugin;
 
 public class MainActivity extends BridgeActivity {
@@ -25,11 +26,12 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(NetworkPlugin.class);
         registerPlugin(AlarmPlugin.class);
         registerPlugin(PollingPlugin.class);
+        registerPlugin(PhyPlugin.class); // 31차: 물리 탐지 JS 브릿지
 
         super.onCreate(savedInstanceState);
 
         // 28차 마이그레이션 (1회): 폐기된 1분 상시 감지 FGS/PollingService·TickReceiver 잔재 정리.
-        // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 삭제.
+        // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 살제.
         migrateLegacyForegroundMonitor(getApplicationContext());
 
         // 30차: 백그라운드 감지(dash)가 켜져 있으면 5분 틱 체인 + 15분 백업 동기화 보장
@@ -71,7 +73,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     // 28차: 폐기된 1분 FGS 잔재 정리 (1회 실행). 컴포넌트(PollingService/TickReceiver)는
-    // 코드에서 삭제됐으므로, 구버전이 예약해 둔 OS측 리소스만 클래스명 문자열로 해제한다.
+    // 코드에서 살제됐으므로, 구버전이 예약해 둔 OS측 리소스만 클래스명 문자열로 해제한다.
     private void migrateLegacyForegroundMonitor(android.content.Context ctx) {
         android.content.SharedPreferences prefs =
                 ctx.getSharedPreferences("codyssey_prefs", android.content.Context.MODE_PRIVATE);
@@ -89,7 +91,7 @@ public class MainActivity extends BridgeActivity {
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
             android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(ALARM_SERVICE);
             if (am != null) am.cancel(pi);
-            // 3) "상시 감지" 전용 알림 채널 삭제 (더 이상 사용하지 않음)
+            // 3) "상시 감지" 전용 알림 채널 살제 (더 이상 사용하지 않음)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 android.app.NotificationManager nm = ctx.getSystemService(android.app.NotificationManager.class);
                 if (nm != null) nm.deleteNotificationChannel("codyssey_monitor");
@@ -145,6 +147,19 @@ public class MainActivity extends BridgeActivity {
                 kr.codyssey.attendance.service.AlarmSoundService.EXTRA_STOP_ALARM_SOUND, false)) {
             kr.codyssey.attendance.service.AlarmSoundService.stopSound(this);
         }
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        // 31차 ②: 포그그라운드 Wi-Fi 스캔 1회 — 백그라운드 스캔 쓰로틀(30분/회)을 우회하는 교차 확인
+        try {
+            kr.codyssey.attendance.util.PhysicalCheck.foregroundScanIfEnabled(getApplicationContext());
+        } catch (Exception e) { /* 스캔 실패는 치명 아님 */ }
+        // 31차: 앱을 열 때 지오펜스 등록 상태도 보장 (OS 정리/기기 마이그레이션 대비)
+        try {
+            kr.codyssey.attendance.util.PhyGeofence.startIfEnabled(getApplicationContext());
+        } catch (Exception e) { /* 다음 실행에서 재시도 */ }
     }
 
     @Override

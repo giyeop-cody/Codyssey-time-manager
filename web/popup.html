@@ -420,6 +420,46 @@
       <div class="setting-dash-status" id="setting-dash-status"></div>
     </div>
 
+    <div class="settings-section">
+      <div class="settings-section-title">물리 탐지 (베타)</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">학원 근처 감지</div>
+          <div class="setting-desc">연결 Wi-Fi·기지국으로 건물 안/밖을 판정해 입·퇴실 누락을 알림 — 위치는 기기 안에서만 계산, 외부 전송 없음</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-phy-enabled"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">수집 모드 (베타 테스터용)</div>
+          <div class="setting-desc">틱마다 신호 샘플을 폰에만 쌓아두고, 내보내기 버튼으로 직접 개발자에게 공유</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-phy-collect" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">즉시 감지 (지오펜스)</div>
+          <div class="setting-desc">울타리 진입/이탈 즉시 판정 — 위치 '항상 허용' 필요 (앱 설정에서 직접 변경)</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-phy-geofence"><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">지금 위치를 학원으로 학습</div>
+          <div class="setting-desc">학원에서 누르세요 — 현재 Wi-Fi·기지국·좌표를 학원 신호로 등록</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-phy-learn">학습</button>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">수집 데이터 내보내기</div>
+          <div class="setting-desc">쌓인 샘플 JSON을 공유 시트로 전달 (개발자가 학원 신호 사전을 만드는 원자료)</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-phy-export">내보내기</button>
+      </div>
+      <div class="setting-dash-status" id="setting-phy-status"></div>
+    </div>
+
     <div class="settings-actions">
       <button class="btn btn-secondary" id="btn-settings-cancel">취소</button>
       <button class="btn btn-primary" id="btn-settings-save">저장</button>
