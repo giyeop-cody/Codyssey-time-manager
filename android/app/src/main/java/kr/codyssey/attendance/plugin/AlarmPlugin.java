@@ -284,4 +284,17 @@ public class AlarmPlugin extends Plugin {
 
         alarmManager.cancel(pendingIntent);
     }
+
+    // W7(18차): 알람 발화 소리 ON/OFF — alarmsound=0이면 해당 알람만 조용히 (NotificationHelper 참조)
+    @PluginMethod
+    public void setAlarmSound(PluginCall call) {
+        Boolean enabled = call.getBoolean("enabled");
+        getContext().getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("alarm_sound", enabled == null || enabled)
+                .apply();
+        JSObject out = new JSObject();
+        out.put("ok", true);
+        call.resolve(out);
+    }
 }

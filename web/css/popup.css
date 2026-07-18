@@ -151,6 +151,11 @@ body {
 .password-wrap .input { padding-right: 42px; }
 .pw-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; opacity: 0.55; padding: 4px; }
 .pw-toggle:hover { opacity: 1; }
+/* W7(18차): 헤더/연동꼭지 버튼에 이모지+미니 라벨 — 🔃(동기)와 🔄(갱신) 시각 혼동 해소 */
+.header-btn { display: inline-flex !important; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-width: 44px; padding: 4px 6px !important; line-height: 1; }
+.header-btn .hb-emoji { font-size: 15px; }
+.header-btn .hb-label { font-size: 9px; color: var(--text-muted); }
+.setting-dash-status { font-size: 11px; color: var(--text-muted); padding: 6px 2px 0; min-height: 14px; }
 .login-loading { display: none; text-align: center; color: var(--text-muted); margin-top: 16px; }
 .login-loading.show { display: block; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border-light); border-top-color: var(--accent-teal); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }

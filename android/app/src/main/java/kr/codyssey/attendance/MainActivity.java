@@ -9,6 +9,8 @@ import com.getcapacitor.BridgeActivity;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
+import kr.codyssey.attendance.plugin.PollingPlugin;
+import kr.codyssey.attendance.service.PollingService;
 
 public class MainActivity extends BridgeActivity {
 
@@ -23,8 +25,16 @@ public class MainActivity extends BridgeActivity {
         // Q8: NotificationPlugin은 JS 미사용 데드 브리지였기에 util.NotificationHelper로 대체
         registerPlugin(NetworkPlugin.class);
         registerPlugin(AlarmPlugin.class);
+        registerPlugin(PollingPlugin.class);
 
         super.onCreate(savedInstanceState);
+
+        // W7: 사용자가 켜 둔 1분 상시 감지 복원 — 스와이프 종료/재실행/업데이트 후에도 유지
+        if (PollingService.isEnabled(getApplicationContext())) {
+            try {
+                PollingService.startDash(getApplicationContext());
+            } catch (Exception e) { /* FGS 개시 제한 상황 — 포그라운드 JS가 다시 켬 */ }
+        }
 
         // L7+K6: 알림 탭으로 앱이 열린 경우 alarmId를 보관 —
         // JS 리스너(adapter) 준비를 폴한 뒤 이벤트 전달 (고정 지연은 느린 기기에서 이벤트 유실)

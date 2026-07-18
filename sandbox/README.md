@@ -179,3 +179,25 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 
 1. **모바일 공식 사이트에서 동일 클립보드로 붙여넣기 로그인** — 거기서도 실패하면 클립보드 내용 자체 문제 확정
 2. v1.2.2 실패 시 표시되는 **입력 진단 수치**(자릿수·개수) 회수 → 전송 경로 vs 입력 내용 최종 분기
+
+## 부록 5: 1분 상시 감지 서비스 (W7, 18차 — v1.3.0)
+
+사용자 요구: "백그라운드 1분 감지 + 알람 소리(이어폰 라우팅) + 절전모드 미진입 + 종료필치 유지 + 로그인 유지/동기화 버튼 구분".
+
+### 아키텍처
+
+| 계층 | 기존 | 18차 추가 |
+|---|---|---|
+| 감지 루틴 | SyncWorker 최소 주기 15분 (WorkManager 하한) | `PollingService`(FGS·specialUse) — Handler 60초 틱 + `setExactAndAllowWhileIdle(ELAPSED_REALTIME_WAKEUP)` 자기 부활 예약. 서비스 사망/스와이프 종료 → 1분 뒤 알람으로 재기동, MainActivity/BootReceiver 경유 복원 |
+| 틱 비용 | — | partial wake lock **60초 캡**, `ticking` 원자 플래그로 중첩 방지. GateCheck(설정 ON 시 조회, OFF면 즉시 반환) + EvalSync(6시간 스로틀) 재사용이라 보통 틱은 1~2회 HTTP |
+| keep-alive | 25~28분 | 서비스 가동 중 **50초 간격**으로 상향 (세션 유지 마진) |
+| 절전 예외 | — | `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` + 설정에서 시스템 다이얼로그 개시, 상태 표시 (✅/⚠️) |
+| 알람음 | TYPE_NOTIFICATION | **TYPE_ALARM + USAGE_ALARM 속성**(채널 매번 동기화) → 이어폰 착용 시 이어폰 라우팅, 미착용 시 알람 볼륨(단말 정책상 매너모드 우회 가능). 설정 '소리' 토글과 AlarmPlugin.setAlarmSound로 OFF 시 해당 알람만 조용히 |
+| UI | 💓/⚙️/🔄·🔃 이모지만 | 버튼에 미니 라벨(유지/설정/갱신/동기) 추가, 동기 아이콘 🔃→📥 |
+
+### 플랫폼 한계 (기술적 상한 — 제거 불가)
+
+- **포그라운드 서비스 = 상시 알림 1개 필수** (무소음 채널 `codyssey_monitor`). 완전 무알림 상시 동작은 OS가 허용하지 않음
+- 정확 알람 권한 미허용 시 틱이 자동 5분으로 축소 (앱이 폴곤 처리, 설정에서 권한 안내 기존 M5 경로)
+- 제조사 독자 절전(삼성 "절전 앱", 샤오미 등)은 OS 예외와 별개 — 그 경우에도 Worst case 15분 WorkManager 폴곤이 남음
+- 1분 상시 감지는 배터리 부담이 크므로 **설정에서 OFF 가능** (SyncWorker 15분 경로로 회귀)

@@ -1068,6 +1068,14 @@ import {
     Plugins.LocalNotifications.requestPermissions().catch(() => {});
   }
 
+  // ===== W7: 1분 상시 감지 복원 (기본 켬 — 설정에서 끄면 dashEnabled=false) =====
+  if (isCapacitor && Plugins.PollingPlugin) {
+    getPrefs(STORE_KEYS.SETTINGS).then(settings => {
+      if (settings && settings.dashEnabled === false) return;
+      return Plugins.PollingPlugin.startDash();
+    }).catch(() => {});
+  }
+
   // ===== Q5: 하드웨어 뒤로가기 처리 (미처리 시 앱이 바로 종료됨) =====
   // W5: 재진입/중복 로드 시 리스너가 두 번 등록되지 않도록 단일 등록 가드
   if (isCapacitor && Plugins.App && Plugins.App.addListener && !window.__codysseyBackButtonHooked) {

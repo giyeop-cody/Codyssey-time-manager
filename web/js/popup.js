@@ -140,6 +140,9 @@ const els = {
   settingRefreshInterval: document.getElementById('setting-refresh-interval'),
   settingKeepAlive: document.getElementById('setting-keep-alive'),
   settingGateNotify: document.getElementById('setting-gate-notify'),
+  settingDash: document.getElementById('setting-dash'),
+  btnBatteryExempt: document.getElementById('btn-battery-exempt'),
+  settingDashStatus: document.getElementById('setting-dash-status'),
   settingEvalLead: document.getElementById('setting-eval-lead'),
   settingEvalAutosync: document.getElementById('setting-eval-autosync'),
   settingEvalInstcdRow: document.getElementById('setting-eval-instcd-row'),
@@ -1215,12 +1218,54 @@ function openSettings() {
   els.settingEvalAutosync.checked = currentSettings.evalAutoSyncEnabled !== false; // E2
   els.settingEvalInstcd.value = currentSettings.evalInstCd || ''; // E2 수동 instCd
   els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
+  els.settingDash.checked = currentSettings.dashEnabled !== false; // W7: 1분 상시 감지 기본 켬
+  refreshDashStatusUI();
   
   els.settingsModal.classList.add('show');
 }
 
+// W7: 상시 감지 상태 요약 (설정: 켜짐 · 마지막 감지 HH:mm · 절전 예외 여부)
+async function refreshDashStatusUI() {
+  if (!els.settingDashStatus) return;
+  const polling = window.Capacitor?.Plugins?.PollingPlugin;
+  if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !polling) {
+    els.settingDashStatus.textContent = '(Android 앱에서 사용 가능)';
+    return;
+  }
+  try {
+    const st = await polling.getDashStatus();
+    const bat = await polling.isIgnoringBatteryOptimizations();
+    let txt = '설정: ' + (st.enabled ? '켜짐' : '꺼짐');
+    txt += st.lastTick
+      ? ' · 마지막 감지 ' + new Date(st.lastTick).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+      : ' · 마지막 감지 없음';
+    txt += ' · ' + (bat.granted ? '절전 예외 ✅' : '절전 예외 안 됨 ⚠️');
+    els.settingDashStatus.textContent = txt;
+  } catch (e) {
+    els.settingDashStatus.textContent = '상태 조회 실패';
+  }
+}
+
 function closeSettings() {
   els.settingsModal.classList.remove('show');
+}
+
+// W7: 네이티브 런타임 설정 즉시 적용 (웹/익스텐션에서는 무시)
+async function applyNativeRuntimeSettings(settings) {
+  if (!(window.CodysseyNative && window.CodysseyNative.isNative)) return;
+  try {
+    const polling = window.Capacitor?.Plugins?.PollingPlugin;
+    if (polling) {
+      if (settings.dashEnabled === false) await polling.stopDash();
+      else await polling.startDash();
+    }
+  } catch (e) { /* 구버전 앱/플러그인 부재 — 무시 */ }
+  try {
+    const alarm = window.Capacitor?.Plugins?.AlarmPlugin;
+    if (alarm && alarm.setAlarmSound) {
+      await alarm.setAlarmSound({ enabled: settings.soundEnabled !== false });
+    }
+  } catch (e) { /* 무시 */ }
 }
 
 async function saveSettings() {
@@ -1235,8 +1280,12 @@ async function saveSettings() {
     gateNotifyEnabled: els.settingGateNotify.checked, // G1
     evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
     evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
-    evalInstCd: els.settingEvalInstcd.value.trim() // E2 수동 instCd (빈값=자동 감지)
+    evalInstCd: els.settingEvalInstcd.value.trim(), // E2 수동 instCd (빈값=자동 감지)
+    dashEnabled: els.settingDash.checked // W7: 1분 상시 감지
   };
+
+  // W7: 네이티브 즉시 반영 — 설정 저장과 같은 동작으로 상시 감지/알람 소리 적용
+  await applyNativeRuntimeSettings(settings);
 
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
@@ -1463,6 +1512,14 @@ function setupEventListeners() {
     } finally {
       setLoginButtonLoading(false);
     }
+  });
+
+  // W7: 절전모드 예외 요청 — 시스템 다이얼로그 열고 돌아오면 상태 재조회
+  els.btnBatteryExempt?.addEventListener('click', async () => {
+    try {
+      await window.Capacitor?.Plugins?.PollingPlugin?.requestBatteryOptimizationExemption();
+    } catch (e) { /* 웹/구버전 무시 */ }
+    setTimeout(refreshDashStatusUI, 2000);
   });
 
   // L2+: 비밀번호 표시/숨기기 토글 — 붙여넣기 내용 확인용 (공식 로그인 폼도 동일 기능 제공)

@@ -52,9 +52,9 @@
   <div class="dashboard-header">
     <h2 class="dashboard-title">🔔 출입 현황 알리미</h2>
     <div class="header-actions">
-      <button class="btn btn-ghost btn-sm" id="btn-keep-alive" title="로그인 유지">💓</button>
-      <button class="btn btn-ghost btn-sm" id="btn-settings" title="설정">⚙️</button>
-      <button class="btn btn-ghost btn-sm" id="btn-refresh" title="새로고침">🔄</button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-keep-alive" title="로그인 유지"><span class="hb-emoji">💓</span><span class="hb-label">유지</span></button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-settings" title="설정"><span class="hb-emoji">⚙️</span><span class="hb-label">설정</span></button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-refresh" title="새로고침"><span class="hb-emoji">🔄</span><span class="hb-label">갱신</span></button>
     </div>
   </div>
 
@@ -234,7 +234,7 @@
   <div class="alarms-section" id="eval-section">
     <div class="alarms-header">
       <h3 class="alarms-title">📋 평가 알람</h3>
-      <button class="btn btn-ghost btn-sm" id="btn-sync-eval" title="지금 동기화">🔃</button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-sync-eval" title="지금 동기화"><span class="hb-emoji">📥</span><span class="hb-label">동기</span></button>
     </div>
     <div class="alarms-empty" id="eval-sync-status">평가 일정을 확인하는 중...</div>
     <div class="alarms-empty" id="eval-hint">코디세이 평가 목록을 주기적으로 확인해 ①새 평가가 잡히면 1회, ②설정한 시점(N분 전)에 다시 알려줍니다. 예정된 평가는 아래 활성 알람 목록에 자동으로 올라가며, 설정에서 끄거나 알림 시점을 바꿀 수 있습니다.</div>
@@ -356,10 +356,29 @@
       <div class="setting-row">
         <div>
           <div class="setting-label">자동 로그인 유지</div>
-          <div class="setting-desc">25~28분마다 서버 통신</div>
+          <div class="setting-desc">25~28분마다 서버 통신 (1분 상시 감지 켜짐 시 1분 간격)</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-keep-alive" checked><span class="toggle-slider"></span></label>
       </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">상시 감지 (Android)</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">1분 상시 감지</div>
+          <div class="setting-desc">앱이 꺼져 있어도 1분마다 입·퇴실/평가 확인 · 배터리 소모 커짐</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-dash" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">절전모드 예외 (배터리 최적화)</div>
+          <div class="setting-desc">미해제 시 1분 감지가 단말 절전 중 지연될 수 있음</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-battery-exempt">예외 요청</button>
+      </div>
+      <div class="setting-dash-status" id="setting-dash-status"></div>
     </div>
 
     <div class="settings-actions">

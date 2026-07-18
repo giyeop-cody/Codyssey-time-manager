@@ -20,6 +20,7 @@ import org.json.JSONObject;
 import java.util.concurrent.TimeUnit;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
+import kr.codyssey.attendance.service.PollingService;
 import kr.codyssey.attendance.worker.AlarmWorker;
 import kr.codyssey.attendance.worker.SyncWorker;
 
@@ -49,6 +50,13 @@ public class BootReceiver extends BroadcastReceiver {
                     );
         } else {
             WorkManager.getInstance(context).cancelUniqueWork("codyssey_periodic_sync");
+        }
+
+        // W7: 1분 상시 감지가 켜져 있었다면 부팅 직후 서비스 복원
+        if (PollingService.isEnabled(context)) {
+            try {
+                PollingService.startDash(context);
+            } catch (Exception e) { /* FGS 개시 제한 단말 — 다음 앱 실행에서 복원 */ }
         }
 
         // L10: 부팅으로 소실된 1회성 알람 복원 (WorkManager 워크는 OS가 유지하므로 주기 동기화만 재등록)

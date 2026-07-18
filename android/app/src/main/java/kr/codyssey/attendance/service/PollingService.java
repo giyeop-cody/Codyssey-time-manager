@@ -1,0 +1,245 @@
+package kr.codyssey.attendance.service;
+
+import android.Manifest;
+import android.app.AlarmManager;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
+import android.app.Service;
+import android.content.Context;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
+import android.os.Build;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.IBinder;
+import android.os.PowerManager;
+import android.os.SystemClock;
+
+import androidx.core.app.NotificationCompat;
+import androidx.core.content.ContextCompat;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import kr.codyssey.attendance.util.CookieManager;
+import kr.codyssey.attendance.util.EvalSync;
+import kr.codyssey.attendance.util.GateCheck;
+
+/**
+ * 1분 상시 감지 포그라운드 서비스 (W7, 18차).
+ *
+ * - SyncWorker(15분 주기 하한)로는 커버되지 않는 "입·퇴실 처리 즉시 감지"용.
+ * - AlarmManager.setExactAndAllowWhileIdle(ELAPSED_REALTIME_WAKEUP)로 차기 주기를 자기 예약 →
+ *   서비스가 OS에 죽어도 1분 뒤 부활. 살아있는 동안은 Handler로 연속 실행.
+ * - 각 주기: 짧은 partial wake lock 하에 (설정 ON 시) keep-alive 핑 → GateCheck → EvalSync.
+ * - 상시 알림(FGS 필수)은 무소음 채널 — 알람 소리는 codyssey_alarms 채널(NotificationHelper)이 담당.
+ */
+public class PollingService extends Service {
+
+    public static final String ACTION_START   = "kr.codyssey.attendance.action.POLL_START";
+    public static final String ACTION_REFRESH = "kr.codyssey.attendance.action.POLL_REFRESH";
+    public static final String ACTION_STOP    = "kr.codyssey.attendance.action.POLL_STOP";
+
+    private static final long TICK_MS = 60 * 1000;
+    private static final long FALLBACK_TICK_MS = 5 * 60 * 1000; // 정확 알람 권한 없을 때
+    private static final long WAKELOCK_MS = 60 * 1000;
+    private static final String PREFS_NAME = "codyssey_prefs";
+    private static final String LAST_TICK_KEY = "dash_last_tick";
+    private static final String CHANNEL_ID = "codyssey_monitor";
+    private static final int NOTIF_ID = 10;
+
+    private static HandlerThread thread;
+    private static Handler handler;
+    private static final AtomicBoolean ticking = new AtomicBoolean(false);
+
+    private final Runnable tickRunnable = this::doTick;
+    private PowerManager.WakeLock wakeLock;
+
+    // ===== 수명주기 =====
+
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        startForegroundWithNotification();
+        synchronized (PollingService.class) {
+            if (thread == null) {
+                thread = new HandlerThread("codyssey-dash");
+                thread.start();
+                handler = new Handler(thread.getLooper());
+            }
+        }
+        wakeLock = ((PowerManager) getSystemService(POWER_SERVICE))
+                .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "codyssey:dashTick");
+        scheduleNextTick(this);
+        handler.postDelayed(tickRunnable, 3000); // 즉시 1회(3초 후) + 이후 1분 주기
+    }
+
+    @Override
+    public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        // ACTION_START/ACTION_REFRESH: 알림 문구 갱신 + 예약 보장
+        startForegroundWithNotification();
+        scheduleNextTick(this);
+        return START_STICKY; // OS가 죽이면 자동 복구 (인텐트 null → 주기 유지)
+    }
+
+    @Override
+    public void onDestroy() {
+        if (handler != null) handler.removeCallbacks(tickRunnable);
+        cancelAlarm(this);
+        releaseWakeLock();
+        super.onDestroy();
+    }
+
+    @Override
+    public IBinder onBind(Intent intent) { return null; }
+
+    // ===== 주기 실행 =====
+
+    private void doTick() {
+        if (!ticking.compareAndSet(false, true)) return; // 이전 주기가 아직 실행 중이면 합류하지 않음
+        acquireWakeLock();
+        try {
+            SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+            boolean keepAlive = true;
+            try {
+                org.json.JSONObject settings = new org.json.JSONObject(prefs.getString("settings", "{}"));
+                keepAlive = settings.optBoolean("keepAliveEnabled", true);
+            } catch (Exception e) { /* 기본값 유지 */ }
+
+            if (keepAlive) CookieManager.pingKeepAlive(this);
+            GateCheck.run(this);   // 설정에서 입·퇴실 감지 OFF면 남부에서 즉시 반환
+            EvalSync.run(this);    // 6시간 스로틀 남장이라 사실상 스킵 빈번 (비용 적음)
+
+            prefs.edit().putLong(LAST_TICK_KEY, System.currentTimeMillis()).apply();
+            updateNotification();
+        } catch (Exception e) {
+            // 주기 실패는 다음 틱으로 (조용히)
+        } finally {
+            ticking.set(false);
+            releaseWakeLock();
+            // 살아있는 동안은 Handler로 연속 실행, 죽으면 알람이 부활시킴 (이중 예약 아님)
+            if (handler != null) handler.postDelayed(tickRunnable, TICK_MS);
+        }
+    }
+
+    private void acquireWakeLock() {
+        try { if (wakeLock != null) wakeLock.acquire(WAKELOCK_MS); } catch (Exception ignored) {}
+    }
+
+    private void releaseWakeLock() {
+        try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {}
+    }
+
+    // ===== 차기 주기 예약 (서비스 사망 대비) =====
+
+    private static void scheduleNextTick(Context context) {
+        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return;
+        long interval = TICK_MS;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
+            interval = FALLBACK_TICK_MS; // 정확 권한 없으면 짧은 간격은 포기하고 5분으로
+        }
+        long nextAt = SystemClock.elapsedRealtime() + interval;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, tickPendingIntent(context));
+            } else {
+                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, tickPendingIntent(context));
+            }
+        } catch (SecurityException e) {
+            // 정확 알람 거부 — 긴 주기 inexact로 축소
+            am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt + FALLBACK_TICK_MS, tickPendingIntent(context));
+        }
+    }
+
+    private static void cancelAlarm(Context context) {
+        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (am != null) am.cancel(tickPendingIntent(context));
+    }
+
+    private static PendingIntent tickPendingIntent(Context context) {
+        Intent i = new Intent(context, PollingService.class).setAction(ACTION_REFRESH);
+        return PendingIntent.getService(context, 0, i,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    }
+
+    // ===== 알림 =====
+
+    private void startForegroundWithNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_ID, "상시 감지", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("1분 간격 입·퇴실/평가 감지 상태 표시 (무소음)");
+            ch.setShowBadge(false);
+            nm.createNotificationChannel(ch);
+        }
+        Notification notif = buildNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else {
+            startForeground(NOTIF_ID, notif);
+        }
+    }
+
+    private void updateNotification() {
+        NotificationManager nm = getSystemService(NotificationManager.class);
+        // Android 13+ 알림 권한이 없으면 notify 자체가 예외 — 감지 자체와 무관하므로 흡수
+        if (Build.VERSION.SDK_INT >= 33
+                && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
+        try { nm.notify(NOTIF_ID, buildNotification()); } catch (Exception ignored) {}
+    }
+
+    private Notification buildNotification() {
+        long last = getSharedPreferences(PREFS_NAME, MODE_PRIVATE).getLong(LAST_TICK_KEY, 0);
+        String lastStr = last > 0
+                ? new SimpleDateFormat("HH:mm", Locale.US).format(new Date(last))
+                : "--:--";
+        Intent open = new Intent(this, kr.codyssey.attendance.MainActivity.class);
+        PendingIntent pi = PendingIntent.getActivity(this, 0, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        return new NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_popup_sync)
+                .setContentTitle("🔁 코디세이 상시 감지 중")
+                .setContentText("1분 간격 · 마지막 감지 " + lastStr)
+                .setOngoing(true)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setContentIntent(pi)
+                .build();
+    }
+
+    // ===== 정적 헬퍼 (플러그인/부팅 리시버에서 호출) =====
+
+    public static void startDash(Context context) {
+        Intent i = new Intent(context, PollingService.class).setAction(ACTION_START);
+        ContextCompat.startForegroundService(context, i);
+    }
+
+    public static void stopDash(Context context) {
+        Intent i = new Intent(context, PollingService.class).setAction(ACTION_STOP);
+        context.startService(i);
+    }
+
+    public static boolean isEnabled(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean("dash_enabled", false);
+    }
+
+    public static void setEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putBoolean("dash_enabled", enabled).apply();
+    }
+}

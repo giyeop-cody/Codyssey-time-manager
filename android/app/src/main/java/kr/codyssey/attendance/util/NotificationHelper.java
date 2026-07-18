@@ -1,11 +1,14 @@
 package kr.codyssey.attendance.util;
 
+import android.annotation.SuppressLint;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.media.AudioAttributes;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
@@ -25,6 +28,15 @@ public class NotificationHelper {
     private static final String CHANNEL_ID = "codyssey_alarms";
     private static final String CHANNEL_NAME = "출입 알림";
     private static final int NOTIFICATION_ID_BASE = 1000;
+    private static final String PREFS_NAME = "codyssey_prefs";
+
+    // W7(18차): 알람 발화 소리 — AlarmPlugin.setAlarmSound JS 설정과 연동.
+    // 소리는 기존과 동일하게 "알람 스트림(USAGE_ALARM)": 이어폰 착용 시 이어폰으로 자동 라우팅되고,
+    // 미착용 시엔 매너모드 중에도 알람 볼륨으로 재생되는 단말 정책을 그대로 따른다.
+    private static boolean alarmSoundEnabled(Context context) {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean("alarm_sound", true);
+    }
 
     // M7: 알람 id의 hashCode 충돌로 다른 알림을 덮어쓰는 문제 방지 — id별 고유 int 매핑 유지
     private static int notificationIdFor(Context context, String key) {
@@ -42,7 +54,8 @@ public class NotificationHelper {
     }
 
     public static void showNotification(Context context, String title, String body, String id) {
-        createNotificationChannel(context);
+        boolean sound = alarmSoundEnabled(context);
+        createNotificationChannel(context, sound);
 
         String notifIdKey = id != null ? id : "default";
         int notificationId = notificationIdFor(context, notifIdKey);
@@ -62,7 +75,10 @@ public class NotificationHelper {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
 
-        Uri soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+        // 소리 OFF 설정이면 알람음 대신 조용히(진동 패턴은 건드리지 않음)
+        Uri soundUri = sound
+                ? RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                : null;
 
         Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(getSmallIcon(context))
@@ -79,10 +95,20 @@ public class NotificationHelper {
         NotificationManagerCompat.from(context).notify(notificationId, notification);
     }
 
-    private static void createNotificationChannel(Context context) {
+    // 알람 스트림 속성 — 이어폰/스피커 자동 라우팅 + 매너모드 우회는 시스템 알람음 정책에 위임
+    private static AudioAttributes alarmAudioAttributes() {
+        return new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+    }
+
+    private static void createNotificationChannel(Context context, boolean sound) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationManager manager = context.getSystemService(NotificationManager.class);
-            if (manager.getNotificationChannel(CHANNEL_ID) == null) {
+            NotificationChannel existing = manager.getNotificationChannel(CHANNEL_ID);
+            // W7: 알람 채널이 이미 만들어져 있어도 소리 설정은 사용자가 바꿀 수 있으므로 매번 동기화
+            if (existing == null) {
                 NotificationChannel channel = new NotificationChannel(
                         CHANNEL_ID,
                         CHANNEL_NAME,
@@ -91,17 +117,33 @@ public class NotificationHelper {
                 channel.setDescription("코디세이 출입 알림 채널");
                 channel.enableVibration(true);
                 channel.setVibrationPattern(new long[]{0, 500, 200, 500});
+                if (sound) {
+                    channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                            alarmAudioAttributes());
+                } else {
+                    channel.setSound(null, null);
+                }
                 manager.createNotificationChannel(channel);
+                return;
             }
+            if (sound) {
+                existing.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+                        alarmAudioAttributes());
+            } else {
+                existing.setSound(null, null);
+            }
+            manager.createNotificationChannel(existing);
         }
     }
 
     private static int getSmallIcon(Context context) {
-        // 아이콘 리소스가 있으면 사용, 없으면 기본 아이콘
+        // Q8 수정: getIdentifier는 리소스 부재 시 예외가 아니라 0을 반환하고,
+        // resId=0을 setSmallIcon에 넘기면 IllegalArgumentException이 나므로 폴곤 필수
         try {
-            return context.getResources().getIdentifier("ic_stat_codyssey", "drawable", context.getPackageName());
-        } catch (Exception e) {
-            return android.R.drawable.ic_dialog_info;
-        }
+            int id = context.getResources()
+                    .getIdentifier("ic_stat_codyssey", "drawable", context.getPackageName());
+            if (id != 0) return id;
+        } catch (Exception e) { /* 폴곤으로 */ }
+        return android.R.drawable.ic_dialog_info;
     }
 }
