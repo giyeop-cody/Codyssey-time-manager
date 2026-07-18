@@ -378,25 +378,25 @@
       <div class="setting-row">
         <div>
           <div class="setting-label">자동 로그인 유지</div>
-          <div class="setting-desc">25~28분마다 서버 통신 (1분 상시 감지 켜짐 시 1분 간격)</div>
+          <div class="setting-desc">25~28분마다 서버 통신 (백그라운드 감지 켜짐 시 약 15분 간격)</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-keep-alive" checked><span class="toggle-slider"></span></label>
       </div>
     </div>
 
     <div class="settings-section">
-      <div class="settings-section-title">상시 감지 (Android)</div>
+      <div class="settings-section-title">백그라운드 감지 (Android)</div>
       <div class="setting-row">
         <div>
-          <div class="setting-label">1분 상시 감지</div>
-          <div class="setting-desc">앱이 꺼져 있어도 1분마다 입·퇴실/평가 확인 · 배터리 소모 커짐</div>
+          <div class="setting-label">백그라운드 감지</div>
+          <div class="setting-desc">앱이 꺼져 있어도 약 15분 간격(안드로이드 최소 주기)으로 입·퇴실/평가 확인 · 상시 알림 없음 · 배터리 부담 적음</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-dash" checked><span class="toggle-slider"></span></label>
       </div>
       <div class="setting-row">
         <div>
           <div class="setting-label">절전모드 예외 (배터리 최적화)</div>
-          <div class="setting-desc">미해제 시 1분 감지가 단말 절전 중 지연될 수 있음</div>
+          <div class="setting-desc">미해제 시 감지·알림이 단말 절전 중 지연될 수 있음</div>
         </div>
         <button type="button" class="btn btn-secondary btn-sm" id="btn-battery-exempt">예외 요청</button>
       </div>

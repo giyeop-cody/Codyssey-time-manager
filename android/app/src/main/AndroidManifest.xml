@@ -12,10 +12,9 @@
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- W7(18차): 1분 상시 감지 포그라운드 서비스 + 절전모드 예외 -->
+    <!-- FGS 공통 권한 — 알람 울림 전용 mediaPlayback FGS(25차, 실제 울릴 때만 실행)에 필요 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- 25차: 알람 울림 전담 서비스(미디어 재생 타입) -->
+    <!-- 28차: 1분 상시 감지 FGS 폐지 — FOREGROUND_SERVICE_SPECIAL_USE 권한 제거 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
@@ -47,13 +46,7 @@
             android:exported="false"
             android:enabled="true" />
 
-        <!-- 20차: 1분 감지 부활 알람 수신기 — 백그라운드 서비스 시작 제한 우회용 브로드캐스트 경로 -->
-        <receiver
-            android:name="kr.codyssey.attendance.receiver.TickReceiver"
-            android:exported="false"
-            android:enabled="true" />
-
-        <!-- 부팅 완료 시 동기화 재시작 (시스템 브로드캐스트 수신용) -->
+        <!-- 부팅 완료 시 주기 동기화/알람 복원 (시스템 브로드캐스트 수신용) -->
         <receiver
             android:name="kr.codyssey.attendance.receiver.BootReceiver"
             android:exported="true"
@@ -63,15 +56,8 @@
             </intent-filter>
         </receiver>
 
-        <!-- W7(18차): 1분 상시 감지 포그라운드 서비스 -->
-        <service
-            android:name="kr.codyssey.attendance.service.PollingService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="학원 출입 처리와 평가 일정을 1분 간격으로 감지해 알람을 울리는 상시 감지 도구" />
-        </service>
+        <!-- 28차: PollingService/TickReceiver 제거됨 (1분 FGS 폐지 → WorkManager 15분 주기).
+             구버전 잔재는 MainActivity 초기 실행 시 1회 정리 -->
 
         <!-- 25차: 알람 울림 전담 서비스 (최대 1분 반복 재생 + 해제 고정 알림) -->
         <service

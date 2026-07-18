@@ -10,7 +10,6 @@ import com.getcapacitor.BridgeActivity;
 import kr.codyssey.attendance.plugin.AlarmPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
 import kr.codyssey.attendance.plugin.PollingPlugin;
-import kr.codyssey.attendance.service.PollingService;
 
 public class MainActivity extends BridgeActivity {
 
@@ -29,11 +28,15 @@ public class MainActivity extends BridgeActivity {
 
         super.onCreate(savedInstanceState);
 
-        // W7: 사용자가 켜 둔 1분 상시 감지 복원 — 스와이프 종료/재실행/업데이트 후에도 유지
-        if (PollingService.isEnabled(getApplicationContext())) {
+        // 28차 마이그레이션 (1회): 폐기된 1분 상시 감지 FGS/PollingService·TickReceiver 잔재 정리.
+        // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 삭제.
+        migrateLegacyForegroundMonitor(getApplicationContext());
+
+        // 28차: 백그라운드 감지(dash)가 켜져 있으면 WorkManager 주기 동기화(15분) 보장
+        if (PollingPlugin.isEnabled(getApplicationContext())) {
             try {
-                PollingService.startDash(getApplicationContext());
-            } catch (Exception e) { /* FGS 개시 제한 상황 — 포그라운드 JS가 다시 켬 */ }
+                PollingPlugin.ensurePeriodicSync(getApplicationContext());
+            } catch (Exception e) { /* 다음 앱 실행에서 재시도 */ }
         }
 
         // L7+K6: 알림 탭으로 앱이 열린 경우 alarmId를 보관 —
@@ -62,6 +65,36 @@ public class MainActivity extends BridgeActivity {
         // WebView 세부 설정 (Capacitor의 BridgeWebViewClient/WebChromeClient는 덮어쓰지 않음 —
         // 덮어쓰면 JS ↔ 네이티브 브리지가 파괴 되어 모든 플러그인 호출이 실패함)
         applyWebViewSettings();
+    }
+
+    // 28차: 폐기된 1분 FGS 잔재 정리 (1회 실행). 컴포넌트(PollingService/TickReceiver)는
+    // 코드에서 삭제됐으므로, 구버전이 예약해 둔 OS측 리소스만 클래스명 문자열로 해제한다.
+    private void migrateLegacyForegroundMonitor(android.content.Context ctx) {
+        android.content.SharedPreferences prefs =
+                ctx.getSharedPreferences("codyssey_prefs", android.content.Context.MODE_PRIVATE);
+        if (prefs.getBoolean("migrated_28_fgmonitor", false)) return;
+        try {
+            // 1) 실행 중인 구 서비스 정지 (미실행이면 무해)
+            android.content.Intent stopSvc = new android.content.Intent().setClassName(
+                    ctx.getPackageName(), "kr.codyssey.attendance.service.PollingService");
+            ctx.stopService(stopSvc);
+            // 2) 구 부활 알람 PendingIntent 취소 (TickReceiver + ACTION_TICK + requestCode 0 서명 일치)
+            android.content.Intent tick = new android.content.Intent().setClassName(
+                    ctx.getPackageName(), "kr.codyssey.attendance.receiver.TickReceiver")
+                    .setAction("kr.codyssey.attendance.action.POLL_TICK");
+            android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(ctx, 0, tick,
+                    android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+            android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(ALARM_SERVICE);
+            if (am != null) am.cancel(pi);
+            // 3) "상시 감지" 전용 알림 채널 삭제 (더 이상 사용하지 않음)
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                android.app.NotificationManager nm = ctx.getSystemService(android.app.NotificationManager.class);
+                if (nm != null) nm.deleteNotificationChannel("codyssey_monitor");
+            }
+            kr.codyssey.attendance.util.DiagLog.add(ctx, "SVC",
+                    "28차 전환: 1분 상시 감지 FGS 폐기 — 백그라운드 감지는 15분 주기(시스템 최소)로 통합, 상시 알림 없음");
+        } catch (Exception e) { /* 정리 실패는 치명 아님 — 잔존 PI는 수신자 없이 소멸 */ }
+        prefs.edit().putBoolean("migrated_28_fgmonitor", true).apply();
     }
 
     private void applyWebViewSettings() {

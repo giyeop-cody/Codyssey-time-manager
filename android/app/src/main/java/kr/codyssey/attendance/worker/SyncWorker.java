@@ -38,6 +38,13 @@ public class SyncWorker extends Worker {
             // (JS와 eval_sync_state를 공유해 중복 등록/알림 없음)
             EvalSync.run(getApplicationContext());
 
+            // 28차: "마지막 감지 시각" 표시용 (구 FGS가 쓰던 키 그대로 유지)
+            getApplicationContext()
+                    .getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
+                    .edit()
+                    .putLong("dash_last_tick", System.currentTimeMillis())
+                    .apply();
+
             // K13: 아무 수신자도 없던 임시 브로드캐스트 대신 JS 이벤트로 전달 —
             // 앱이 살아있으면 화면이 스스로 최신 데이터로 갱신됨 (popup.js가 SYNC_COMPLETE 처리)
             MainActivity.emitNativeEvent("SYNC_COMPLETE", null, null);

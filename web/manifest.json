@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "코디세이 출입 현황 알리미",
   "short_name": "출입알리미",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "코디세이 월 80시간/일 12시간 출입기록 관리, 캘린더 뷰, 퇴실 알람",
   "permissions": [
     "storage",

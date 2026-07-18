@@ -8,10 +8,8 @@ import android.content.SharedPreferences;
 import android.os.Build;
 
 import androidx.work.Data;
-import androidx.work.ExistingPeriodicWorkPolicy;
 import androidx.work.ExistingWorkPolicy;
 import androidx.work.OneTimeWorkRequest;
-import androidx.work.PeriodicWorkRequest;
 import androidx.work.WorkManager;
 
 import org.json.JSONArray;
@@ -20,9 +18,8 @@ import org.json.JSONObject;
 import java.util.concurrent.TimeUnit;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
-import kr.codyssey.attendance.service.PollingService;
+import kr.codyssey.attendance.plugin.PollingPlugin;
 import kr.codyssey.attendance.worker.AlarmWorker;
-import kr.codyssey.attendance.worker.SyncWorker;
 
 public class BootReceiver extends BroadcastReceiver {
 
@@ -35,28 +32,12 @@ public class BootReceiver extends BroadcastReceiver {
             return;
         }
 
-        // N7+G1: keep-alive 또는 입·퇴실 감지(기본 켬)가 하나라도 켜져 있으면 주기 동기화 재시작
-        if (isPeriodicSyncEnabled(context)) {
-            PeriodicWorkRequest syncWork = new PeriodicWorkRequest.Builder(
-                    SyncWorker.class, 15, TimeUnit.MINUTES) // G1: 알림 지연 상한을 낮추기 위해 15분
-                    .addTag("codyssey_periodic_sync")
-                    .build();
-
-            WorkManager.getInstance(context)
-                    .enqueueUniquePeriodicWork(
-                            "codyssey_periodic_sync",
-                            ExistingPeriodicWorkPolicy.UPDATE,
-                            syncWork
-                    );
+        // 28차: 1분 FGS 폐기 — 주기 동기화는 WorkManager(15분)가 유일 경로.
+        // dash_enabled(백그라운드 감지)가 꺼져 있으면 재예약하지 않음.
+        if (isPeriodicSyncEnabled(context) && PollingPlugin.isEnabled(context)) {
+            PollingPlugin.ensurePeriodicSync(context);
         } else {
             WorkManager.getInstance(context).cancelUniqueWork("codyssey_periodic_sync");
-        }
-
-        // W7: 1분 상시 감지가 켜져 있었다면 부팅 직후 서비스 복원
-        if (PollingService.isEnabled(context)) {
-            try {
-                PollingService.startDash(context);
-            } catch (Exception e) { /* FGS 개시 제한 단말 — 다음 앱 실행에서 복원 */ }
         }
 
         // L10: 부팅으로 소실된 1회성 알람 복원 (WorkManager 워크는 OS가 유지하므로 주기 동기화만 재등록)
