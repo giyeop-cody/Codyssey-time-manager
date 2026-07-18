@@ -312,7 +312,7 @@ public class GateCheck {
         return String.format(Locale.US, "%02d:%02d", h, mm);
     }
 
-    private static JSONObject fetchMonth(Context context, String memberId, int year, int month) {
+    static JSONObject fetchMonth(Context context, String memberId, int year, int month) { // 36차: MonthlyDeadlineCheck에서도 재사용
         String url = API_BASE + "/rest/secom/detail?mbrId=" + memberId
                 + "&year=" + year + "&month=" + String.format(Locale.US, "%02d", month);
         CookieManager.HttpResult res = CookieManager.httpGet(context, url);

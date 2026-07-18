@@ -72,7 +72,7 @@ export function timeStrToMinutes(timeStr) {
 }
 
 // ===== 계산기 입력 파싱 (35차: 텍스트 상자 폐기에 맞춰 순수 함수로 이동 — 단위 테스트 대상) =====
-// 시계 시각 'HH:MM' (00:00~23:59) → 자정부터 분. input[type=time] 값 전용 (빈값/범위 밖 null)
+// 시계 시각 'HH:MM' (00:00~23:59) → 자정부터 분. 입력 칸 값 전용 (빈값/범위 밖 null)
 export function parseClockHHMM(val) {
   if (!val || typeof val !== 'string' || !val.includes(':')) return null;
   const [h, m] = val.split(':').map(Number);
@@ -80,14 +80,11 @@ export function parseClockHHMM(val) {
   return h * 60 + m;
 }
 
-// 목표 '기간' 입력(시간 칸 + 분 칸) → 분. 빈 시간 칸은 0 취급, 합계 1분~maxHours 이하여야 유효
-export function durationHmToMinutes(hoursVal, minutesVal, maxHours = SERVER_DAILY_CAP_HOURS) {
-  const h = hoursVal === '' || hoursVal === null || hoursVal === undefined ? 0 : Number(hoursVal);
-  const m = minutesVal === '' || minutesVal === null || minutesVal === undefined ? 0 : Number(minutesVal);
-  if (!Number.isInteger(h) || !Number.isInteger(m)) return null;
-  if (h < 0 || h > maxHours || m < 0 || m > 59) return null;
-  const total = h * 60 + m;
-  return total >= 1 && total <= maxHours * 60 ? total : null;
+// 목표 기간 'HH:MM' (00:01 ~ maxHours, 기본 서버 일 상한 12:00) → 분 (36차: 시간/분 두 칸 → 단일 HH:MM 칸)
+export function parseGoalDurationHHMM(val, maxHours = SERVER_DAILY_CAP_HOURS) {
+  const minutes = parseClockHHMM(val);
+  if (minutes === null) return null;
+  return minutes >= 1 && minutes <= maxHours * 60 ? minutes : null;
 }
 
 // 날짜 + 시각 문자열 → 로컬 타임스탬프(ms)
@@ -1022,4 +1019,22 @@ export function overnightEvidenceSuffix(inside) {
   if (inside === true) return ' (물리 근거: 학원 신호 감지 중 — 밤샘 가능성 높음)';
   if (inside === false) return ' (물리 근거: 학원 신호 없음 — 퇴실 누락 가능성 높음)';
   return '';
+}
+
+// ===== 36차: 월 마감 임박 경고 규칙 (자바 MonthlyDeadlineCheck와 동일 규칙 — 상수/공식 변경 시 양쪽 수정) =====
+// (월 필수 − 누적) ÷ 남은 날(오늘 포함)이 12시간/일에 근접하면 미리 알림.
+//   level 2: 오늘 기준 필요 페이스가 이미 12h/일 이상 (매일 상한을 채워도 목표 불가)
+//   level 1(전전날 경고): 2일 뒤부터 필요 페이스가 12h/일 이상 — 지금 페이스를 올려야 함
+export function monthlyDeadlineAlert(recognizedMin, requiredHours, daysLeftIncludingToday) {
+  const requiredMin = requiredHours * 60;
+  const rem = Math.max(0, requiredMin - recognizedMin);
+  if (rem <= 0 || !Number.isFinite(rem) || daysLeftIncludingToday < 1) return null;
+  const perDay = rem / daysLeftIncludingToday;
+  if (perDay >= SERVER_DAILY_CAP_MINUTES) {
+    return { level: 2, requiredPerDayMin: Math.ceil(perDay), daysLeft: daysLeftIncludingToday };
+  }
+  if (daysLeftIncludingToday > 2 && rem / (daysLeftIncludingToday - 2) >= SERVER_DAILY_CAP_MINUTES) {
+    return { level: 1, requiredPerDayMin: Math.ceil(perDay), daysLeft: daysLeftIncludingToday };
+  }
+  return null;
 }

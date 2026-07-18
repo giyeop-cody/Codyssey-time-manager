@@ -9,7 +9,7 @@ import {
   minutesToTimeStr,
   minutesToHHMM,
   parseClockHHMM,
-  durationHmToMinutes,
+  parseGoalDurationHHMM,
   formatEndMinutes,
   getTodayString,
   SERVER_DAILY_CAP_MINUTES,
@@ -109,9 +109,8 @@ const els = {
   btnSetExitAlarm: document.getElementById('btn-set-exit-alarm'),
   btnCancelExitAlarm: document.getElementById('btn-cancel-exit-alarm'),
 
-  // 2. 목표 시간 입력 (기간: 시간 칸 + 분 칸)
-  goalHoursInput: document.getElementById('goal-hours-input'),
-  goalMinutesInput: document.getElementById('goal-minutes-input'),
+  // 2. 목표 시간 입력 (기간: 단일 HH:MM 칸)
+  goalTimeInput: document.getElementById('goal-time-input'),
   btnCalcGoal: document.getElementById('btn-calc-goal'),
   goalResult: document.getElementById('goal-result'),
   goalEndTime: document.getElementById('goal-end-time'),
@@ -145,6 +144,8 @@ const els = {
   settingsModal: document.getElementById('settings-modal'),
   settingMonthlyHours: document.getElementById('setting-monthly-hours'),
   settingDailyHours: document.getElementById('setting-daily-hours'),
+  settingDeadlineAlert: document.getElementById('setting-deadline-alert'),
+  phyMailTo: document.getElementById('phy-mail-to'),
   settingNotifications: document.getElementById('setting-notifications'),
   settingSound: document.getElementById('setting-sound'),
   settingAutoRefresh: document.getElementById('setting-auto-refresh'),
@@ -1101,9 +1102,9 @@ async function requestNotificationPermission() {
 
 // ===== 1. 퇴실 시간 입력 -> 총 인정 시간 계산 =====
 async function calculateExitTime() {
-  const exitMin = parseClockHHMM(els.exitTimeInput.value); // input[type=time] — 잘못된 문자 입력 자체가 불가
+  const exitMin = parseClockHHMM(els.exitTimeInput.value); // HH:MM 마스크 + 범위 검증
   if (exitMin === null) {
-    alert('퇴실 시간을 선택하세요.');
+    alert('퇴실 예정 시간을 입력하세요. (시:분, 예: 18:30)');
     els.exitTimeInput.focus();
     return;
   }
@@ -1166,12 +1167,21 @@ async function calculateExitTime() {
   }
 }
 
+// ===== HH:MM 입력 마스크 — 숫자만 받고 2자리 뒤 콜론 자동 삽입 (양 계산 칸 공용) =====
+function attachHHMMMask(inputEl) {
+  if (!inputEl) return;
+  inputEl.addEventListener('input', () => {
+    const digits = inputEl.value.replace(/\D/g, '').slice(0, 4);
+    inputEl.value = digits.length > 2 ? digits.slice(0, 2) + ':' + digits.slice(2) : digits;
+  });
+}
+
 // ===== 2. 목표 시간 입력 -> 퇴실 시간 계산 =====
 async function calculateGoalTime() {
-  const goalMinutes = durationHmToMinutes(els.goalHoursInput.value, els.goalMinutesInput.value);
+  const goalMinutes = parseGoalDurationHHMM(els.goalTimeInput.value);
   if (goalMinutes === null) {
-    alert('올바른 목표 시간을 입력하세요. (시간 0~12, 분 0~59)');
-    els.goalHoursInput.focus();
+    alert('올바른 목표 시간을 입력하세요. (시:분, 예: 08:00 — 최대 12:00)');
+    els.goalTimeInput.focus();
     return;
   }
 
@@ -1483,6 +1493,7 @@ function openSettings() {
   
   els.settingMonthlyHours.value = currentSettings.monthlyRequiredHours;
   els.settingDailyHours.value = currentSettings.dailyMaxHours;
+  els.settingDeadlineAlert.checked = currentSettings.deadlineAlertEnabled !== false; // 36차: 월 페이스 경고 기본 켬
   els.settingNotifications.checked = currentSettings.notificationsEnabled;
   els.settingSound.checked = currentSettings.soundEnabled;
   els.settingAutoRefresh.checked = currentSettings.autoRefresh;
@@ -1506,7 +1517,7 @@ async function refreshPhyStatusUI() {
   const phy = window.Capacitor?.Plugins?.PhyPlugin;
   if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !phy) {
     els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능 — 베타 수집은 앱에서만)';
-    [els.settingPhyEnabled, els.settingPhyCollect, els.settingPhyGeofence, els.btnPhyLearn, els.btnPhyExport]
+    [els.settingPhyEnabled, els.settingPhyCollect, els.settingPhyGeofence, els.btnPhyLearn, els.btnPhyExport, els.phyMailTo]
       .forEach(el => { if (el) el.disabled = true; });
     return;
   }
@@ -1515,6 +1526,7 @@ async function refreshPhyStatusUI() {
     if (els.settingPhyEnabled) els.settingPhyEnabled.checked = !!st.enabled;
     if (els.settingPhyCollect) els.settingPhyCollect.checked = !!st.collect;
     if (els.settingPhyGeofence) els.settingPhyGeofence.checked = !!st.geofence;
+    if (els.phyMailTo && typeof st.mailTo === 'string') els.phyMailTo.value = st.mailTo; // 36차: 수신 이메일 동기화
     const insideTxt = (st.inside === null || st.inside === undefined)
       ? '판정 중' : (st.inside ? '학원 근처' : '학원 밖');
     let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건 · 샘플 ${st.samples}건`;
@@ -1590,11 +1602,20 @@ async function saveSettings() {
     evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
     evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
     evalInstCd: els.settingEvalInstcd.value.trim(), // E2 수동 instCd (빈값=자동 감지)
-    dashEnabled: els.settingDash.checked // W7/28차: 백그라운드 감지(5분 주기)
+    dashEnabled: els.settingDash.checked, // W7/28차: 백그라운드 감지(5분 주기)
+    deadlineAlertEnabled: els.settingDeadlineAlert.checked // 36차: 월 페이스 경고
   };
 
   // W7: 네이티브 즉시 반영 — 설정 저장과 같은 동작으로 상시 감지/알람 소리 적용
   await applyNativeRuntimeSettings(settings);
+
+  // 36차: 수집 데이터 수신 이메일 (Android만 — iOS/웹 뮤트)
+  try {
+    const phy = window.Capacitor?.Plugins?.PhyPlugin;
+    if (phy && phy.setPhyMailTo && els.phyMailTo) {
+      await phy.setPhyMailTo({ address: els.phyMailTo.value.trim() });
+    }
+  } catch (e) { /* 구버전 앱/플러그인 부재 — 무시 */ }
 
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
@@ -1972,7 +1993,7 @@ function setupEventListeners() {
   els.calcModeExit.addEventListener('change', updateCalcModeUI);
   els.calcModeGoal.addEventListener('change', updateCalcModeUI);
 
-  // 1. 퇴실 시간 계산
+  // 1. 퇴실 예정 시간 계산
   els.btnCalcExit.addEventListener('click', calculateExitTime);
   els.exitTimeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') calculateExitTime();
@@ -1980,12 +2001,13 @@ function setupEventListeners() {
 
   // 2. 목표 시간 계산
   els.btnCalcGoal.addEventListener('click', calculateGoalTime);
-  els.goalHoursInput.addEventListener('keydown', (e) => {
+  els.goalTimeInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') calculateGoalTime();
   });
-  els.goalMinutesInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') calculateGoalTime();
-  });
+
+  // HH:MM 마스크 (숫자 입력 → 자동 콜론) — 두 계산 칸 공용
+  attachHHMMMask(els.exitTimeInput);
+  attachHHMMMask(els.goalTimeInput);
 
   // 알람 버튼들
   els.btnSetExitAlarm.addEventListener('click', setExitAlarm);

@@ -31,6 +31,8 @@ import {
   diffEvalItems,
   isEvalConfirmed,
   mergeDetailLists,
+  recognizedMonthly,
+  monthlyDeadlineAlert,
   OVERNIGHT_PREF_KEY,
   EVAL_AUTO_ID_PREFIX,
   parseEvalNoticeAlarms,
@@ -727,19 +729,51 @@ async function getActiveAlarms(memberId) {
 }
 
 // ===== 알림 표시 =====
-async function showNotification(title, body, memberId) {
+// 36차(N36-3): 월 마감 임박 경고 — (월 필수−누적)/남은 날의 필요 페이스가 12h/일 근접 시 알림.
+// 규칙 본체는 shared monthlyDeadlineAlert (자바 MonthlyDeadlineCheck와 동일), 여기서는 조회·중복억제·발송만.
+async function checkMonthlyDeadline(memberId, parsed, settings) {
+  if (settings.deadlineAlertEnabled === false) return;
+  const recognized = recognizedMonthly(parsed); // 월 누적 + 진행 중 세션(일일 상한 캡 적용) — recognizedMonthly가 둘 다 포함 // 확정분 + 진행 중 세션
+  const now = new Date();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const daysLeft = daysInMonth - now.getDate() + 1; // 오늘 포함
+  const alert = monthlyDeadlineAlert(recognized, settings.monthlyRequiredHours ?? 80, daysLeft);
+  if (!alert) return;
+
+  const todayStr = getTodayString();
+  const mark = (await getStorage(['monthly_deadline_mark'])).monthly_deadline_mark || '';
+  const [markDate, markLv] = mark.split(':');
+  if (markDate === todayStr && Number(markLv || 0) >= alert.level) return; // 같은 날 같은/높은 레벨은 이미 알림
+
+  const hoursTxt = (min) => `${Math.floor(min / 60)}시간 ${min % 60}분`;
+  const { title, body } = alert.level === 2
+    ? { title: '🚨 월 출입 목표 마감 임박',
+        body: `남은 ${alert.daysLeft}일 동안 하루 ${hoursTxt(alert.requiredPerDayMin)}씩 채워야 합니다 — 매일 12시간(상한)을 채워도 부족할 수 있어요.` }
+    : { title: '⏳ 월 출입 페이스 경고',
+        body: `지금 페이스면 2일 뒤부터 하루 12시간을 채워야 월 목표에 도달합니다 — 남은 ${alert.daysLeft}일, 하루 ${hoursTxt(alert.requiredPerDayMin)} 필요.` };
+  await showNotification(title, body, memberId, 'monthly_deadline');
+  await setStorage({ monthly_deadline_mark: `${todayStr}:${alert.level}` });
+}
+
+async function showNotification(title, body, memberId, idKey = 'alarm') {
   const settings = await getSettings();
   if (!settings.notificationsEnabled) return;
 
   try {
-    await chrome.notifications.create({
+    // idKey가 주어지면 고정 id로 발송 — 같은 종류 알림은 자리 교체(쌓임 방지)
+    const notifOptions = {
       type: 'basic',
       iconUrl: 'icons/icon48.png',
       title,
       message: body,
       priority: 2,
       requireInteraction: true
-    });
+    };
+    if (idKey !== 'alarm') {
+      await chrome.notifications.create('codyssey_' + idKey, notifOptions);
+    } else {
+      await chrome.notifications.create(notifOptions);
+    }
   } catch (e) {
     console.warn('Notification failed:', e);
   }
@@ -881,6 +915,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
           const settings = await getSettings();
           const alarms = await getActiveAlarms(memberId);
+          // 36차(N36-3): 월 마감 임박 경고 — 동기화 결과로 1일 1회까지 알림
+          checkMonthlyDeadline(memberId, parsed, settings).catch(() => {});
           // S4: 평가 연동 상태도 함께 반환 — 팝업이 실패 원인(403/세션 만료/instCd 등)을 표시
           const evalState = (await getStorage([EVAL_STATE_KEY]))[EVAL_STATE_KEY] || null;
           sendResponse({

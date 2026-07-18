@@ -25,7 +25,8 @@ import {
   formatDateYmdDot,
   formatEvalWhenKo,
   parseClockHHMM,
-  durationHmToMinutes,
+  parseGoalDurationHHMM,
+  monthlyDeadlineAlert,
   describeLoginServerError,
   shouldRetryTrimmedPassword,
   sanitizePasswordCandidate,
@@ -117,20 +118,45 @@ test('parseClockHHMM: input[type=time] 값 HH:MM 파싱 (35차)', () => {
   assert.equal(parseClockHHMM('18:30:45'), 1110);  // 초 포함은 시·분만 사용
 });
 
-test('durationHmToMinutes: 목표 기간 (시간 칸 + 분 칸) → 분 (35차)', () => {
-  assert.equal(durationHmToMinutes('8', '0'), 480);
-  assert.equal(durationHmToMinutes('8', '30'), 510);
-  assert.equal(durationHmToMinutes('', '45'), 45);        // 시간 칸 비움 = 0
-  assert.equal(durationHmToMinutes('12', '0'), 720);      // 서버 일 상한
+test('parseGoalDurationHHMM: 목표 기간 단일 HH:MM 칸 → 분 (36차, 서버 일 상한 12h)', () => {
+  assert.equal(parseGoalDurationHHMM('08:00'), 480);
+  assert.equal(parseGoalDurationHHMM('08:30'), 510);
+  assert.equal(parseGoalDurationHHMM('00:01'), 1);
+  assert.equal(parseGoalDurationHHMM('12:00'), 720);      // 경계 포함
   // 무효 입력 — 전부 null
-  assert.equal(durationHmToMinutes('', ''), null);
-  assert.equal(durationHmToMinutes('0', '0'), null);      // 0분 불가
-  assert.equal(durationHmToMinutes('13', '0'), null);     // 12시간 초과
-  assert.equal(durationHmToMinutes('12', '1'), null);     // 상한 초과 조합
-  assert.equal(durationHmToMinutes('-1', '30'), null);
-  assert.equal(durationHmToMinutes('8', '60'), null);     // 분 범위 초과
-  assert.equal(durationHmToMinutes('8.5', '0'), null);    // 소수 불가
-  assert.equal(durationHmToMinutes('abc', '10'), null);   // 숫자 아님
+  assert.equal(parseGoalDurationHHMM(''), null);
+  assert.equal(parseGoalDurationHHMM('00:00'), null);     // 0분 불가
+  assert.equal(parseGoalDurationHHMM('12:01'), null);     // 상한 초과
+  assert.equal(parseGoalDurationHHMM('13:00'), null);     // 상한 초과
+  assert.equal(parseGoalDurationHHMM('24:00'), null);     // 시 범위 밖
+  assert.equal(parseGoalDurationHHMM('8시간30분'), null); // 한글 임의 입력
+  assert.equal(parseGoalDurationHHMM('480'), null);       // 콜론 없는 숫자
+});
+
+test('monthlyDeadlineAlert: (월 필수−누적)/남은 날 필요 페이스 경고 (36차)', () => {
+  // level 2 — 지금부터 매일 12시간(상한)을 채워도 목표 불가
+  // 누적 0, 목표 80h=4800분, 남은 5일 → 960분/일 ≥ 720 → level 2
+  const lv2 = monthlyDeadlineAlert(0, 80, 5);
+  assert.equal(lv2.level, 2);
+  assert.equal(lv2.requiredPerDayMin, 960);
+  // level 1(전전날 경고) — 오늘 페이스는 미달이지만 2일 뒤면 상한 도달
+  // 남은 10일(오늘 포함) 필요 페이스 = 4800/10=480 < 720, 2일 덜면 4800/8=600 < 720 → 아직 안전
+  assert.equal(monthlyDeadlineAlert(0, 80, 10), null);
+  // 남은 8일: 4800/8=600 안전, 4800/6=800 ≥ 720 → level 1
+  const lv1 = monthlyDeadlineAlert(0, 80, 8);
+  assert.equal(lv1.level, 1);
+  assert.equal(lv1.requiredPerDayMin, 600);
+  // 누적 진행 중 — 40h 남음, 남은 8일: 2400/8=300 안전, 2400/6=400 안전 → null
+  assert.equal(monthlyDeadlineAlert(2400, 80, 8), null);
+  // 남은 날 2일 이하에서는 level 1 없음 (전전날 개념 성립 안 함) — level 2 or null
+  assert.equal(monthlyDeadlineAlert(0, 80, 2).level, 2);   // 2400분/일 → 2
+  assert.equal(monthlyDeadlineAlert(4000, 80, 2), null);   // 남은 800분 → 400분/일, L1은 2일 이하에서 미적용 → null
+  // 목표 달성 완료 → null
+  assert.equal(monthlyDeadlineAlert(4800, 80, 20), null);
+  assert.equal(monthlyDeadlineAlert(5000, 80, 20), null);
+  // 경계: 필요 페이스가 정확히 720 → level 2 (≥ 기준)
+  const edge = monthlyDeadlineAlert(4800 - 720 * 3, 80, 3);
+  assert.equal(edge.level, 2);
 });
 
 test('parseEntryTimestamp: 날짜+시각 → 로컬 타임스탬프', () => {

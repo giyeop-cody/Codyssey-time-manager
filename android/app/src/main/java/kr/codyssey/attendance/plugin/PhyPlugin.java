@@ -89,6 +89,20 @@ public class PhyPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void setPhyMailTo(PluginCall call) {
+        // 36차 N36-1: 수집 데이터 자동 전송 수신 이메일 (빈값 = 수신자 미지정 → 메일 앱에서 직접 입력)
+        String address = call.getString("address", "");
+        String norm = address != null ? address.trim() : "";
+        prefs(getContext()).edit().putString("phy_mail_to", norm).apply();
+        DiagLog.add(getContext(), "PHY", norm.isEmpty()
+                ? "수집 데이터 수신 이메일 삭제됨 — 자동 전송 시 수신자 직접 입력"
+                : "수집 데이터 수신 이메일 설정됨");
+        JSObject out = new JSObject();
+        out.put("mailTo", norm);
+        call.resolve(out);
+    }
+
+    @PluginMethod
     public void getPhyStatus(PluginCall call) {
         try {
             call.resolve(JSObject.fromJSONObject(PhysicalCheck.statusSummary(getContext())));

@@ -179,7 +179,7 @@
     <div class="calculator-mode-group" role="radiogroup" aria-label="계산기 모드 선택">
       <label class="mode-card active" id="mode-card-exit">
         <input type="radio" name="calc-mode" id="calc-mode-exit" value="exit" checked>
-        <span class="mode-card-text">🕐 퇴실 시간 입력</span>
+        <span class="mode-card-text">🕐 퇴실 예정 시간</span>
       </label>
       <label class="mode-card" id="mode-card-goal">
         <input type="radio" name="calc-mode" id="calc-mode-goal" value="goal">
@@ -187,12 +187,13 @@
       </label>
     </div>
 
-    <!-- 퇴실 시간 입력 모드 -->
+    <!-- 퇴실 예정 시간 입력 모드 -->
     <div class="calculator-panel" id="exit-panel">
       <div class="calculator-input-row">
-        <input type="time" id="exit-time-input" class="input" step="60" aria-label="퇴실 예정 시간">
+        <input type="text" id="exit-time-input" class="input hhmm-input" inputmode="numeric" maxlength="5" placeholder="18:30" autocomplete="off" aria-label="퇴실 예정 시간 (00:00 ~ 23:59)">
         <button class="btn btn-primary" id="btn-calc-exit">계산</button>
       </div>
+      <div class="input-hint">퇴실 예정 시간을 시:분으로 입력 (00:00 ~ 23:59)</div>
 
       <div class="calculator-result" id="exit-result">
         <div class="calculator-result-main">
@@ -226,13 +227,11 @@
 
     <!-- 목표 시간 입력 모드 -->
     <div class="calculator-panel hidden" id="goal-panel">
-      <div class="calculator-input-row goal-duration-row">
-        <input type="number" id="goal-hours-input" class="input" min="0" max="12" step="1" inputmode="numeric" placeholder="0" aria-label="목표 시간(시간)">
-        <span class="goal-unit">시간</span>
-        <input type="number" id="goal-minutes-input" class="input" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="목표 시간(분)">
-        <span class="goal-unit">분</span>
+      <div class="calculator-input-row">
+        <input type="text" id="goal-time-input" class="input hhmm-input" inputmode="numeric" maxlength="5" placeholder="08:00" autocomplete="off" aria-label="목표 시간 (00:01 ~ 12:00)">
         <button class="btn btn-primary" id="btn-calc-goal">계산</button>
       </div>
+      <div class="input-hint">목표 시간을 시:분으로 입력 (예: 08:00 = 8시간, 최대 12:00)</div>
 
       <div class="calculator-result" id="goal-result">
         <div class="calculator-result-main">
@@ -319,6 +318,13 @@
           <div class="setting-desc">기본값: 12시간</div>
         </div>
         <input type="number" id="setting-daily-hours" class="input" style="width:80px;text-align:center;" min="1" max="24" value="12">
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">월 페이스 경고 알림</div>
+          <div class="setting-desc">(월 필수 − 누적) ÷ 남은 날이 12시간/일에 가까워지면 전전날부터 알림 — 목표 달성 불가 전에 미리 알려줌 (기본 켬)</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-deadline-alert" checked><span class="toggle-slider"></span></label>
       </div>
     </div>
 
@@ -459,6 +465,13 @@
           <div class="setting-desc">쌓인 샘플 JSON을 공유 시트로 전달 (개발자가 학원 신호 사전을 만드는 원자료)</div>
         </div>
         <button type="button" class="btn btn-secondary btn-sm" id="btn-phy-export">내보내기</button>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">수집 데이터 수신 이메일</div>
+          <div class="setting-desc">수집 모드 켬 상태면 매일 1회 · 샘플 한도(1200건) 도달 시 1회, 탭하면 메일 앱이 열리는 알림을 보냄 — 비우면 수신자를 메일 앱에서 직접 입력</div>
+        </div>
+        <input type="email" id="phy-mail-to" class="input" style="width:170px;" placeholder="dev@example.com" autocomplete="off">
       </div>
       <div class="setting-dash-status" id="setting-phy-status"></div>
     </div>

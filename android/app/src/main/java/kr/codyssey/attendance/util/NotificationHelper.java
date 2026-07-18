@@ -54,6 +54,12 @@ public class NotificationHelper {
     }
 
     public static void showNotification(Context context, String title, String body, String id) {
+        showNotification(context, title, body, id, null);
+    }
+
+    // 36차: contentIntent를 직접 지정할 수 있는 오버로드 (예: 수집 데이터 이메일 전송 시트 열기)
+    // contentIntent == null 이면 기존 동작(앱 실행)과 동일
+    public static void showNotification(Context context, String title, String body, String id, PendingIntent contentIntent) {
         boolean sound = alarmSoundEnabled(context);
         createNotificationChannel(context, sound);
 
@@ -72,20 +78,25 @@ public class NotificationHelper {
         String notifIdKey = id != null ? id : "default";
         int notificationId = notificationIdFor(context, notifIdKey);
 
-        // 앱 실행 인텐트 (설치 직후 등으로 런처 인텐트가 없으면 MainActivity 직접 지정)
-        Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
-        if (intent == null) {
-            intent = new Intent(context, kr.codyssey.attendance.MainActivity.class);
-        }
-        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        intent.putExtra("alarmId", notifIdKey);
+        PendingIntent pendingIntent;
+        if (contentIntent != null) {
+            pendingIntent = contentIntent; // 호출자 지정 인텐트 (이메일 시트 등)
+        } else {
+            // 앱 실행 인텐트 (설치 직후 등으로 런처 인텐트가 없으면 MainActivity 직접 지정)
+            Intent intent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+            if (intent == null) {
+                intent = new Intent(context, kr.codyssey.attendance.MainActivity.class);
+            }
+            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            intent.putExtra("alarmId", notifIdKey);
 
-        PendingIntent pendingIntent = PendingIntent.getActivity(
-                context,
-                notificationId,
-                intent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-        );
+            pendingIntent = PendingIntent.getActivity(
+                    context,
+                    notificationId,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            );
+        }
 
         // 소리 OFF 설정이면 알람음 대신 조용히(진동 패턴은 건드리지 않음)
         Uri soundUri = sound

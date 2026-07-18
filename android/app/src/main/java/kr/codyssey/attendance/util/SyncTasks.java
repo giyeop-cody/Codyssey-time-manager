@@ -28,6 +28,7 @@ public final class SyncTasks {
             }
 
             GateCheck.run(context);  // 남부 gateNotifyEnabled 확인 + 29차 롤오버 확인 포함
+            MonthlyDeadlineCheck.run(context); // 36차: 월 출입 페이스/마감 경고 (6시간 스로틀·설정 게이트 내장)
             EvalSync.run(context);   // 6시간 스로틀 내장 — 매 틱 호출필요 없음
             PhysicalCheck.sampleAndEvaluate(context); // 31차: 물리 탐지 (남부 phy_enabled 게이트)
 

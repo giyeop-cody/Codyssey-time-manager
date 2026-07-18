@@ -2,11 +2,14 @@ package kr.codyssey.attendance.util;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationManager;
+import android.net.Uri;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
@@ -21,10 +24,13 @@ import android.telephony.CellInfoWcdma;
 import android.telephony.TelephonyManager;
 
 import androidx.core.content.ContextCompat;
+import androidx.core.content.FileProvider;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileWriter;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -132,6 +138,7 @@ public final class PhysicalCheck {
 
             if (prefs.getBoolean("phy_collect", false)) {
                 appendSample(prefs, sig, sessionOpen, score, next, now);
+                maybeNotifyAutoExport(context, prefs, now); // 36차 N36-1: 매일 1회/버퍼 한도 도달 시 이메일 전송 알림
             }
 
             // 32차 N31-8: 로그 키에서 점수 제외 — 셀 환경 누화로 점수가 출렁일 때마다
@@ -580,6 +587,66 @@ public final class PhysicalCheck {
         }
     }
 
+    // ===== 36차 N36-1: 수집 데이터 이메일 자동 전송 (매일 1회 / 버퍼 한도 도달 시 1회) =====
+    // OS 백그라운드 제약상 백그라운드에서 메일 앱을 직접 열 수 없으므로,
+    // "탭하면 첨부 완료된 메일 작성 화면이 열리는 알림"을 띄우는 방식.
+    // 신호 데이터는 사용자가 탭·전송하는 순간까지 기기 밖으로 나가지 않는다.
+    private static void maybeNotifyAutoExport(Context context, SharedPreferences prefs, long now) {
+        try {
+            String today = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date(now));
+            int persisted = new JSONArray(prefs.getString("phy_samples", "[]")).length();
+            int count;
+            synchronized (PENDING_SAMPLES) { count = persisted + PENDING_SAMPLES.size(); }
+
+            boolean dailyDue = !today.equals(prefs.getString("phy_mail_daily_date", ""));
+            boolean fullDue = count >= SAMPLES_CAP
+                    && !today.equals(prefs.getString("phy_mail_full_date", ""));
+            if (!dailyDue && !fullDue) return;
+
+            // 탭 시점이 아니라 알림 생성 시점의 스냅을 파일로 준비
+            String json = exportJson(context);
+            File file = new File(context.getCacheDir(), "codyssey-phy-export-" + today + ".json");
+            FileWriter w = new FileWriter(file);
+            w.write(json);
+            w.close();
+            Uri uri = FileProvider.getUriForFile(context, context.getPackageName() + ".fileprovider", file);
+
+            Intent mail = new Intent(Intent.ACTION_SEND);
+            mail.setType("application/json");
+            mail.putExtra(Intent.EXTRA_STREAM, uri);
+            String to = prefs.getString("phy_mail_to", "");
+            if (to != null && !to.trim().isEmpty()) {
+                mail.putExtra(Intent.EXTRA_EMAIL, new String[]{ to.trim() });
+            }
+            mail.putExtra(Intent.EXTRA_SUBJECT,
+                    "[Codyssey] 물리 탐지 수집 데이터 " + count + "건 (" + today + ")");
+            mail.putExtra(Intent.EXTRA_TEXT,
+                    (fullDue ? "샘플 버퍼가 한도(" + SAMPLES_CAP + "건)에 도달해 자동 준비했습니다."
+                             : "일일 자동 수집 데이터입니다.") + "\n(베타 개발자에게 전달해 주세요)");
+            mail.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+            Intent chooser = Intent.createChooser(mail, "수집 데이터 이메일 전송");
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            PendingIntent pi = PendingIntent.getActivity(
+                    context, 9031, chooser,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+            NotificationHelper.showNotification(context,
+                    "📧 수집 데이터 전송 준비됨",
+                    (fullDue ? "버퍼 한도 도달 — " : "매일 1회 — ")
+                            + count + "건을 이메일 첨부로 준비했습니다. 탭하면 메일 앱이 열립니다.",
+                    "phy_mail", pi);
+
+            SharedPreferences.Editor e = prefs.edit();
+            e.putString("phy_mail_daily_date", today);
+            if (fullDue) e.putString("phy_mail_full_date", today);
+            e.apply();
+            DiagLog.add(context, "PHY",
+                    "📧 수집 데이터 자동 전송 알림 (" + (fullDue ? "버퍼 한도" : "일일") + ", " + count + "건"
+                            + (to != null && !to.trim().isEmpty() ? ", 수신자 지정됨" : ", 수신자 미지정") + ")");
+        } catch (Exception e) { /* 알림 준비 실패는 다음 틱으로 */ }
+    }
+
     // ===== ② 포그라운드 스캔 (앱을 열 때 1회 교차 확인 — 백그라운드 쓰로틀 무관) =====
     @SuppressLint("MissingPermission")
     public static void foregroundScanIfEnabled(final Context context) {
@@ -650,6 +717,7 @@ public final class PhysicalCheck {
             out.put("backgroundLocation", Build.VERSION.SDK_INT < 29
                     || ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
                         == PackageManager.PERMISSION_GRANTED);
+            out.put("mailTo", prefs.getString("phy_mail_to", "")); // 36차: 자동 전송 수신 이메일
         } catch (Exception ignored) { }
         return out;
     }

@@ -424,26 +424,12 @@ body {
   border-radius: var(--radius-sm);
 }
 
-/* 목표 기간 입력 (시간 칸 + 분 칸) */
-.goal-duration-row { align-items: center; }
-.goal-duration-row .input {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-  /* 숫자 스피너 제거 — 키패드 입력만 사용 */
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-.goal-duration-row .input::-webkit-outer-spin-button,
-.goal-duration-row .input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.goal-duration-row .goal-unit {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  white-space: nowrap;
+/* HH:MM 단일 입력 + 힌트 (36차: 시간/분 두 칸 → 단일 시:분 칸) */
+.hhmm-input { text-align: center; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+.input-hint {
+  margin: -6px 0 12px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 /* 계산기 패널 */
