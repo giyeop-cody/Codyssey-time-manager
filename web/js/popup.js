@@ -8,6 +8,8 @@ import {
   projectedMonthly,
   minutesToTimeStr,
   minutesToHHMM,
+  parseClockHHMM,
+  durationHmToMinutes,
   formatEndMinutes,
   getTodayString,
   SERVER_DAILY_CAP_MINUTES,
@@ -86,12 +88,13 @@ const els = {
   btnNextMonth: document.getElementById('btn-next-month'),
   btnTodayMonth: document.getElementById('btn-today-month'),
 
-  // 계산기 토글
-  calcModeToggle: document.getElementById('calc-mode-toggle'),
+  // 계산기 모드 (라디오 그룹)
+  calcModeExit: document.getElementById('calc-mode-exit'),
+  calcModeGoal: document.getElementById('calc-mode-goal'),
+  modeCardExit: document.getElementById('mode-card-exit'),
+  modeCardGoal: document.getElementById('mode-card-goal'),
   exitPanel: document.getElementById('exit-panel'),
   goalPanel: document.getElementById('goal-panel'),
-  toggleLabelExit: document.querySelector('.toggle-label.exit-mode'),
-  toggleLabelGoal: document.querySelector('.toggle-label.goal-mode'),
 
   // 1. 퇴실 시간 입력
   exitTimeInput: document.getElementById('exit-time-input'),
@@ -106,8 +109,9 @@ const els = {
   btnSetExitAlarm: document.getElementById('btn-set-exit-alarm'),
   btnCancelExitAlarm: document.getElementById('btn-cancel-exit-alarm'),
 
-  // 2. 목표 시간 입력
-  goalTimeInput: document.getElementById('goal-time-input'),
+  // 2. 목표 시간 입력 (기간: 시간 칸 + 분 칸)
+  goalHoursInput: document.getElementById('goal-hours-input'),
+  goalMinutesInput: document.getElementById('goal-minutes-input'),
   btnCalcGoal: document.getElementById('btn-calc-goal'),
   goalResult: document.getElementById('goal-result'),
   goalEndTime: document.getElementById('goal-end-time'),
@@ -180,7 +184,6 @@ const els = {
   btnSettingsCancel: document.getElementById('btn-settings-cancel'),
 
   // 헤더 버튼들
-  btnCalendar: document.getElementById('btn-calendar'), // deprecated
   btnSettings: document.getElementById('btn-settings'),
   btnRefresh: document.getElementById('btn-refresh'),
 };
@@ -1053,22 +1056,13 @@ async function loadCalendarData() {
   }
 }
 
-// ===== 계산기 토글 =====
+// ===== 계산기 모드 전환 (라디오 그룹 — 카드가 곧 라디오 버튼, 상호 배타) =====
 function updateCalcModeUI() {
-  const isGoalMode = els.calcModeToggle.checked;
-  
-  if (isGoalMode) {
-    els.exitPanel.classList.add('hidden');
-    els.goalPanel.classList.remove('hidden');
-    els.toggleLabelExit.classList.remove('active');
-    els.toggleLabelGoal.classList.add('active');
-  } else {
-    els.exitPanel.classList.remove('hidden');
-    els.goalPanel.classList.add('hidden');
-    els.toggleLabelExit.classList.add('active');
-    els.toggleLabelGoal.classList.remove('active');
-  }
-  
+  const isGoalMode = els.calcModeGoal.checked;
+  els.exitPanel.classList.toggle('hidden', isGoalMode);
+  els.goalPanel.classList.toggle('hidden', !isGoalMode);
+  els.modeCardExit.classList.toggle('active', !isGoalMode);
+  els.modeCardGoal.classList.toggle('active', isGoalMode);
   resetAllCalculations();
 }
 
@@ -1105,36 +1099,11 @@ async function requestNotificationPermission() {
   return false;
 }
 
-// ===== 입력 파싱 헬퍼 =====
-function parseTimeInput(val, allowMinutesOnly = false) {
-  val = val.trim();
-  if (!val) return null;
-  if (val.includes(':')) {
-    const [h, m] = val.split(':').map(Number);
-    if (isNaN(h) || isNaN(m)) return null;
-    return h * 60 + m;
-  }
-  if (allowMinutesOnly) {
-    const n = Number(val);
-    return isNaN(n) ? null : n;
-  }
-  return null;
-}
-
-function parseExitTimeInput(val) {
-  val = val.trim();
-  if (!val) return null;
-  if (!val.includes(':')) return null;
-  const [h, m] = val.split(':').map(Number);
-  if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
-  return h * 60 + m;
-}
-
 // ===== 1. 퇴실 시간 입력 -> 총 인정 시간 계산 =====
 async function calculateExitTime() {
-  const exitMin = parseExitTimeInput(els.exitTimeInput.value);
+  const exitMin = parseClockHHMM(els.exitTimeInput.value); // input[type=time] — 잘못된 문자 입력 자체가 불가
   if (exitMin === null) {
-    alert('올바른 퇴실 시간을 입력하세요.\n예: 18:30');
+    alert('퇴실 시간을 선택하세요.');
     els.exitTimeInput.focus();
     return;
   }
@@ -1199,10 +1168,10 @@ async function calculateExitTime() {
 
 // ===== 2. 목표 시간 입력 -> 퇴실 시간 계산 =====
 async function calculateGoalTime() {
-  const goalMinutes = parseTimeInput(els.goalTimeInput.value, true);
-  if (goalMinutes === null || goalMinutes <= 0) {
-    alert('올바른 목표 시간을 입력하세요.\n예: 8:00 또는 480 (분)');
-    els.goalTimeInput.focus();
+  const goalMinutes = durationHmToMinutes(els.goalHoursInput.value, els.goalMinutesInput.value);
+  if (goalMinutes === null) {
+    alert('올바른 목표 시간을 입력하세요. (시간 0~12, 분 0~59)');
+    els.goalHoursInput.focus();
     return;
   }
 
@@ -1999,8 +1968,9 @@ function setupEventListeners() {
     }
   });
 
-  // 계산기 모드 토글
-  els.calcModeToggle.addEventListener('change', updateCalcModeUI);
+  // 계산기 모드 라디오 (같은 name 묶음이라 선택은 상호 배타)
+  els.calcModeExit.addEventListener('change', updateCalcModeUI);
+  els.calcModeGoal.addEventListener('change', updateCalcModeUI);
 
   // 1. 퇴실 시간 계산
   els.btnCalcExit.addEventListener('click', calculateExitTime);
@@ -2010,7 +1980,10 @@ function setupEventListeners() {
 
   // 2. 목표 시간 계산
   els.btnCalcGoal.addEventListener('click', calculateGoalTime);
-  els.goalTimeInput.addEventListener('keydown', (e) => {
+  els.goalHoursInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') calculateGoalTime();
+  });
+  els.goalMinutesInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') calculateGoalTime();
   });
 

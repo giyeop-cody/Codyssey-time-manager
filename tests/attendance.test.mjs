@@ -24,6 +24,8 @@ import {
   getTodayString,
   formatDateYmdDot,
   formatEvalWhenKo,
+  parseClockHHMM,
+  durationHmToMinutes,
   describeLoginServerError,
   shouldRetryTrimmedPassword,
   sanitizePasswordCandidate,
@@ -98,6 +100,37 @@ test('formatEvalWhenKo: ms → M월 D일 (요일) HH:MM (33차: background/adapt
   assert.equal(formatEvalWhenKo(new Date(2026, 6, 20, 14, 5).getTime()), '7월 20일 (월) 14:05');
   // 2026-01-01 = 목요일
   assert.equal(formatEvalWhenKo(new Date(2026, 0, 1, 9, 0).getTime()), '1월 1일 (목) 09:00');
+});
+
+test('parseClockHHMM: input[type=time] 값 HH:MM 파싱 (35차)', () => {
+  assert.equal(parseClockHHMM('18:30'), 1110);
+  assert.equal(parseClockHHMM('00:00'), 0);
+  assert.equal(parseClockHHMM('23:59'), 1439);
+  // 텍스트 상자 시절 들어오던 이상 입력들 — 전부 null
+  assert.equal(parseClockHHMM(''), null);
+  assert.equal(parseClockHHMM(null), null);
+  assert.equal(parseClockHHMM('1830'), null);      // 콜론 없음
+  assert.equal(parseClockHHMM('25:00'), null);     // 시 범위 초과
+  assert.equal(parseClockHHMM('18:60'), null);     // 분 범위 초과
+  assert.equal(parseClockHHMM('-1:30'), null);     // 음수
+  assert.equal(parseClockHHMM('오후 6시'), null);   // 한글 임의 입력
+  assert.equal(parseClockHHMM('18:30:45'), 1110);  // 초 포함은 시·분만 사용
+});
+
+test('durationHmToMinutes: 목표 기간 (시간 칸 + 분 칸) → 분 (35차)', () => {
+  assert.equal(durationHmToMinutes('8', '0'), 480);
+  assert.equal(durationHmToMinutes('8', '30'), 510);
+  assert.equal(durationHmToMinutes('', '45'), 45);        // 시간 칸 비움 = 0
+  assert.equal(durationHmToMinutes('12', '0'), 720);      // 서버 일 상한
+  // 무효 입력 — 전부 null
+  assert.equal(durationHmToMinutes('', ''), null);
+  assert.equal(durationHmToMinutes('0', '0'), null);      // 0분 불가
+  assert.equal(durationHmToMinutes('13', '0'), null);     // 12시간 초과
+  assert.equal(durationHmToMinutes('12', '1'), null);     // 상한 초과 조합
+  assert.equal(durationHmToMinutes('-1', '30'), null);
+  assert.equal(durationHmToMinutes('8', '60'), null);     // 분 범위 초과
+  assert.equal(durationHmToMinutes('8.5', '0'), null);    // 소수 불가
+  assert.equal(durationHmToMinutes('abc', '10'), null);   // 숫자 아님
 });
 
 test('parseEntryTimestamp: 날짜+시각 → 로컬 타임스탬프', () => {

@@ -174,23 +174,23 @@
     </div>
   </div>
 
-  <!-- 퇴실/목표 시간 계산기 (토글) -->
+  <!-- 퇴실/목표 시간 계산기 (라디오 그룹 — 카드 자체가 라디오 버튼, 상호 토글) -->
   <div class="calculator-section">
-    <div class="calculator-toggle">
-      <label class="toggle-switch">
-        <input type="checkbox" id="calc-mode-toggle">
-        <span class="toggle-slider"></span>
+    <div class="calculator-mode-group" role="radiogroup" aria-label="계산기 모드 선택">
+      <label class="mode-card active" id="mode-card-exit">
+        <input type="radio" name="calc-mode" id="calc-mode-exit" value="exit" checked>
+        <span class="mode-card-text">🕐 퇴실 시간 입력</span>
       </label>
-      <span class="toggle-labels">
-        <span class="toggle-label exit-mode" data-mode="exit">🕐 퇴실 시간 입력</span>
-        <span class="toggle-label goal-mode" data-mode="goal">🎯 목표 시간 입력</span>
-      </span>
+      <label class="mode-card" id="mode-card-goal">
+        <input type="radio" name="calc-mode" id="calc-mode-goal" value="goal">
+        <span class="mode-card-text">🎯 목표 시간 입력</span>
+      </label>
     </div>
 
     <!-- 퇴실 시간 입력 모드 -->
     <div class="calculator-panel" id="exit-panel">
       <div class="calculator-input-row">
-        <input type="text" id="exit-time-input" class="input" placeholder="퇴실 예정 시간 (예: 18:30)" autocomplete="off">
+        <input type="time" id="exit-time-input" class="input" step="60" aria-label="퇴실 예정 시간">
         <button class="btn btn-primary" id="btn-calc-exit">계산</button>
       </div>
 
@@ -226,8 +226,11 @@
 
     <!-- 목표 시간 입력 모드 -->
     <div class="calculator-panel hidden" id="goal-panel">
-      <div class="calculator-input-row">
-        <input type="text" id="goal-time-input" class="input" placeholder="목표 시간 (예: 8:00 또는 480)" autocomplete="off">
+      <div class="calculator-input-row goal-duration-row">
+        <input type="number" id="goal-hours-input" class="input" min="0" max="12" step="1" inputmode="numeric" placeholder="0" aria-label="목표 시간(시간)">
+        <span class="goal-unit">시간</span>
+        <input type="number" id="goal-minutes-input" class="input" min="0" max="59" step="1" inputmode="numeric" placeholder="0" aria-label="목표 시간(분)">
+        <span class="goal-unit">분</span>
         <button class="btn btn-primary" id="btn-calc-goal">계산</button>
       </div>
 

@@ -71,6 +71,25 @@ export function timeStrToMinutes(timeStr) {
   return null;
 }
 
+// ===== 계산기 입력 파싱 (35차: 텍스트 상자 폐기에 맞춰 순수 함수로 이동 — 단위 테스트 대상) =====
+// 시계 시각 'HH:MM' (00:00~23:59) → 자정부터 분. input[type=time] 값 전용 (빈값/범위 밖 null)
+export function parseClockHHMM(val) {
+  if (!val || typeof val !== 'string' || !val.includes(':')) return null;
+  const [h, m] = val.split(':').map(Number);
+  if (!Number.isInteger(h) || !Number.isInteger(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
+}
+
+// 목표 '기간' 입력(시간 칸 + 분 칸) → 분. 빈 시간 칸은 0 취급, 합계 1분~maxHours 이하여야 유효
+export function durationHmToMinutes(hoursVal, minutesVal, maxHours = SERVER_DAILY_CAP_HOURS) {
+  const h = hoursVal === '' || hoursVal === null || hoursVal === undefined ? 0 : Number(hoursVal);
+  const m = minutesVal === '' || minutesVal === null || minutesVal === undefined ? 0 : Number(minutesVal);
+  if (!Number.isInteger(h) || !Number.isInteger(m)) return null;
+  if (h < 0 || h > maxHours || m < 0 || m > 59) return null;
+  const total = h * 60 + m;
+  return total >= 1 && total <= maxHours * 60 ? total : null;
+}
+
 // 날짜 + 시각 문자열 → 로컬 타임스탬프(ms)
 export function parseEntryTimestamp(dateStr, entryTime) {
   if (!dateStr || !entryTime) return null;

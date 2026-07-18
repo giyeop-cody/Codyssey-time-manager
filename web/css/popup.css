@@ -377,63 +377,74 @@ body {
   padding-top: 16px; 
 }
 
-.calculator-toggle { 
-  display: flex; 
-  align-items: center; 
-  justify-content: center; 
-  gap: 12px; 
-  margin-bottom: 16px; 
-  padding: 8px; 
-  background: var(--bg-tertiary); 
-  border-radius: var(--radius-md); 
+/* 계산기 모드 라디오 그룹 — 카드 전체가 라디오 버튼 (선택 카드만 accent, 상호 토글) */
+.calculator-mode-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.mode-card {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 8px;
+  background: var(--bg-tertiary);
+  border: 2px solid var(--border-light);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.mode-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.mode-card .mode-card-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  transition: var(--transition);
+  pointer-events: none;
+}
+.mode-card:active { transform: scale(0.98); }
+.mode-card.active {
+  border-color: var(--accent-teal);
+  background: rgba(78, 201, 176, 0.14);
+}
+.mode-card.active .mode-card-text { color: var(--accent-teal); }
+.mode-card input[type="radio"]:focus-visible ~ .mode-card-text {
+  outline: 2px solid var(--accent-teal);
+  outline-offset: 3px;
+  border-radius: var(--radius-sm);
 }
 
-.toggle-switch { 
-  position: relative; 
-  width: 60px; 
-  height: 28px; 
-  flex-shrink: 0; 
+/* 목표 기간 입력 (시간 칸 + 분 칸) */
+.goal-duration-row { align-items: center; }
+.goal-duration-row .input {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  /* 숫자 스피너 제거 — 키패드 입력만 사용 */
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
-.toggle-switch input { 
-  opacity: 0; 
-  width: 0; 
-  height: 0; 
+.goal-duration-row .input::-webkit-outer-spin-button,
+.goal-duration-row .input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
-.toggle-switch .toggle-slider { 
-  position: absolute; 
-  inset: 0; 
-  background: var(--border-light); 
-  border-radius: 28px; 
-  transition: var(--transition); 
-  cursor: pointer; 
+.goal-duration-row .goal-unit {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
-.toggle-switch .toggle-slider::before { 
-  content: ''; 
-  position: absolute; 
-  width: 22px; 
-  height: 22px; 
-  border-radius: 50%; 
-  background: #fff; 
-  top: 3px; 
-  left: 3px; 
-  transition: var(--transition); 
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3); 
-}
-.toggle-switch input:checked + .toggle-slider { background: var(--accent-teal); }
-.toggle-switch input:checked + .toggle-slider::before { transform: translateX(32px); }
-
-.toggle-labels { 
-  display: flex; 
-  gap: 16px; 
-  font-size: 12px; 
-  font-weight: 600; 
-}
-.toggle-label { 
-  color: var(--text-muted); 
-  transition: var(--transition); 
-  white-space: nowrap; 
-}
-.toggle-label.active { color: var(--accent-teal); }
 
 /* 계산기 패널 */
 .calculator-panel { display: block; animation: fadeIn 0.2s ease; }
