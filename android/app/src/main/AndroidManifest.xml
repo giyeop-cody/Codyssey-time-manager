@@ -45,6 +45,12 @@
             android:exported="false"
             android:enabled="true" />
 
+        <!-- 20차: 1분 감지 부활 알람 수신기 — 백그라운드 서비스 시작 제한 우회용 브로드캐스트 경로 -->
+        <receiver
+            android:name="kr.codyssey.attendance.receiver.TickReceiver"
+            android:exported="false"
+            android:enabled="true" />
+
         <!-- 부팅 완료 시 동기화 재시작 (시스템 브로드캐스트 수신용) -->
         <receiver
             android:name="kr.codyssey.attendance.receiver.BootReceiver"

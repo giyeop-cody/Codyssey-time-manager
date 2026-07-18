@@ -62,6 +62,13 @@ public class PollingPlugin extends Plugin {
         JSObject out = new JSObject();
         out.put("enabled", PollingService.isEnabled(ctx));
         out.put("lastTick", prefs.getLong("dash_last_tick", 0));
+        // 20차: 백그라운드 알람 건강 상태를 JS(설정/진단)에서도 보이게 — 두 축이 물린다
+        android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+        boolean exact = am != null && (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
+                || am.canScheduleExactAlarms());
+        out.put("exactAlarm", exact);
+        PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+        out.put("batteryExempt", pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName()));
         call.resolve(out);
     }
 

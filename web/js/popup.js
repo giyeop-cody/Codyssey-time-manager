@@ -144,6 +144,7 @@ const els = {
   settingGateNotify: document.getElementById('setting-gate-notify'),
   settingDash: document.getElementById('setting-dash'),
   btnBatteryExempt: document.getElementById('btn-battery-exempt'),
+  btnExactAlarm: document.getElementById('btn-exact-alarm'),
   settingDashStatus: document.getElementById('setting-dash-status'),
   loginDiag: document.getElementById('login-diag'),
   loginDiagList: document.getElementById('login-diag-list'),
@@ -1307,6 +1308,10 @@ async function refreshDashStatusUI() {
       ? ' · 마지막 감지 ' + new Date(st.lastTick).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
       : ' · 마지막 감지 없음';
     txt += ' · ' + (bat.granted ? '절전 예외 ✅' : '절전 예외 안 됨 ⚠️');
+    // 20차: 정확 알람 권한 상태 — 꺼져 있으면 백그라운드 알람이 밀리는 직접 원인
+    if (st.exactAlarm !== undefined) {
+      txt += ' · ' + (st.exactAlarm ? '정확 알람 ✅' : '정확 알람 꺼짐 ⚠️');
+    }
     els.settingDashStatus.textContent = txt;
   } catch (e) {
     els.settingDashStatus.textContent = '상태 조회 실패';
@@ -1586,6 +1591,14 @@ function setupEventListeners() {
   els.btnBatteryExempt?.addEventListener('click', async () => {
     try {
       await window.Capacitor?.Plugins?.PollingPlugin?.requestBatteryOptimizationExemption();
+    } catch (e) { /* 웹/구버전 무시 */ }
+    setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 20차: 정확한 알람(알람·리마인더) 권한 화면 열기 — 백그라운드 알람 지연의 직접 원인 해소
+  els.btnExactAlarm?.addEventListener('click', async () => {
+    try {
+      await window.CodysseyNative?.requestExactAlarmPermission?.();
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshDashStatusUI, 2000);
   });

@@ -92,7 +92,17 @@ public class NotificationHelper {
                 .setVibrate(new long[]{0, 500, 200, 500})
                 .build();
 
-        NotificationManagerCompat.from(context).notify(notificationId, notification);
+        // 20차: POST_NOTIFICATIONS 미허용 등으로 notify()가 던지는 예외를 흡수하고 로그에 남긴다.
+        // (방어 전엔 SecurityException이 AlarmReceiver/폴서비스 틱까지 전파돼 알람이 조용히 죽었다)
+        try {
+            NotificationManagerCompat.from(context).notify(notificationId, notification);
+        } catch (SecurityException se) {
+            kr.codyssey.attendance.util.DiagLog.add(context, "NOTIF",
+                    "⚠️ 알림 발송 실패 — 시스템 설정에서 이 앱의 알림이 꺼져 있음: " + title);
+        } catch (Exception e) {
+            kr.codyssey.attendance.util.DiagLog.add(context, "NOTIF",
+                    "알림 발송 오류: " + e.getMessage());
+        }
     }
 
     // 알람 스트림 속성 — 이어폰/스피커 자동 라우팅 + 매너모드 우회는 시스템 알람음 정책에 위임

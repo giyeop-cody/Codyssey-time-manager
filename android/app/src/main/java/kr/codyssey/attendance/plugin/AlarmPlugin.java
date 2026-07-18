@@ -89,19 +89,35 @@ public class AlarmPlugin extends Plugin {
         // M2 개선: AlarmManager와 WorkManager를 동시에 등록하면 알람이 두 번 울림.
         // 상호배타 원칙 — 정확 알람 가능하면 AlarmManager만, 불가하면 WorkManager만 사용.
         boolean exact = canScheduleExact();
+        boolean usedExact = false;
 
         if (exact) {
-            scheduleExactAlarm(triggerTimeMillis, id, label);
+            try {
+                scheduleExactAlarm(triggerTimeMillis, id, label);
+                usedExact = true;
+            } catch (SecurityException se) {
+                // 20차: 체크 직후 권한이 빠지는 레이스 — 흔들림 없이 WorkManager 경로로 전환
+                kr.codyssey.attendance.util.DiagLog.add(getContext(), "ALARM-S",
+                        "⚠️ 정확 알람 권한이 예약 직전에 해제됨 — 부정확 경로로 변경 예약 (지연 가능)");
+                enqueueAlarmWork(triggerTimeMillis - now, id, label, triggerTimeMillis);
+            }
         } else {
             enqueueAlarmWork(triggerTimeMillis - now, id, label, triggerTimeMillis);
         }
         trackScheduled(getContext(), id); // K7: OS측 예약 기록
 
+        // 20차: 알람 "예약 자체"를 진단 로그에 남김 — "예약은 됐는데 안 울림(시스템 지연)"과
+        // "예약이 없었음(앱 미실행)"을 사용자가 로그만으로 구별할 수 있게 함
+        String when = new java.text.SimpleDateFormat("MM/dd HH:mm", java.util.Locale.US)
+                .format(new java.util.Date(triggerTimeMillis));
+        kr.codyssey.attendance.util.DiagLog.add(getContext(), "ALARM-S",
+                "알람 예약: [" + label + "] " + when + (usedExact ? " (정확)" : " (부정확 — OS 지연 가능)"));
+
         JSObject result = new JSObject();
         result.put("success", true);
         result.put("id", id);
         result.put("triggerTime", triggerTimeMillis);
-        result.put("exact", exact); // M5: JS가 부정확 알람 여부를 알 수 있도록
+        result.put("exact", usedExact); // M5: JS가 부정확 알람 여부를 알 수 있도록
         call.resolve(result);
     }
 

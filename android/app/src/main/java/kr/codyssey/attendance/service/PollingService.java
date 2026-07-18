@@ -49,8 +49,11 @@ public class PollingService extends Service {
     private static final long TICK_MS = 60 * 1000;
     private static final long FALLBACK_TICK_MS = 5 * 60 * 1000; // 정확 알람 권한 없을 때
     private static final long WAKELOCK_MS = 60 * 1000;
+    private static final long RESTART_DELAY_MS = 30 * 1000;     // 20차: 태스크 제거 후 자기 복구 지연
+    private static final long TICK_DRIFT_LOG_MS = 3 * 60 * 1000; // 20차: 이 지연 이상이면 진단 로그
     private static final String PREFS_NAME = "codyssey_prefs";
     private static final String LAST_TICK_KEY = "dash_last_tick";
+    private static final String EXPECT_TICK_KEY = "dash_expect_at"; // 20차: 차기 틱 예정 시각(지연 계측)
     private static final String CHANNEL_ID = "codyssey_monitor";
     private static final int NOTIF_ID = 10;
 
@@ -93,11 +96,32 @@ public class PollingService extends Service {
         return START_STICKY; // OS가 죽이면 자동 복구 (인텐트 null → 주기 유지)
     }
 
+    // 20차: 사용자가 최근 앱 목록에서 스와이프로 제거한 경우.
+    // 삼성 등 제조사는 이 시점에 FGS를 죽이는 경우가 많은데 복구 예약이 전혀 없면
+    // 앱을 다시 열기 전까지 1분 감지이 멈춰 알람이 오지 않는다 ("창을 키면 바로 옴" 증상).
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        if (isEnabled(this)) {
+            kr.codyssey.attendance.util.DiagLog.add(this, "SVC",
+                    "앱이 최근 목록에서 제거됨 — " + (RESTART_DELAY_MS / 1000) + "초 후 상시 감지 자동 복구 예약");
+            scheduleRestartAlarm(this, RESTART_DELAY_MS);
+        }
+        super.onTaskRemoved(rootIntent);
+    }
+
     @Override
     public void onDestroy() {
-        kr.codyssey.attendance.util.DiagLog.add(this, "SVC", "상시 감지 서비스 정지");
+        // 20차: 사용자가 설정에서 끈 경우에만 복구 알람을 해제한다.
+        // OS에 의한 비자발적 종료에서 알람까지 취소하면 부활 사슬이 완전히 끊겼다(결함 B).
+        if (isEnabled(this)) {
+            kr.codyssey.attendance.util.DiagLog.add(this, "SVC",
+                    "상시 감지 서비스 정지 (설정 ON — 알람 사슬로 복구 예정)");
+            scheduleNextTick(this);
+        } else {
+            kr.codyssey.attendance.util.DiagLog.add(this, "SVC", "상시 감지 서비스 정지 (사용자 해제)");
+            cancelAlarm(this);
+        }
         if (handler != null) handler.removeCallbacks(tickRunnable);
-        cancelAlarm(this);
         releaseWakeLock();
         super.onDestroy();
     }
@@ -112,6 +136,18 @@ public class PollingService extends Service {
         acquireWakeLock();
         try {
             SharedPreferences prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+
+            // 20차: 틱 지연 계측 — 예정 시각보다 3분+ 늦게 실행됐다는 것은
+            // OS가 백그라운드 실행을 늦추고 있다는 실측 증거 (사용자가 진단 로그로 확인 가능)
+            long nowTick = System.currentTimeMillis();
+            long expect = prefs.getLong(EXPECT_TICK_KEY, 0);
+            if (expect > 0 && nowTick - expect > TICK_DRIFT_LOG_MS) {
+                kr.codyssey.attendance.util.DiagLog.add(this, "SVC",
+                        "⚠️ 1분 감지 틱이 약 " + ((nowTick - expect) / 60000) + "분 지연됨 — OS가 백그라운드 실행을 지연시키는 중"
+                        + " (배터리 최적화 예외·제조사 절전 해제 필요)");
+            }
+            prefs.edit().putLong(EXPECT_TICK_KEY, nowTick + TICK_MS).apply();
+
             boolean keepAlive = true;
             try {
                 org.json.JSONObject settings = new org.json.JSONObject(prefs.getString("settings", "{}"));
@@ -151,22 +187,43 @@ public class PollingService extends Service {
     // ===== 차기 주기 예약 (서비스 사망 대비) =====
 
     private static void scheduleNextTick(Context context) {
+        scheduleRestartAlarm(context, nextInterval(context));
+    }
+
+    private static long nextInterval(Context context) {
+        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+        if (am == null) return TICK_MS;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
+            return FALLBACK_TICK_MS; // 정확 알람 권한 없으면 짧은 간격은 포기하고 5분으로
+        }
+        return TICK_MS;
+    }
+
+    // 20차: 부활 알람 단일 진입점. 수신지는 서비스 직접 시작이 아니라
+    // TickReceiver(브로드캐스트) — 백그라운드 서비스 시작 제한을 우회하는 정상 경로.
+    static void scheduleRestartAlarm(Context context, long delayMs) {
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
         if (am == null) return;
-        long interval = TICK_MS;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !am.canScheduleExactAlarms()) {
-            interval = FALLBACK_TICK_MS; // 정확 권한 없으면 짧은 간격은 포기하고 5분으로
-        }
-        long nextAt = SystemClock.elapsedRealtime() + interval;
+        PendingIntent pi = tickPendingIntent(context);
+        long nextAt = SystemClock.elapsedRealtime() + delayMs;
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, tickPendingIntent(context));
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, pi);
             } else {
-                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, tickPendingIntent(context));
+                am.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt, pi);
             }
+            kr.codyssey.attendance.util.DiagLog.addOnChange(context, "SVC-SCHED", "ok",
+                    "상시 감지 복구 알람 예약 정상 (정확 알람)");
         } catch (SecurityException e) {
-            // 정확 알람 거부 — 긴 주기 inexact로 축소
-            am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt + FALLBACK_TICK_MS, tickPendingIntent(context));
+            // 정확 알람 거부 — 긴 주기 inexact로 축소 (이 경우 부활 시각은 OS 재량)
+            kr.codyssey.attendance.util.DiagLog.addOnChange(context, "SVC-SCHED", "denied",
+                    "⚠️ 정확 알람 권한 거부 — 상시 감지 복구 알람이 부정확해짐 (지연 가능)");
+            try {
+                am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, nextAt + FALLBACK_TICK_MS, pi);
+            } catch (Exception e2) {
+                kr.codyssey.attendance.util.DiagLog.add(context, "SVC-SCHED",
+                        "⚠️ 복구 알람 예약 자체 실패: " + e2.getMessage());
+            }
         }
     }
 
@@ -176,8 +233,9 @@ public class PollingService extends Service {
     }
 
     private static PendingIntent tickPendingIntent(Context context) {
-        Intent i = new Intent(context, PollingService.class).setAction(ACTION_REFRESH);
-        return PendingIntent.getService(context, 0, i,
+        Intent i = new Intent(context, kr.codyssey.attendance.receiver.TickReceiver.class)
+                .setAction(kr.codyssey.attendance.receiver.TickReceiver.ACTION_TICK);
+        return PendingIntent.getBroadcast(context, 0, i,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
 

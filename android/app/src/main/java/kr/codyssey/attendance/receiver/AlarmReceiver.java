@@ -44,9 +44,18 @@ public class AlarmReceiver extends BroadcastReceiver {
         // B9: 평가 알람처럼 개별 상한이 실린 경우엔 그 값을 사용 (익스텐션의 '평가+5분' 규칙과 통일)
         long triggerTime = intent.getLongExtra("triggerTime", 0);
         long staleWindow = intent.getLongExtra("staleWindowMs", STALE_WINDOW_MS);
+        long delayMin = triggerTime > 0 ? (System.currentTimeMillis() - triggerTime) / 60000 : -1;
         if (triggerTime > 0 && System.currentTimeMillis() - triggerTime > staleWindow) {
+            // 20차: 지연 발화 스킵도 로그에 남김 — "알람이 울렸다가 사라짐"이 아니라 정책상 표시 생략
+            kr.codyssey.attendance.util.DiagLog.add(context, "ALARM-F",
+                    "알람이 예정 시각을 크게 지나 도착해 표시 생략: [" + label + "] (+" + delayMin + "분)");
             return;
         }
+
+        // 20차: 발화 기록 — 예약(ALARM-S)과 짝지어 예정 대비 지연을 사용자가 판독 가능
+        kr.codyssey.attendance.util.DiagLog.add(context, "ALARM-F",
+                "알람 발화: [" + label + "]"
+                        + (delayMin < 0 ? "" : delayMin <= 0 ? " (정시)" : " (+" + delayMin + "분 지연 — OS가 늦게 깨움)"));
 
         // 알림 표시 (title, body, id) — E1: 평가 알람은 전용 제목
         String title = (id != null && id.startsWith("codyssey_eval_"))
