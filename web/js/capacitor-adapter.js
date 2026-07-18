@@ -583,7 +583,10 @@ import {
     if (!Plugins.NetworkPlugin) return null;
 
     const res = await Plugins.NetworkPlugin.getMemberInfo({});
-    if (isAuthStatus(res.status)) return null;
+    if (isAuthStatus(res.status)) {
+      diagNative('AUTH', '회원 정보 조회 인증류 HTTP ' + res.status + ' — memberId 확보 실패');
+      return null;
+    }
     const info = res.json || safeJson(res.data);
     if (res.status && res.status >= 400) return null;
     memberId = extractMemberId(info);
@@ -595,9 +598,37 @@ import {
   }
 
   // 세션 만료로 분류할 상태 코드 (네이티브는 리다이렉트 비추적이라 3xx가 그대로 옴 — N4)
+  // 19차: 403(정책/일시 차단)·301/307/308(정규화 리다이렉트)은 세션 만료 아님 — 단발 302/303/401도
+  // 즉시 폐기하지 않고 shouldDiscardSession의 연속+재조사를 거친다.
   function isAuthStatus(status) {
-    return status === 301 || status === 302 || status === 303 || status === 307 || status === 308 ||
-           status === 401 || status === 403;
+    return status === 302 || status === 303 || status === 401;
+  }
+
+  // 19차: 단발 인증류 응답은 일시 오류(망 흔들림·포털 리다이렉트)일 수 있어 즉시 세션을 버리지 않는다.
+  // 연속 2회 이상 + 회원 정보 재조사까지 실패해야 세션 종료(만료/중복 로그인 로그아웃)로 확정.
+  let authFailStreak = 0;
+  async function diagNative(tag, msg) {
+    try {
+      if (Plugins.PollingPlugin && Plugins.PollingPlugin.logDiag) {
+        await Plugins.PollingPlugin.logDiag({ tag, msg });
+      }
+    } catch (e) { /* 진단 로그 실패는 무시 */ }
+  }
+  async function shouldDiscardSession(source, status) {
+    authFailStreak++;
+    diagNative('AUTH', source + ' 인증류 응답 HTTP ' + status + ' (' + authFailStreak + '회째)');
+    if (authFailStreak < 2) return false;
+    try {
+      const res = await Plugins.NetworkPlugin.getMemberInfo({});
+      if (res.status === 200) {
+        authFailStreak = 0;
+        diagNative('AUTH', source + ' HTTP ' + status + '였지만 회원 정보 재조사는 정상 — 일시 오류 판정, 세션 유지');
+        return false;
+      }
+      diagNative('AUTH', source + ' HTTP ' + status + ' 연속 ' + authFailStreak + '회 + 회원 정보 재조사 HTTP ' + res.status);
+    } catch (e) { /* 재조사 실패 → 폐기 확정 */ }
+    diagNative('AUTH', '세션 종료 확정 (' + source + ' 연속 실패 + 재조사 실패) — 만료 또는 서버측 로그아웃(중복 로그인)');
+    return true;
   }
 
   // 원본 JSON 조회 (N8 캐시 적용, J1: force면 캐시 바이패스). { raw } 또는 { error }
@@ -611,8 +642,11 @@ import {
     const res = await Plugins.NetworkPlugin.getAttendance({ memberId, year, month });
 
     if (isAuthStatus(res.status)) {
-      await clearSessionIdentity(); // R7 캐시 + Q1 memberId 폐기
-      return { error: 'NOT_LOGGED_IN' };
+      if (await shouldDiscardSession('출입 조회', res.status)) {
+        await clearSessionIdentity(); // R7 캐시 + Q1 memberId 폐기
+        return { error: 'NOT_LOGGED_IN' };
+      }
+      return { error: `ATTENDANCE_API_ERROR_${res.status}` }; // 일시 — 대시보드 유지
     }
     if (res.status && res.status >= 400) {
       return { error: `ATTENDANCE_API_ERROR_${res.status}` };
@@ -622,12 +656,16 @@ import {
     if (!raw || !raw.detail_list) {
       // 로그인 페이지 HTML이 그대로 온 경우 인증 오류로 분류 (N4)
       if (typeof res.data === 'string' && /login|로그인/i.test(res.data)) {
-        await clearSessionIdentity();
-        return { error: 'NOT_LOGGED_IN' };
+        if (await shouldDiscardSession('출입 본문 검사', 0)) {
+          await clearSessionIdentity();
+          return { error: 'NOT_LOGGED_IN' };
+        }
+        return { error: 'ATTENDANCE_PARSE_ERROR' };
       }
       return { error: 'ATTENDANCE_PARSE_ERROR' };
     }
 
+    authFailStreak = 0; // 정상 응답 — 인증류 연속 카운터 리셋 (19차)
     await setCachedAttendance(memberId, year, month, raw);
     return { raw };
   }
@@ -716,12 +754,16 @@ import {
       + `&bgngYmd=${evalYmdDot(fromDate)}&endYmd=${evalYmdDot(toDate)}&scheduleType=request`;
     const res = await Plugins.NetworkPlugin.fetch({ url, method: 'POST' }); // 명세: 본문 무시(전송 안 함)
     if (isAuthStatus(res.status)) {
-      await clearSessionIdentity();
-      throw new Error('NOT_LOGGED_IN');
+      if (await shouldDiscardSession('평가 스케줄', res.status)) {
+        await clearSessionIdentity();
+        throw new Error('NOT_LOGGED_IN');
+      }
+      throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status || 0}`);
     }
     if (res.status !== 200) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status || 0}`);
     const json = res.json || safeJson(res.data);
     if (!json) throw new Error('EVAL_SCHEDULE_PARSE_ERROR');
+    authFailStreak = 0;
     return json;
   }
 
@@ -818,12 +860,16 @@ import {
       body: { page, pagePerRows } // 실측 페이로드 (사용자 제공 명세)
     });
     if (isAuthStatus(res.status)) {
-      await clearSessionIdentity();
-      throw new Error('NOT_LOGGED_IN');
+      if (await shouldDiscardSession('평가 알림함', res.status)) {
+        await clearSessionIdentity();
+        throw new Error('NOT_LOGGED_IN');
+      }
+      throw new Error(`EVAL_NOTICE_API_ERROR_${res.status || 0}`);
     }
     if (res.status !== 200) throw new Error(`EVAL_NOTICE_API_ERROR_${res.status || 0}`);
     const json = res.json || safeJson(res.data);
     if (!json) throw new Error('EVAL_NOTICE_PARSE_ERROR');
+    authFailStreak = 0;
     return json;
   }
 

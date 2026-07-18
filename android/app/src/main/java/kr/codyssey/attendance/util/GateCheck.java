@@ -46,7 +46,12 @@ public class GateCheck {
         SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
 
         String memberId = unquoteJson(prefs.getString("member_id", null));
-        if (memberId == null || memberId.isEmpty()) return; // 로그아웃/미로그인
+        if (memberId == null || memberId.isEmpty()) {
+            // member_id 소실 = JS측 로그아웃 또는 인증 오류 폐기 — 전이 1걸만 기록
+            DiagLog.addOnChange(context, "GATE", "nomember", "member_id 없음 — 로그아웃/미로그인 상태라 입·퇴실 감지 스킵");
+            return;
+        }
+        DiagLog.addOnChange(context, "GATE", "member", "member_id 확인 — 입·퇴실 감지 정상 가동");
 
         boolean gateEnabled = true;
         boolean notifEnabled = true;
@@ -255,12 +260,26 @@ public class GateCheck {
         String url = API_BASE + "/rest/secom/detail?mbrId=" + memberId
                 + "&year=" + year + "&month=" + String.format(Locale.US, "%02d", month);
         CookieManager.HttpResult res = CookieManager.httpGet(context, url);
-        if (res.status != 200) return null; // 302/401=세션 만료, 그 외는 다음 주기로
+        if (res.status != 200) { // 302/401=세션 만료, 그 외는 다음 주기로
+            DiagLog.addOnChange(context, "GATE", "api_" + res.status,
+                    "출입 조회 HTTP " + res.status + authHint(res.status));
+            return null;
+        }
+        DiagLog.addOnChange(context, "GATE", "ok", "출입 조회 정상 (HTTP 200)");
         try {
             return new JSONObject(res.body);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // 19차: HTTP 상태 → 사용자 판독 힌트 (로그인 폼 회귀 원인 분류)
+    private static String authHint(int s) {
+        if (s >= 300 && s < 400) return " — 서버가 로그인 페이지로 리다이렉트 (세션 만료 또는 중복 로그인 종료 신호)";
+        if (s == 401) return " — 인증 거부 (세션 무효)";
+        if (s == 403) return " — 접근 거부 (일시 차단/정책 가능)";
+        if (s == -1) return " — 네트워크 오류 (기기 연결 확인)";
+        return "";
     }
 
     private static String formatDate(Date date) {

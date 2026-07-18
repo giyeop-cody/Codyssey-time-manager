@@ -13,6 +13,7 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
 import kr.codyssey.attendance.service.PollingService;
+import kr.codyssey.attendance.util.DiagLog;
 
 /** 1분 상시 감지 서비스 제어 + 절전모드(배터리 최적화) 예외 상태/요청 — JS 브릿지 (W7). */
 @CapacitorPlugin(name = "PollingPlugin")
@@ -98,5 +99,30 @@ public class PollingPlugin extends Plugin {
         JSObject out = new JSObject();
         out.put("alreadyExempt", already);
         call.resolve(out);
+    }
+
+    // ===== 19차: 진단 로그 JS 브릿지 (네이티브/JS가 같은 링버퍼 공유) =====
+
+    @PluginMethod
+    public void logDiag(PluginCall call) {
+        String tag = call.getString("tag", "JS");
+        String msg = call.getString("msg", "");
+        DiagLog.add(getContext(), tag, msg);
+        call.resolve(new JSObject());
+    }
+
+    @PluginMethod
+    public void getDiagLog(PluginCall call) {
+        SharedPreferences prefs = getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        JSObject out = new JSObject();
+        out.put("raw", prefs.getString("diag_log", "[]"));
+        call.resolve(out);
+    }
+
+    @PluginMethod
+    public void clearDiagLog(PluginCall call) {
+        getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().remove("diag_log").apply();
+        call.resolve(new JSObject());
     }
 }

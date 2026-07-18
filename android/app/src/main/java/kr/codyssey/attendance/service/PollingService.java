@@ -66,6 +66,7 @@ public class PollingService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        kr.codyssey.attendance.util.DiagLog.add(this, "SVC", "상시 감지 서비스 시작 (60초 주기)");
         startForegroundWithNotification();
         synchronized (PollingService.class) {
             if (thread == null) {
@@ -94,6 +95,7 @@ public class PollingService extends Service {
 
     @Override
     public void onDestroy() {
+        kr.codyssey.attendance.util.DiagLog.add(this, "SVC", "상시 감지 서비스 정지");
         if (handler != null) handler.removeCallbacks(tickRunnable);
         cancelAlarm(this);
         releaseWakeLock();
@@ -119,6 +121,12 @@ public class PollingService extends Service {
             if (keepAlive) CookieManager.pingKeepAlive(this);
             GateCheck.run(this);   // 설정에서 입·퇴실 감지 OFF면 남부에서 즉시 반환
             EvalSync.run(this);    // 6시간 스로틀 남장이라 사실상 스킵 빈번 (비용 적음)
+
+            // 19차: 세션 쿠키 존재 전이 — 소실 순간을 사용자가 확인할 수 있게 기록
+            boolean hasCookie = kr.codyssey.attendance.util.CookieManager.hasSessionCookie(this);
+            kr.codyssey.attendance.util.DiagLog.addOnChange(this, "COOKIE", hasCookie ? "have" : "none",
+                    hasCookie ? "세션 쿠키(JSESSIONID) 존재 확인"
+                              : "⚠️ 세션 쿠키(JSESSIONID) 소실 — 이후 서버 조회는 302로 실패 → 재로그인 필요");
 
             prefs.edit().putLong(LAST_TICK_KEY, System.currentTimeMillis()).apply();
             updateNotification();

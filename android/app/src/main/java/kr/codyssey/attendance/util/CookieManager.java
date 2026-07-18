@@ -46,6 +46,16 @@ public class CookieManager {
                 }
                 int responseCode = conn.getResponseCode(); // 응답 본문은 불필요
 
+                // 19차: keep-alive 응답 전이 기록 (세션 유지 실패가 로그인 폼 회귀의 직접 단서)
+                if (responseCode == 200) {
+                    DiagLog.addOnChange(context, "PING", "ok", "로그인 유지 핑 정상 (HTTP 200)");
+                } else {
+                    DiagLog.addOnChange(context, "PING", "http_" + responseCode,
+                            "로그인 유지 핑 HTTP " + responseCode
+                            + (responseCode >= 300 && responseCode < 400
+                                ? " — 서버 리다이렉트 (세션 만료 신호)" : " — 예상 밖 응답"));
+                }
+
                 // Set-Cookie 전체 순회 — 다중 쿠키 손실 방지 (L9 연계) + 대소문자 무관 (K1)
                 java.util.List<String> setCookies = extractSetCookies(conn);
                 if (!setCookies.isEmpty()) {
@@ -57,8 +67,10 @@ public class CookieManager {
             } finally {
                 conn.disconnect();
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
             // CookieManager 미초기화(앱 미실행 상태) 등 — 다음 주기에 재시도
+            DiagLog.addOnChange(context, "PING", "net",
+                    "로그인 유지 핑 네트워크 오류: " + (e.getMessage() != null ? e.getMessage() : "unknown"));
         }
     }
 

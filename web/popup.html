@@ -41,6 +41,15 @@
     🔗 공식 사이트에서 로그인 · 비밀번호 찾기 (ams.codyssey.kr)
   </button>
   
+  <div class="login-diag" id="login-diag" style="display:none;">
+    <div class="login-diag-title">🔍 최근 세션 진단 — 갑자기 이 화면이 나온 원인 후보 (최신순)</div>
+    <div class="login-diag-list" id="login-diag-list"></div>
+    <div class="login-diag-actions">
+      <button type="button" id="btn-diag-copy" class="btn btn-secondary btn-sm">진단 로그 복사</button>
+      <button type="button" id="btn-diag-clear" class="btn btn-ghost btn-sm">지우기</button>
+    </div>
+  </div>
+  
   <div id="login-loading" class="login-loading">
     <span class="spinner"></span>로그인 중...
   </div>

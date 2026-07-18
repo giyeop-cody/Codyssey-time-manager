@@ -127,9 +127,11 @@ public class EvalSync {
         if (noticeError != null) {
             state.put("alarmError", noticeError);
             state.put("alarmErrorAt", System.currentTimeMillis());
+            DiagLog.addOnChange(context, "EVAL-N", noticeError, "평가 알림함 채널 실패: " + noticeError);
         } else {
             state.remove("alarmError");
             state.remove("alarmErrorAt");
+            DiagLog.addOnChange(context, "EVAL-N", "ok", "평가 알림함 채널 정상 (신규 " + noticeFresh + "건)");
         }
 
         String instCd = resolveInstCd(context, prefs, settings);
@@ -151,8 +153,12 @@ public class EvalSync {
         CookieManager.HttpResult res = CookieManager.httpRequest(context, url, "POST", null); // 실측: 본문 없이 쿼리스트링만
         if (res.status != 200) {
             recordSkip(prefs, state, "api_" + res.status); // 302/401=세션 만료 — 폭주 없이 다음 기회로
+            DiagLog.addOnChange(context, "EVAL-S", "api_" + res.status,
+                    "평가 스케줄 조회 HTTP " + res.status
+                    + (res.status >= 300 && res.status < 400 ? " — 서버 리다이렉트(세션 만료 신호)" : ""));
             return;
         }
+        DiagLog.addOnChange(context, "EVAL-S", "ok", "평가 스케줄 조회 정상 (HTTP 200)");
 
         JSONObject raw;
         try {

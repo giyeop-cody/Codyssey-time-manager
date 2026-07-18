@@ -28,6 +28,8 @@ import {
   sanitizePasswordCandidate,
   credentialInputDigest,
   stripEdgeInvisibles,
+  diagRingAppend,
+  formatDiagEntry,
   buildAlarmName,
   legacyAlarmName,
   parseAlarmName,
@@ -902,4 +904,26 @@ test('shouldRetryTrimmedPassword(확장): 제로폭 오염도 재시도 대상',
   assert.equal(shouldRetryTrimmedPassword('pw​ ', '등록되지 않은 회원입니다.'), true);
   assert.equal(shouldRetryTrimmedPassword('pw ', '네트워크 오류'), false);
   assert.equal(shouldRetryTrimmedPassword('pw​x', '등록되지 않은 회원입니다.'), false); // 앞뒤 오염 없음
+});
+
+// ===== 19차: 세션 진단 링버퍼 =====
+
+test('diagRingAppend: 최대 개수 유지 + 오래된 것부터 제거', () => {
+  let ring = [];
+  for (let i = 1; i <= 85; i++) ring = diagRingAppend(ring, { t: i, tag: 'T', msg: 'm' + i });
+  assert.equal(ring.length, 80);
+  assert.equal(ring[0].msg, 'm6'); // 1~5는 밀려남
+  assert.equal(ring[79].msg, 'm85');
+  // 비정상 입력 방어
+  assert.deepEqual(diagRingAppend(null, { t: 1, tag: 'A', msg: 'x' }), [{ t: 1, tag: 'A', msg: 'x' }]);
+  assert.deepEqual(diagRingAppend([], null), []);
+  assert.deepEqual(diagRingAppend(undefined, { msg: '' }), []);
+});
+
+test('formatDiagEntry: 날짜·태그·메시지 형식', () => {
+  const t = new Date(2026, 6, 18, 8, 5, 9).getTime();
+  const s = formatDiagEntry({ t, tag: 'GATE', msg: '출입 조회 HTTP 302' });
+  assert.equal(s, '7/18 08:05:09 [GATE] 출입 조회 HTTP 302');
+  assert.equal(formatDiagEntry(null), '');
+  assert.equal(formatDiagEntry({ tag: 'X' }), '');
 });

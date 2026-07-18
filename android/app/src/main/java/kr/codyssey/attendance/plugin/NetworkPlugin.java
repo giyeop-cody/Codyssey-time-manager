@@ -149,8 +149,29 @@ public class NetworkPlugin extends Plugin {
                 }
 
                 JSObject result = readResponse(conn);
+
+                // 19차: 로그인 결과 진단 로그 (성공 시 login_ok_at 갱신 — 세션 수명 판독 기준점)
+                Integer st = result.getInteger("status");
+                int stVal = st != null ? st : -1;
+                String serverMsg = null;
+                try {
+                    JSObject j = result.getJSObject("json");
+                    if (j != null) serverMsg = j.optString("message", null);
+                } catch (Exception ignored) {}
+                if (stVal >= 200 && stVal < 400 && (serverMsg == null || serverMsg.isEmpty())) {
+                    kr.codyssey.attendance.util.DiagLog.add(getContext(), "LOGIN",
+                            "로그인 인증 성공 (HTTP " + stVal + ") — 세션 쿠키 저장");
+                    getContext().getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
+                            .edit().putLong("login_ok_at", System.currentTimeMillis()).apply();
+                } else {
+                    kr.codyssey.attendance.util.DiagLog.add(getContext(), "LOGIN",
+                            "로그인 인증 실패 HTTP " + stVal + (serverMsg != null ? " · " + serverMsg : ""));
+                }
+
                 call.resolve(result);
             } catch (Exception e) {
+                kr.codyssey.attendance.util.DiagLog.add(getContext(), "LOGIN",
+                        "로그인 인증 예외: " + (e.getMessage() != null ? e.getMessage() : "unknown"));
                 call.reject("Authentication failed: " + e.getMessage());
             }
         });

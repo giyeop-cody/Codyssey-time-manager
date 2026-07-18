@@ -17,7 +17,9 @@ import {
   shouldRetryTrimmedPassword,
   sanitizePasswordCandidate,
   credentialInputDigest,
-  stripEdgeInvisibles
+  stripEdgeInvisibles,
+  diagRingAppend,
+  formatDiagEntry
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -143,6 +145,10 @@ const els = {
   settingDash: document.getElementById('setting-dash'),
   btnBatteryExempt: document.getElementById('btn-battery-exempt'),
   settingDashStatus: document.getElementById('setting-dash-status'),
+  loginDiag: document.getElementById('login-diag'),
+  loginDiagList: document.getElementById('login-diag-list'),
+  btnDiagCopy: document.getElementById('btn-diag-copy'),
+  btnDiagClear: document.getElementById('btn-diag-clear'),
   settingEvalLead: document.getElementById('setting-eval-lead'),
   settingEvalAutosync: document.getElementById('setting-eval-autosync'),
   settingEvalInstcdRow: document.getElementById('setting-eval-instcd-row'),
@@ -177,13 +183,66 @@ function sendMessage(type, data = {}) {
   });
 }
 
+// ===== 19차: 세션 진단 로그 (네이티브 DiagLog와 같은 링버퍼 — 웹 폴곤은 localStorage) =====
+async function diag(tag, msg) {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.logDiag) {
+      await p.logDiag({ tag, msg });
+      return;
+    }
+  } catch (e) { /* 폴곤으로 */ }
+  try {
+    const raw = localStorage.getItem('diag_log') || '[]';
+    localStorage.setItem('diag_log',
+      JSON.stringify(diagRingAppend(JSON.parse(raw), { t: Date.now(), tag, msg })));
+  } catch (e) { /* 진단 실패는 무시 */ }
+}
+
+async function readDiagEntries() {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.getDiagLog) {
+      const r = await p.getDiagLog();
+      const arr = JSON.parse(r.raw || '[]');
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* 폴곤으로 */ }
+  try { return JSON.parse(localStorage.getItem('diag_log') || '[]'); } catch (e) { return []; }
+}
+
+async function clearDiagEntries() {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.clearDiagLog) await p.clearDiagLog();
+  } catch (e) { /* 무시 */ }
+  try { localStorage.removeItem('diag_log'); } catch (e) { /* 무시 */ }
+}
+
+async function renderLoginDiag() {
+  if (!els.loginDiag) return;
+  const entries = await readDiagEntries();
+  if (!entries.length) { els.loginDiag.style.display = 'none'; return; }
+  els.loginDiagList.innerHTML = '';
+  entries.slice(-8).reverse().forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'login-diag-item';
+    div.textContent = formatDiagEntry(e);
+    els.loginDiagList.appendChild(div);
+  });
+  els.loginDiag.style.display = 'block';
+}
+
 // ===== UI 상태 관리 =====
-function showLoginScreen() {
+function showLoginScreen(cause) {
   els.loginScreen.style.display = 'block';
   els.dashboard.style.display = 'none';
   els.loginLoading.classList.remove('show');
   els.loginForm.style.display = 'flex';
   els.loginError.classList.remove('show');
+  // 19차: 왜 이 화면이 나왔는지를 진단 로그에 남김 + 즉시 표시
+  if (cause) diag('POPUP', '로그인 화면 표시 — ' + cause).then(renderLoginDiag);
+  else renderLoginDiag();
 }
 
 function showLoginLoading() {
@@ -224,7 +283,8 @@ async function loadDashboard(forceRefresh = false) {
     const response = await sendMessage('GET_STATUS', { force: forceRefresh });
     if (!response.success) {
       if (response.error === 'NOT_LOGGED_IN') {
-        showLoginScreen();
+        // 19차: 세션 무효 '확정'에만 여기 도달 (단발 302/401은 어댑터가 세션 유지 판정)
+        showLoginScreen('세션 무효 확정 — 상태 조회 반복 실패 + 회원 정보 재조사 실패 (만료 또는 서버측 로그아웃)');
         return;
       }
       throw new Error(response.error);
@@ -246,8 +306,15 @@ async function loadDashboard(forceRefresh = false) {
     showDashboard();
   } catch (error) {
     console.error('Dashboard load error:', error);
+    // 19차: 인증류 '확정'(위 분기)이 아닌 오류(망 흔들림·일시 응답 이상)는
+    // 기존 데이터가 있으면 화면 유지 — 로그인 폼으로 튕기지 않음. 다음 갱신 주기에 회복.
+    diag('POPUP', '대시보드 갱신 실패 (화면 유지) — ' + (error.message || '알 수 없는 오류'));
+    if (currentParsed) {
+      updateLastUpdateTime();
+      return;
+    }
     showLoginError(describeError(error));
-    showLoginScreen();
+    showLoginScreen('첫 데이터 로드 실패: ' + String(error.message || '').slice(0, 60));
   }
 }
 
@@ -1411,7 +1478,7 @@ async function logout() {
     currentParsed = null;
     window.calendarParsed = null; // Q1: 캘린더 데이터도 폐기 (계정 전환 잔여 데이터 방지)
     currentViewDate = new Date();
-    showLoginScreen();
+    showLoginScreen('사용자 로그아웃');
     els.loginEmail.value = '';
     els.loginPassword.value = '';
     showNotification('로그아웃', '성공적으로 로그아웃되었습니다.');
@@ -1490,6 +1557,7 @@ function setupEventListeners() {
       const response = await sendMessage('GET_STATUS', { force: true });
       if (response.success) {
         currentMemberId = response.memberId;
+        diag('LOGIN', '로그인 완료 — 대시보드 진입');
         currentParsed = response.parsed;
         currentSettings = response.settings;
         currentEvalSync = response.evalSync || null; // S4
@@ -1520,6 +1588,23 @@ function setupEventListeners() {
       await window.Capacitor?.Plugins?.PollingPlugin?.requestBatteryOptimizationExemption();
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 19차: 진단 로그 복사 (원인 판독 공유용) / 지우기
+  els.btnDiagCopy?.addEventListener('click', async () => {
+    const entries = await readDiagEntries();
+    const txt = entries.map(formatDiagEntry).join('\n');
+    try {
+      await navigator.clipboard.writeText(txt);
+      els.btnDiagCopy.textContent = '복사됨 ✓';
+      setTimeout(() => { els.btnDiagCopy.textContent = '진단 로그 복사'; }, 1500);
+    } catch (e) {
+      showLoginError('클립보드 복사 실패 — 로그를 길게 눌러 수동 복사해주세요.');
+    }
+  });
+  els.btnDiagClear?.addEventListener('click', async () => {
+    await clearDiagEntries();
+    renderLoginDiag();
   });
 
   // L2+: 비밀번호 표시/숨기기 토글 — 붙여넣기 내용 확인용 (공식 로그인 폼도 동일 기능 제공)
@@ -1651,7 +1736,7 @@ async function init() {
     await loadDashboard();
     startAutoRefresh();
   } else {
-    showLoginScreen();
+    showLoginScreen('초기 진입 — 저장된 로그인 없음 (정상)');
   }
 }
 

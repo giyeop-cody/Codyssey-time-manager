@@ -839,3 +839,23 @@ export function credentialInputDigest(email, password) {
   if (/[‘’“”–—]/.test(pw)) parts.push('스마트 따옴표/대시 포함');
   return parts.join(' · ');
 }
+
+// ===== 19차: 세션 진단 링버퍼 (네이티브 DiagLog.java와 같은 형식: {t, tag, msg}) =====
+export const DIAG_LOG_MAX = 80;
+
+export function diagRingAppend(list, entry, max = DIAG_LOG_MAX) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  if (entry && entry.msg) arr.push(entry);
+  while (arr.length > max) arr.shift();
+  return arr;
+}
+
+export function formatDiagEntry(e) {
+  if (!e || !e.t) return '';
+  const d = new Date(e.t);
+  const md = (d.getMonth() + 1) + '/' + d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return md + ' ' + hh + ':' + mm + ':' + ss + ' [' + (e.tag || '-') + '] ' + (e.msg || '');
+}
