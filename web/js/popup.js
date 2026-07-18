@@ -694,6 +694,14 @@ function formatEvalWhen(ms) {
 // 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
 window.cancelAlarmFromList = async function(alarmName) {
   try {
+    // 26차: 목록에서 해제핟도 당일 자동 재등록 금지 (exit/goal 타입만 해당)
+    try {
+      const resp = await sendMessage('GET_ALARMS');
+      const item = (resp.alarms || []).find(a => a && a.name === alarmName);
+      const t = item && (item.type || 'exit');
+      if (item && (t === 'exit' || t === 'goal')) setAutoAlarmDisabledToday(t, true);
+    } catch (e) { /* 플래그 실패는 무시 — 해제 자체는 진행 */ }
+
     await sendMessage('CANCEL_ALARM', { alarmName });
     showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
     await loadAndRenderAlarms();
@@ -1029,20 +1037,12 @@ async function calculateExitTime() {
       els.exitWarning.classList.remove('show');
     }
     
-    // 알람 버튼
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetExitAlarm.style.display = 'block';
     els.btnCancelExitAlarm.style.display = 'none';
     els.exitResult.classList.add('show');
-    
-    // 기존 알람 확인
-    const alarmsResponse = await sendMessage('GET_ALARMS');
-    if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === exitAlarmEndMinutes && (a.type || 'exit') === 'exit');
-      if (existing) {
-        els.btnSetExitAlarm.style.display = 'none';
-        els.btnCancelExitAlarm.style.display = 'block';
-      }
-    }
+
+    await autoRegisterAlarm(exitAlarmEndMinutes, 'exit', '퇴실 알림');
     
   } catch (error) {
     console.error('Calculate exit error:', error);
@@ -1106,20 +1106,12 @@ async function calculateGoalTime() {
       els.goalWarning.classList.remove('show');
     }
     
-    // 알람 버튼
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetGoalAlarm.style.display = 'block';
     els.btnCancelGoalAlarm.style.display = 'none';
     els.goalResult.classList.add('show');
-    
-    // 기존 알람 확인
-    const alarmsResponse = await sendMessage('GET_ALARMS');
-    if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === goalAlarmEndMinutes && (a.type || 'exit') === 'goal');
-      if (existing) {
-        els.btnSetGoalAlarm.style.display = 'none';
-        els.btnCancelGoalAlarm.style.display = 'block';
-      }
-    }
+
+    await autoRegisterAlarm(goalAlarmEndMinutes, 'goal', '목표 달성 알림');
     
   } catch (error) {
     console.error('Calculate goal error:', error);
@@ -1193,6 +1185,8 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
     });
     
     if (response.success) {
+      // 26차: 수동 재등록은 사용자 명시 행동 — 당일 자동 재등록 금지 해제
+      setAutoAlarmDisabledToday(alarmType, false);
       onSuccess();
       showNotification('알람 설정 완료', `${timeStr}에 ${label}이 울립니다.`);
       // M5: 정확 알람 권한이 없어 부정확 경로로 예약된 경우 안내
@@ -1219,11 +1213,78 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
 async function cancelGenericAlarm(endMinutes, alarmType, onSuccess) {
   try {
     await sendMessage('CANCEL_ALARM', { endMinutes, alarmType });
+    // 26차: 수동 해제는 사용자 명시 행동 — 당일 자동 재등록 금지 (재등록은 '설정' 버튼으로)
+    setAutoAlarmDisabledToday(alarmType, true);
     onSuccess();
-    showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
+    showNotification('알람 해제', '설정된 알림이 취소되었습니다. (오늘은 자동으로 다시 등록되지 않습니다)');
   } catch (error) {
     console.error('Cancel alarm error:', error);
   }
+}
+
+// ===== 26차: 계산 즉시 자동 알람 등록 (익스텐션/앱 공유 popup.js — 양쪽 동일 동작) =====
+// 규칙:
+//  1) 계산으로 시각이 결정되면 같은 타입·시각 알람이 없을 때 자동 등록 (버튼은 '해제' 상태로)
+//  2) 사용자가 '해제'를 누르면 그 날은 자동 재등록 금지 (재등록은 '설정'으로 수동)
+//  3) 계산 시각이 바뀌면 오늘 자의 같은 타입 자동 알람을 교체
+const AUTO_ALARM_DISABLED_PREFIX = 'codyssey_auto_alarm_disabled_';
+
+function autoAlarmDisabledKey(type) {
+  const d = new Date();
+  return AUTO_ALARM_DISABLED_PREFIX + type + '_'
+    + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function isAutoAlarmDisabledToday(type) {
+  try { return localStorage.getItem(autoAlarmDisabledKey(type)) === '1'; } catch (e) { return false; }
+}
+function setAutoAlarmDisabledToday(type, disabled) {
+  try {
+    const key = autoAlarmDisabledKey(type);
+    if (disabled) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch (e) { /* 웹뷰/익스텐션 저장 실패는 치명 아님 */ }
+}
+
+function isAlarmTimeToday(time) {
+  if (typeof time !== 'number') return false;
+  const d = new Date(time);
+  const t = new Date();
+  return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
+}
+
+async function autoRegisterAlarm(endMinutes, type, label) {
+  if (endMinutes === null) return;
+  if (isAutoAlarmDisabledToday(type)) return; // 오늘 해제한 알람은 자동 재등록하지 않음
+  try {
+    const alarmsResponse = await sendMessage('GET_ALARMS');
+    const alarms = (alarmsResponse && alarmsResponse.alarms) || [];
+
+    // 이미 동일 시각·타입으로 미래 알람이 있으면 유지 (버튼 상태만 동기화)
+    const sameFuture = alarms.find(a =>
+      a && a.endMinutes === endMinutes && (a.type || 'exit') === type && (a.time || 0) > Date.now());
+    if (sameFuture) { syncAlarmButtons(); return; }
+
+    // 계산 시각이 바뀐 경우 — 오늘 날짜의 같은 타입 알람을 교체
+    for (const a of alarms) {
+      if (a && (a.type || 'exit') === type && a.endMinutes !== endMinutes && isAlarmTimeToday(a.time)) {
+        try { await sendMessage('CANCEL_ALARM', { alarmName: a.name }); } catch (e) { /* 무시 */ }
+      }
+    }
+
+    const timeStr = formatEndMinutes(endMinutes);
+    const response = await sendMessage('SET_ALARM', {
+      endMinutes,
+      alarmType: type,
+      label: `${label} (${timeStr})`
+    });
+    if (response && response.success) {
+      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 삭제 가능)`);
+      if (response.exact === false) {
+        alert('정확한 알람 권한이 꺼져 있어 알림 시각이 늦어질 수 있습니다.\n시스템 설정에서 "정확한 알람"을 허용해주세요.');
+      }
+      syncAlarmButtons();
+    }
+  } catch (e) { /* 자동 등록 실패 시 버튼 수동 경로로 충분 */ }
 }
 
 // ===== 알림 표시 (백그라운드/네이티브 경유 — 팝업 Notification 생성자 대신) =====
