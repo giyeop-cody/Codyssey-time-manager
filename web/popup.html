@@ -9,8 +9,15 @@
 <script type="module" src="./js/capacitor-adapter.js"></script>
 </head>
 <body>
+<!-- 24차: 초기 세션 확인 스플래시 — 재실행 시 로그인 폼이 잠깐 번쩍이는 현상 방지.
+     세션 확인(GET_STATUS) 중에는 이 화멸만 보이고, 확인이 끝나면 대시보드/로그인 중 하나로만 갈음 -->
+<div id="init-splash" class="init-splash">
+  <span class="spinner splash-spinner"></span>
+  <div class="splash-text">세션 확인 중...</div>
+</div>
+
 <!-- 로그인 화면 -->
-<div id="login-screen" class="login-screen">
+<div id="login-screen" class="login-screen" style="display:none;">
   <div class="login-logo">🔔</div>
   <h1 class="login-title">코디세이 출입 현황 알리미</h1>
   <p class="login-subtitle">월 80시간 · 일 12시간 관리 · 퇴실 알림</p>

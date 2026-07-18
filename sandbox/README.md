@@ -322,3 +322,10 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 - PendingIntent requestCode를 id.hashCode() → id별 고유 정수 매핑으로 교체 (해시 충돌 덮어쓰기 소멸 방지) + 구버전 PI 자동 정리(이중 발화 방지).
 - 설정 시 알림 권한 미허용이면 조용한 return → 명시적 alert + 설정 유도.
 - 채널 차단(IMPORTANCE_NONE) 감지 → NOTIF 로그.
+
+
+## 부록 11: 재실행 시 로그인 폼 섬광 노출 제거 — 초기 세션 스플래시 (24차 — v1.4.2)
+
+- 원인: popup.html의 #login-screen이 마크업상 기본 노출. init()의 비동기 세션 확인(checkExistingSession → GET_STATUS) 동안 로그인 폼이 "잠깐" 보였다가 세션 확인 후 대시보드로 전환되어 섬광처럼 인식.
+- 수정: 초기 스플래시(#init-splash, "세션 확인 중...")를 기본 노출로 두고 로그인 화면은 기본 숨김. showLoginScreen/showDashboard가 모두 스플래시를 닫음 → 초기 확인 구간은 낸 끝에서 스플래시만 보임.
+- 사용자 요청대로 확인/재인증 구간은 로딩 표시로 커버.

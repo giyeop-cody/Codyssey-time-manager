@@ -148,6 +148,7 @@ const els = {
   settingDashStatus: document.getElementById('setting-dash-status'),
   sessionExpiredBanner: document.getElementById('session-expired-banner'),
   btnSessionRelogin: document.getElementById('btn-session-relogin'),
+  initSplash: document.getElementById('init-splash'),
   loginDiag: document.getElementById('login-diag'),
   loginDiagList: document.getElementById('login-diag-list'),
   btnDiagCopy: document.getElementById('btn-diag-copy'),
@@ -237,7 +238,13 @@ async function renderLoginDiag() {
 }
 
 // ===== UI 상태 관리 =====
+// 24차: 초기 스플래시 — 세션 확인 구간 동안 로그인 폼 섬광 노출을 차단
+function hideInitSplash() {
+  if (els.initSplash) els.initSplash.style.display = 'none';
+}
+
 function showLoginScreen(cause) {
+  hideInitSplash();
   els.loginScreen.style.display = 'block';
   els.dashboard.style.display = 'none';
   els.loginLoading.classList.remove('show');
@@ -254,6 +261,7 @@ function showLoginLoading() {
 }
 
 function showDashboard() {
+  hideInitSplash();
   els.loginScreen.style.display = 'none';
   els.dashboard.style.display = 'flex';
 }
