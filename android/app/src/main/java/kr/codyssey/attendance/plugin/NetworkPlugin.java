@@ -163,6 +163,8 @@ public class NetworkPlugin extends Plugin {
                             "로그인 인증 성공 (HTTP " + stVal + ") — 세션 쿠키 저장");
                     getContext().getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
                             .edit().putLong("login_ok_at", System.currentTimeMillis()).apply();
+                    // 21차: 로그인 성공 세션을 즉시 백업 — 프로세스 재시작 후에도 복원되게
+                    kr.codyssey.attendance.util.CookieManager.persistSessionCookie(getContext());
                 } else {
                     kr.codyssey.attendance.util.DiagLog.add(getContext(), "LOGIN",
                             "로그인 인증 실패 HTTP " + stVal + (serverMsg != null ? " · " + serverMsg : ""));
@@ -246,6 +248,8 @@ public class NetworkPlugin extends Plugin {
     }
 
     private void addCookies(HttpURLConnection conn) {
+        // 21차: 프로세스 재시작 직후 첫 네이티브 요청이면 백업 세션을 먼저 복원 (있으면 no-op)
+        kr.codyssey.attendance.util.CookieManager.restoreSessionCookie(getContext());
         // L9: 요청 호스트와 정확히 일치하는 origin의 쿠키만 첨부
         // (codyssey 계열 전체에 API/AMS 쿠키를 병합 첨부하던 방식은 과다 공유)
         String host = conn.getURL().getHost();

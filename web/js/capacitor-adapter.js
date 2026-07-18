@@ -684,6 +684,9 @@ import {
     // E2: 평가 동기화 상태/instCd 캐시도 계정과 함께 폐기
     try { await Plugins.Preferences.remove({ key: 'eval_sync_state' }); } catch (e) { /* 무시 */ }
     try { await Plugins.Preferences.remove({ key: 'eval_inst_cd' }); } catch (e) { /* 무시 */ }
+    // 21차: 죽은 세션의 쿠키 백업도 폐기 — 다음 재시작 때 무효 세션이 부활하지 않게
+    // (네이티브 CookieManager.clearPersistedSession과 동일 키, Capacitor Preferences 공유 파일)
+    try { await Plugins.Preferences.remove({ key: 'session_jsessionid' }); } catch (e) { /* 무시 */ }
   }
 
   // ===== G1: 입·퇴실 처리 감지 =====

@@ -266,3 +266,23 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 | SVC "틱이 약 N분 지연됨" 빈번 | OS가 백그라운드 실행을 지연 — 배터리 최적화 예외 미설정/제조사 독자 절전 |
 | ALARM-S 없이 앱을 열어야 알람이 옴 | 알람 예약이 앱 실행 시점에만 일어남(정상 설계) — 1분 감지 복구로 커버되는지 틱 로그 확인 |
 | NOTIF "알림 권한이 꺼져 있음" | 시스템 설정 > 알림에서 이 앱 허용 필요 |
+
+## 부록 8: '스와이프 종료 → 재실행 시 로그인창' 근본 수정 — 세션 쿠키 영속화 (21차 — v1.3.3)
+
+### 증상 (사용자 실측 재현 경로)
+로그인 → 창 스와이프로 닫음 → 시간 경과 → 앱 실행 → 로그인창 노출
+
+### 근본 원인
+- 서버 `JSESSIONID`는 **만료일 없는 세션 쿠키** → WebView 쿠키 저장소에서도 프로세스가 죽으면 디스크에 남지 않음.
+- 스와이프 종료(프로세스 사망) 후 재실행하면: 쿠키 없음 → 출입 조회 302 → (연속 + 회원정보 재조회 실패) → 19차 로직이 세션 종료 확정 → member_id 폐기 → 로그인 폼.
+- 즉 "쿠키 소실이 먼저, 로그인 화면은 그 결과" — member_id만 영속 저장소에 있던 불균형이 근본 결함.
+
+### 수정 (세션 쿠키 백업·복원)
+- `CookieManager.persistSessionCookie`: **인증이 확인된 응답**(핑 200 / httpRequest 200 / 로그인 인증 성공)에서 JSESSIONID를 SharedPreferences(`session_jsessionid`)에 백업. 비인증 302에선 백업하지 않음(비인증 세션 덮어쓰기 방지). 서버가 쿠키를 회전시켜도 최신값으로 따라감.
+- `CookieManager.restoreSessionCookie`: 저장소에 JSESSIONID 없고 백업 있으면 재주입 + `COOKIE` 로그. 모든 호출부: pingKeepAlive·httpRequest·NetworkPlugin.addCookies(모든 네이티브 요청)·PollingService.onCreate·MainActivity.onCreate. 이미 있으면 no-op.
+- 세션 폐기 경로(JS clearSessionIdentity)에서 `session_jsessionid` 키도 함께 삭제 — 죽은 세션 부활 방지.
+
+### 효과 · 한계
+- 스와이프 종료/프로세스 사망/재부팅(BootReceiver 경유) 후에도 세션 복원 → 로그인 폼 회귀 해소.
+- **서버 TTL 만료는 여전히 제거 불가**(서버 정책): 복원된 쿠키로 302가 오면 진단 로그에 LOGIN 시각 대비 경과가 남고, 정당하게 재로그인 필요.
+- 보안: JSESSIONID 평문 저장은 기존 WebView 저장소와 동일 수준(allowBackup=false).

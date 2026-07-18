@@ -70,6 +70,7 @@ public class PollingService extends Service {
     public void onCreate() {
         super.onCreate();
         kr.codyssey.attendance.util.DiagLog.add(this, "SVC", "상시 감지 서비스 시작 (60초 주기)");
+        kr.codyssey.attendance.util.CookieManager.restoreSessionCookie(this); // 21차
         startForegroundWithNotification();
         synchronized (PollingService.class) {
             if (thread == null) {

@@ -50,6 +50,10 @@ public class MainActivity extends BridgeActivity {
         CookieManager cookieManager = CookieManager.getInstance();
         cookieManager.setAcceptCookie(true);
 
+        // 21차: 스와이프 종료→재실행으로 세션 쿠키가 소실된 경우 백업에서 복원
+        // (JSESSIONID가 만료일 없는 세션 쿠키라 프로세스 사망 시 날아가는 문제의 핵심 조치)
+        kr.codyssey.attendance.util.CookieManager.restoreSessionCookie(getApplicationContext());
+
         // WebView 세부 설정 (Capacitor의 BridgeWebViewClient/WebChromeClient는 덮어쓰지 않음 —
         // 덮어쓰면 JS ↔ 네이티브 브리지가 파괴 되어 모든 플러그인 호출이 실패함)
         applyWebViewSettings();

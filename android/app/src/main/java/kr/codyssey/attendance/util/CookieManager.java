@@ -11,6 +11,52 @@ public class CookieManager {
 
     private static final String COOKIE_DOMAIN = "codyssey.kr";
     private static final String API_BASE = "https://api.usr.codyssey.kr";
+    private static final String PREFS_NAME = "codyssey_prefs";
+    private static final String SESSION_BACKUP_KEY = "session_jsessionid";
+
+    // ===== 21차: 세션 쿠키(JSESSIONID) 영속화 =====
+    // 서버 JSESSIONID는 만료일 없는 "세션 쿠키"라 WebView 쿠키 저장소에서도
+    // 프로세스가 죽으면 디스크에 남지 않는다. 그래서 "창 스와이프 종료 → 시간 경과 →
+    // 재실행"이면 쿠키가 증발해 302 → 로그인 폼 회귀가 발생했다.
+    // → 인증이 확인된 응답에서 값을 SharedPreferences에 백업하고,
+    //   저장소에 쿠키가 없을 때(프로세스 재시작) 백업값을 재주입한다.
+    // 서버 TTL 만료로 무효화된 세션은 복원핟도 302이므로 종국엔 재로그인 — 이 경우는
+    // 서버 정책이며 코드로는 제거 불가(진단 로그로 구분 가능).
+
+    // 인증 확인 응답 직후 호출 — 현재 저장소의 JSESSIONID를 백업
+    public static void persistSessionCookie(Context context) {
+        try {
+            String sid = getSessionId(context);
+            if (sid == null || sid.isEmpty()) return;
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().putString(SESSION_BACKUP_KEY, sid).apply();
+        } catch (Exception e) { /* 백업 실패는 치명 아님 — 다음 기회에 */ }
+    }
+
+    // 요청/틱 시작 시 호출 — 저장소에 쿠키가 없고 백업이 있으면 재주입 (있으면 no-op)
+    public static void restoreSessionCookie(Context context) {
+        try {
+            if (hasSessionCookie(context)) return;
+            String sid = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(SESSION_BACKUP_KEY, null);
+            if (sid == null || sid.isEmpty()) return;
+            android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
+            cm.setAcceptCookie(true);
+            cm.setCookie(API_BASE,
+                    "JSESSIONID=" + sid + "; domain=" + COOKIE_DOMAIN + "; path=/; Secure; SameSite=None");
+            cm.flush();
+            DiagLog.add(context, "COOKIE",
+                    "세션 쿠키 백업에서 복원 (프로세스 재시작으로 소실됐던 것 복구)");
+        } catch (Exception e) { /* 복원 실패 — 다음 기회에 재시도 */ }
+    }
+
+    // 로그아웃/세션 폐기 확정 시 호출 — 백업도 함께 삭제 (죽은 세션 부활 방지)
+    public static void clearPersistedSession(Context context) {
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit().remove(SESSION_BACKUP_KEY).apply();
+        } catch (Exception e) { /* 무시 */ }
+    }
 
     // K1: Set-Cookie 헤더명은 대소문자 무관하게 수집 (서버가 "set-cookie" 소문자로
     // 전송하면 getHeaderFields().get("Set-Cookie")가 null을 반환해 쿠키가 유실됨)
@@ -30,6 +76,7 @@ public class CookieManager {
     // 세션 유지 핑 (네이티브 HTTP — 백그라운드 스레드에서 WebView 생성하던 크래시 위험 제거, N7)
     public static void pingKeepAlive(Context context) {
         try {
+            restoreSessionCookie(context); // 21차: 프로세스 재시작 시 백업 세션 복원
             android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
             String cookies = cookieManager.getCookie(API_BASE);
 
@@ -49,6 +96,7 @@ public class CookieManager {
                 // 19차: keep-alive 응답 전이 기록 (세션 유지 실패가 로그인 폼 회귀의 직접 단서)
                 if (responseCode == 200) {
                     DiagLog.addOnChange(context, "PING", "ok", "로그인 유지 핑 정상 (HTTP 200)");
+                    persistSessionCookie(context); // 21차: 인증 확인 — 백업 최신화 (서버 회전 대응)
                 } else {
                     DiagLog.addOnChange(context, "PING", "http_" + responseCode,
                             "로그인 유지 핑 HTTP " + responseCode
@@ -97,6 +145,7 @@ public class CookieManager {
         HttpResult result = new HttpResult();
         java.net.HttpURLConnection conn = null;
         try {
+            restoreSessionCookie(context); // 21차
             java.net.URL url = new java.net.URL(urlString);
             String origin = url.getProtocol() + "://" + url.getHost();
             String cookies = getCookies(context, origin);
@@ -133,6 +182,9 @@ public class CookieManager {
                     cookieManager.setCookie(origin, cookie);
                 }
                 cookieManager.flush();
+            }
+            if (result.status == 200) {
+                persistSessionCookie(context); // 21차: 인증 확인 응답에서만 백업 (비인증 302 세션 덮어쓰기 방지)
             }
 
             java.io.InputStream in = result.status >= 400 ? conn.getErrorStream() : conn.getInputStream();
