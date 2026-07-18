@@ -14,7 +14,10 @@ import {
   getTodayString,
   SERVER_DAILY_CAP_MINUTES,
   describeLoginServerError,
-  shouldRetryTrimmedPassword
+  shouldRetryTrimmedPassword,
+  sanitizePasswordCandidate,
+  credentialInputDigest,
+  stripEdgeInvisibles
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -38,6 +41,7 @@ const els = {
   loginForm: document.getElementById('login-form'),
   loginEmail: document.getElementById('login-email'),
   loginPassword: document.getElementById('login-password'),
+  loginPwToggle: document.getElementById('login-pw-toggle'),
   loginBtn: document.getElementById('login-btn'),
   loginError: document.getElementById('login-error'),
   loginLoading: document.getElementById('login-loading'),
@@ -1392,8 +1396,11 @@ function setupEventListeners() {
     e.preventDefault();
     setLoginButtonLoading(true);
     
-    const email = els.loginEmail.value.trim();
-    const password = els.loginPassword.value;
+    // L2+: 원본을 보존해 두고(진단 표시용), 이메일은 앞뒤 공백·보이지 않는 문자까지 제거
+    const rawEmail = els.loginEmail.value;
+    const rawPassword = els.loginPassword.value;
+    const email = stripEdgeInvisibles(rawEmail);
+    const password = rawPassword;
     
     if (!email || !password) {
       showLoginError('이메일과 비밀번호를 모두 입력해주세요.');
@@ -1404,21 +1411,24 @@ function setupEventListeners() {
     showLoginLoading();
 
     try {
-      let trimmedRetry = false;
+      let removedOnRetry = 0;
       try {
         await performLogin(email, password);
-        // L2: 모바일 IME/자동완성이 비밀번호 앞뒤에 공백을 넣는 사례가 흔함 — 공백 제거 후 1회 자동 재시도
+        // L2+: 붙여넣기 오염(앞뒤 공백·보이지 않는 문자) 시 정리 후 1회 자동 재시도
       } catch (firstError) {
-        if (shouldRetryTrimmedPassword(password, firstError && firstError.message)) {
-          await performLogin(email, password.trim());
-          trimmedRetry = true;
+        const retry = shouldRetryTrimmedPassword(password, firstError && firstError.message)
+          ? sanitizePasswordCandidate(password)
+          : null;
+        if (retry) {
+          await performLogin(email, retry.candidate);
+          removedOnRetry = retry.removed;
         } else {
           throw firstError;
         }
       }
-      if (trimmedRetry) {
+      if (removedOnRetry > 0) {
         els.loginPassword.value = '';
-        showNotification('로그인 완료', '비밀번호 앞뒤 공백을 제거하고 로그인했습니다.');
+        showNotification('로그인 완료', `비밀번호 앞뒤 공백·보이지 않는 문자 ${removedOnRetry}개를 제거하고 로그인했습니다.`);
       }
       els.loginOfficialLink?.classList.remove('show');
 
@@ -1446,12 +1456,21 @@ function setupEventListeners() {
       }
     } catch (error) {
       console.error('Login error:', error);
-      showLoginError(error.message || '로그인 처리 중 오류가 발생했습니다.');
+      showLoginError((error.message || '로그인 처리 중 오류가 발생했습니다.')
+        + '\n(입력 진단: ' + credentialInputDigest(rawEmail, rawPassword) + ')');
       // L2: 인증 계열 실패 시 공식 사이트 확인 경로 제공 (비밀번호 찾기/재설정)
       els.loginOfficialLink?.classList.add('show');
     } finally {
       setLoginButtonLoading(false);
     }
+  });
+
+  // L2+: 비밀번호 표시/숨기기 토글 — 붙여넣기 내용 확인용 (공식 로그인 폼도 동일 기능 제공)
+  els.loginPwToggle?.addEventListener('click', () => {
+    const showing = els.loginPassword.type === 'text';
+    els.loginPassword.type = showing ? 'password' : 'text';
+    els.loginPwToggle.textContent = showing ? '👁' : '🙈';
+    els.loginPwToggle.title = showing ? '비밀번호 표시' : '비밀번호 숨기기';
   });
 
   // L2: 공식 사이트 바로가기 — 공식 로그인 확인 + 비밀번호 찾기/재설정용

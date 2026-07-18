@@ -793,8 +793,49 @@ export function describeLoginServerError(status, body) {
   return null;
 }
 
-// 비밀번호 앞뒤 공백으로 인한 오입력 재시도 판정 (모바일 IME 자동 공백 대응)
+// 비밀번호 앞뒤 공백/보이지 않는 문자로 인한 오입력 재시도 판정 (모바일 붙여넣기 대응)
 export function shouldRetryTrimmedPassword(rawPassword, errorMessage) {
-  if (typeof rawPassword !== 'string' || rawPassword === rawPassword.trim()) return false;
-  return /등록되지 않은 회원|일치하지 않습니다|비밀번호/.test(errorMessage || '');
+  if (!/등록되지 않은 회원|일치하지 않습니다|비밀번호/.test(errorMessage || '')) return false;
+  return !!sanitizePasswordCandidate(rawPassword);
+}
+
+// ===== L2+(17차): 붙여넣기 오염 대응 — 보이지 않는 문자 정리·진단 =====
+// 메모앱/메신저/패스워드 매니저에서 복사한 자격증명은 끝 공백·줄바꿈·제로폭 문자
+// (U+200B/200C/200D/2060/FEFF, NBSP U+00A0)를 동반하는 사례가 잦다.
+// .trim()은 이 중 일부(제로폭 등)를 제거하지 못하므로 명시 클래스로 처리한다.
+// 비밀번호 난수에는 절대 내용을 표시하지 않고 개수·클스만 진단에 쓴다.
+export function stripEdgeInvisibles(s) {
+  if (typeof s !== 'string') return '';
+  const EDGE = '^[​‌‍⁠﻿ ]+|[​‌‍⁠﻿ ]+$';
+  let out = s;
+  let prev;
+  do {
+    prev = out;
+    out = out.trim().replace(new RegExp(EDGE, 'g'), '');
+  } while (out !== prev);
+  return out;
+}
+
+// 실패 재시도용 후보: 앞뒤 공백·보이지 않는 문자를 모두 걷어낸 비밀번호 (없으면 null)
+export function sanitizePasswordCandidate(rawPassword) {
+  if (typeof rawPassword !== 'string' || rawPassword.length === 0) return null;
+  const candidate = stripEdgeInvisibles(rawPassword);
+  if (candidate === rawPassword || candidate === '') return null;
+  return { candidate, removed: rawPassword.length - candidate.length };
+}
+
+// 진단 요약: 내용은 절대 포함하지 않고 길이와 문자 클래스만 표기
+export function credentialInputDigest(email, password) {
+  const em = typeof email === 'string' ? email : '';
+  const pw = typeof password === 'string' ? password : '';
+  const parts = [`이메일 ${em.length}자`, `비밀번호 ${pw.length}자`];
+  const emEdge = em.length - stripEdgeInvisibles(em).length;
+  if (emEdge > 0) parts.push(`이메일 앞뒤 공백/보이지 않는 문자 ${emEdge}개`);
+  const stripped = stripEdgeInvisibles(pw);
+  const pwEdge = pw.length - stripped.length;
+  if (pwEdge > 0) parts.push(`비밀번호 앞뒤 공백/보이지 않는 문자 ${pwEdge}개`);
+  const inner = (stripped.match(/[​‌‍⁠﻿ ]/g) || []).length;
+  if (inner > 0) parts.push(`비밀번호 중간 보이지 않는 문자 ${inner}개`);
+  if (/[‘’“”–—]/.test(pw)) parts.push('스마트 따옴표/대시 포함');
+  return parts.join(' · ');
 }

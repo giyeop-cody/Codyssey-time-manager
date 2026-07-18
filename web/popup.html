@@ -25,7 +25,10 @@
     
     <div class="form-group">
       <label class="form-label">비밀번호</label>
-      <input type="password" id="login-password" class="input" placeholder="비밀번호 입력" autocomplete="current-password" required>
+      <div class="password-wrap">
+        <input type="password" id="login-password" class="input" placeholder="비밀번호 입력" autocomplete="current-password" required>
+        <button type="button" id="login-pw-toggle" class="pw-toggle" title="비밀번호 표시" aria-label="비밀번호 표시/숨기기">👁</button>
+      </div>
     </div>
     
     <button type="submit" class="btn btn-primary btn-block" id="login-btn">

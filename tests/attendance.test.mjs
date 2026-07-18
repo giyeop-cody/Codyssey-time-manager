@@ -25,6 +25,9 @@ import {
   getTodayString,
   describeLoginServerError,
   shouldRetryTrimmedPassword,
+  sanitizePasswordCandidate,
+  credentialInputDigest,
+  stripEdgeInvisibles,
   buildAlarmName,
   legacyAlarmName,
   parseAlarmName,
@@ -858,4 +861,45 @@ test('shouldRetryTrimmedPassword: 공백 포함 + 인증 오류일 때만 재시
   assert.equal(shouldRetryTrimmedPassword('pass', '등록되지 않은 회원입니다.'), false);
   assert.equal(shouldRetryTrimmedPassword('pass ', '네트워크 오류'), false);
   assert.equal(shouldRetryTrimmedPassword(null, '등록되지 않은 회원입니다.'), false);
+});
+
+// ===== L2+(17차): 붙여넣기 오염 정리·진단 =====
+
+test('stripEdgeInvisibles: 공백·NBSP·제로폭 앞뒤 제거, 중간 제로폭은 보존', () => {
+  assert.equal(stripEdgeInvisibles('  abc '), 'abc');
+  assert.equal(stripEdgeInvisibles(' abc '), 'abc'); // NBSP 앞뒤
+  assert.equal(stripEdgeInvisibles('﻿abc﻿'), 'abc'); // BOM/FEFF 앞뒤
+  assert.equal(stripEdgeInvisibles('​abc​'), 'abc'); // ZWSP 앞뒤
+  assert.equal(stripEdgeInvisibles('a​b'), 'a​b'); // 중간 ZWSP 보존
+  assert.equal(stripEdgeInvisibles(' \t\r\nMix​ '), 'Mix');
+  assert.equal(stripEdgeInvisibles(null), '');
+});
+
+test('sanitizePasswordCandidate: 앞뒤 오염만 제거 후보, 깨끗하면 null', () => {
+  const dirty = sanitizePasswordCandidate('pass​ ');
+  assert.equal(dirty.candidate, 'pass');
+  assert.equal(dirty.removed, 2);
+  assert.equal(sanitizePasswordCandidate('clean'), null);
+  assert.equal(sanitizePasswordCandidate(''), null);
+  assert.equal(sanitizePasswordCandidate('  '), null); // 전부 제거되면 후보 없음
+  // 중간 제로폭은 비밀번호의 일부일 수 있어 보존
+  const inner = sanitizePasswordCandidate('pw​x ');
+  assert.equal(inner.candidate, 'pw​x');
+});
+
+test('credentialInputDigest: 내용 없이 길이·클스만 표기', () => {
+  const d = credentialInputDigest('user@x.com ', 'pw​ ');
+  assert.ok(d.includes('이메일 11자'));
+  assert.ok(d.includes('비밀번호 4자'));
+  assert.ok(d.includes('이메일 앞뒤 공백/보이지 않는 문자 1개'));
+  assert.ok(d.includes('비밀번호 앞뒤 공백/보이지 않는 문자 2개'));
+  assert.ok(!d.includes('user@x.com') && !d.includes('pw'), '원문 미포함');
+  const clean = credentialInputDigest('a@b.co', 'abcd');
+  assert.equal(clean, '이메일 6자 · 비밀번호 4자');
+});
+
+test('shouldRetryTrimmedPassword(확장): 제로폭 오염도 재시도 대상', () => {
+  assert.equal(shouldRetryTrimmedPassword('pw​ ', '등록되지 않은 회원입니다.'), true);
+  assert.equal(shouldRetryTrimmedPassword('pw ', '네트워크 오류'), false);
+  assert.equal(shouldRetryTrimmedPassword('pw​x', '등록되지 않은 회원입니다.'), false); // 앞뒤 오염 없음
 });

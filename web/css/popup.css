@@ -147,6 +147,10 @@ body {
 .login-official-link { display: none; margin-top: 12px; width: 100%; padding: 10px; background: none; border: 1px dashed rgba(255,255,255,0.25); border-radius: var(--radius-sm); color: var(--text-secondary, #9aa0a6); font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s; }
 .login-official-link:hover { color: var(--accent-teal); border-color: var(--accent-teal); }
 .login-official-link.show { display: block; }
+.password-wrap { position: relative; }
+.password-wrap .input { padding-right: 42px; }
+.pw-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; opacity: 0.55; padding: 4px; }
+.pw-toggle:hover { opacity: 1; }
 .login-loading { display: none; text-align: center; color: var(--text-muted); margin-top: 16px; }
 .login-loading.show { display: block; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border-light); border-top-color: var(--accent-teal); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
