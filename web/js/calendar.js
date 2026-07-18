@@ -209,7 +209,7 @@ function renderCalendar() {
   for (let i = firstDay - 1; i >= 0; i--) {
     const day = prevLastDate - i;
     const date = new Date(year, month - 1, day);
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = attendanceData.dailyBreakdown[dateStr] || 0;
     grid.appendChild(createDayElement(day, dateStr, dayData, dailyMax, true, false));
   }
@@ -217,7 +217,7 @@ function renderCalendar() {
   // 이번 달 날짜들
   for (let day = 1; day <= lastDate; day++) {
     const date = new Date(year, month, day);
-    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = displayMinutesFor(dateStr); // L5: 오늘은 실시간 값
     const isToday = isSameDay(date, today);
     const isCurrentIn = attendanceData.isCurrentlyIn && isToday;
@@ -229,7 +229,7 @@ function renderCalendar() {
   const nextMonthDays = Math.ceil(totalCells / 7) * 7 - totalCells;
   for (let day = 1; day <= nextMonthDays; day++) {
     const date = new Date(year, month + 1, day);
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = attendanceData.dailyBreakdown[dateStr] || 0;
     grid.appendChild(createDayElement(day, dateStr, dayData, dailyMax, true, false));
   }

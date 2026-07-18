@@ -9,12 +9,6 @@ export const SERVER_DAILY_CAP_HOURS = 12;
 export const SERVER_DAILY_CAP_MINUTES = SERVER_DAILY_CAP_HOURS * 60;
 
 // ===== 시각/기간 변환 =====
-export function timeToMinutes(timeStr) {
-  if (!timeStr) return 0;
-  const [h, m] = timeStr.split(':').map(Number);
-  return h * 60 + m;
-}
-
 export function minutesToTimeStr(minutes) {
   const h = Math.floor(minutes / 60);
   const m = minutes % 60;
@@ -45,6 +39,18 @@ export function isAlarmStale(scheduledTimeMs, nowMs = Date.now()) {
 
 export function getTodayString(date = new Date()) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+// 날짜 → 'YYYY.MM.DD' (평가 API 쿼리용 — background.js/capacitor-adapter.js 공용, 33차: 양쪽 동일 정의 통합)
+export function formatDateYmdDot(d) {
+  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// '7월 20일 (월) 14:00' 형태 (알림 본문용 — background.js/capacitor-adapter.js 공용, 33차: 동일 정의 통합)
+export function formatEvalWhenKo(ms) {
+  const d = new Date(ms);
+  const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
+  return `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 // HH:MM:SS / HH:MM → 분

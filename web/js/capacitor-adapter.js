@@ -8,6 +8,8 @@ import {
   applyOvernightFromPrevMonth,
   equivalentAlarmNames,
   getTodayString,
+  formatDateYmdDot,
+  formatEvalWhenKo,
   snapshotSessionsByDate,
   detectGateEvents,
   formatGateEventMessage,
@@ -743,21 +745,11 @@ import {
   const EVAL_INST_CD_KEY = 'eval_inst_cd';
   const EVAL_SCHEDULE_API = 'https://api.usr.codyssey.kr';
 
-  function evalYmdDot(d) {
-    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
-  }
-
-  function formatEvalWhenKo(ms) {
-    const d = new Date(ms);
-    const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
-    return `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  }
-
   async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
     if (!Plugins.NetworkPlugin) throw new Error('NETWORK_PLUGIN_UNAVAILABLE');
     const url = `${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?`
       + `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
-      + `&bgngYmd=${evalYmdDot(fromDate)}&endYmd=${evalYmdDot(toDate)}&scheduleType=request`;
+      + `&bgngYmd=${formatDateYmdDot(fromDate)}&endYmd=${formatDateYmdDot(toDate)}&scheduleType=request`;
     const res = await Plugins.NetworkPlugin.fetch({ url, method: 'POST' }); // 명세: 본문 무시(전송 안 함)
     if (isAuthStatus(res.status)) {
       if (await shouldDiscardSession('평가 스케줄', res.status)) {

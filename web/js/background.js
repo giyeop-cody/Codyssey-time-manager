@@ -15,6 +15,9 @@ import {
   formatEndMinutes,
   isAlarmStale,
   getTodayString,
+  formatDateYmdDot,
+  formatEvalWhenKo,
+  MAX_OPEN_SESSION_MS,
   snapshotSessionsByDate,
   detectGateEvents,
   formatGateEventMessage,
@@ -306,12 +309,12 @@ async function processOvernightRollover(memberId, rawData, settings) {
     }
     if (!openEntry) return;
 
-    // S1 동일 기준 — 입실부터 13시간 넘은 낡은 세션은 확인 대상 아님
+    // S1 동일 기준 — 입실부터 13시간 넘은 낡은 세션은 확인 대상 아님 (shared 상수 단일 소스)
     const [hh, mm] = openEntry.split(':').map(Number);
     const entryAt = new Date();
     entryAt.setDate(entryAt.getDate() - 1);
     entryAt.setHours(hh, mm, 0, 0);
-    if (Date.now() - entryAt.getTime() > 13 * 60 * 60 * 1000) return;
+    if (Date.now() - entryAt.getTime() > MAX_OPEN_SESSION_MS) return;
 
     // 이미 선택한 건(entryDate 일치)이거나 오늘 이미 물었으면 스킵
     const stored = await getStorage([OVERNIGHT_PREF_KEY, 'overnight_notified']);
@@ -343,20 +346,9 @@ const EVAL_STATE_KEY = 'eval_sync_state';
 const EVAL_INST_CD_KEY = 'eval_inst_cd';
 const EVAL_SCHEDULE_API = 'https://api.usr.codyssey.kr';
 
-function ymdDot(d) {
-  return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
-}
-
-// '7월 20일 (월) 14:00' 형태 (알림 본문용)
-function formatEvalWhenKo(ms) {
-  const d = new Date(ms);
-  const wd = ['일', '월', '화', '수', '목', '금', '토'][d.getDay()];
-  return `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd}) ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-}
-
 async function fetchEvalSchedule(memberId, instCd, fromDate, toDate) {
   const qs = `mbrId=${encodeURIComponent(memberId)}&instCd=${encodeURIComponent(instCd)}`
-    + `&bgngYmd=${ymdDot(fromDate)}&endYmd=${ymdDot(toDate)}&scheduleType=request`;
+    + `&bgngYmd=${formatDateYmdDot(fromDate)}&endYmd=${formatDateYmdDot(toDate)}&scheduleType=request`;
   const res = await fetchWithAuth(`${EVAL_SCHEDULE_API}/schedule/scheduleAllList/?${qs}`, {
     method: 'POST', // 실측: 본문 없이 쿼리스트링만 (axios post(url, null, {params})와 동일)
     skipContentType: true // S4: 본문 없는데 JSON Content-Type을 달지 않음 (실측 동작과 동일화)

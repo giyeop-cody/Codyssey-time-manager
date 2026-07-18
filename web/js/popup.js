@@ -588,7 +588,7 @@ function renderEvalSyncStatus() {
   const s = currentEvalSync;
   const stamp = (t) => {
     const d = new Date(t);
-    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${formatTime(d)}`;
   };
   if (s && s.lastError) {
     const when = s.fetchedAt ? ` (${stamp(s.fetchedAt)})` : '';
@@ -832,7 +832,7 @@ function renderAlarms(alarms) {
 function formatEvalWhen(ms) {
   const d = new Date(ms);
   const date = d.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
-  return `${date} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${date} ${formatTime(d)}`;
 }
 
 // (S3) E1 수동 평가 등록 UI/핸들러 제거 — 평가 알람은 서버 목록 자동 연동(E2)이 유일 경로
@@ -936,7 +936,7 @@ function renderCalendar() {
   for (let i = firstDay - 1; i >= 0; i--) {
     const day = prevLastDate - i;
     const date = new Date(year, month - 1, day);
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = calendarData.dailyBreakdown[dateStr] || 0;
     grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, true, false, todayStr));
   }
@@ -944,7 +944,7 @@ function renderCalendar() {
   // 이번 달
   for (let day = 1; day <= lastDate; day++) {
     const date = new Date(year, month, day);
-    const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = miniDisplayMinutes(dateStr, calendarData.dailyBreakdown[dateStr] || 0); // K9: 오늘은 실시간 값
     const isToday = dateStr === todayStr;
     grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, false, isToday, todayStr));
@@ -955,7 +955,7 @@ function renderCalendar() {
   const nextMonthDays = Math.ceil(totalCells / 7) * 7 - totalCells;
   for (let day = 1; day <= nextMonthDays; day++) {
     const date = new Date(year, month + 1, day);
-    const dateStr = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    const dateStr = getTodayString(date);
     const dayData = calendarData.dailyBreakdown[dateStr] || 0;
     grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, true, false, todayStr));
   }
@@ -1377,9 +1377,7 @@ async function cancelGenericAlarm(endMinutes, alarmType, onSuccess) {
 const AUTO_ALARM_DISABLED_PREFIX = 'codyssey_auto_alarm_disabled_';
 
 function autoAlarmDisabledKey(type) {
-  const d = new Date();
-  return AUTO_ALARM_DISABLED_PREFIX + type + '_'
-    + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  return AUTO_ALARM_DISABLED_PREFIX + type + '_' + getTodayString();
 }
 function isAutoAlarmDisabledToday(type) {
   try { return localStorage.getItem(autoAlarmDisabledKey(type)) === '1'; } catch (e) { return false; }

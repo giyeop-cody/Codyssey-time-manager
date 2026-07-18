@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   SERVER_DAILY_CAP_MINUTES,
-  timeToMinutes,
   minutesToHHMM,
   durationToMinutes,
   timeStrToMinutes,
@@ -23,6 +22,8 @@ import {
   filterNewEvalNotices,
   unescapeAlarmHtml,
   getTodayString,
+  formatDateYmdDot,
+  formatEvalWhenKo,
   describeLoginServerError,
   shouldRetryTrimmedPassword,
   sanitizePasswordCandidate,
@@ -61,13 +62,6 @@ function session(entryTime, exitTime, isMissing = false, missingType = null) {
 }
 
 // ===== 기본 변환 =====
-test('timeToMinutes: HH:MM → 분', () => {
-  assert.equal(timeToMinutes('09:30'), 570);
-  assert.equal(timeToMinutes('0:05'), 5);
-  assert.equal(timeToMinutes(''), 0);
-  assert.equal(timeToMinutes(null), 0);
-});
-
 test('minutesToHHMM: 분 → HH:MM 문자열', () => {
   assert.equal(minutesToHHMM(0), '00:00');
   assert.equal(minutesToHHMM(720), '12:00');
@@ -91,6 +85,19 @@ test('timeStrToMinutes: 파싱 불가 시 null', () => {
   assert.equal(timeStrToMinutes('08:45:30'), 525);
   assert.equal(timeStrToMinutes(''), null);
   assert.equal(timeStrToMinutes('--:--'), null);
+});
+
+test('formatDateYmdDot: Date → YYYY.MM.DD (33차: background/adapter 중복 통합)', () => {
+  assert.equal(formatDateYmdDot(new Date(2026, 6, 5)), '2026.07.05');
+  assert.equal(formatDateYmdDot(new Date(2026, 11, 25)), '2026.12.25');
+  assert.equal(formatDateYmdDot(new Date(2027, 0, 1)), '2027.01.01');
+});
+
+test('formatEvalWhenKo: ms → M월 D일 (요일) HH:MM (33차: background/adapter 중복 통합)', () => {
+  // 2026-07-20 = 월요일
+  assert.equal(formatEvalWhenKo(new Date(2026, 6, 20, 14, 5).getTime()), '7월 20일 (월) 14:05');
+  // 2026-01-01 = 목요일
+  assert.equal(formatEvalWhenKo(new Date(2026, 0, 1, 9, 0).getTime()), '1월 1일 (목) 09:00');
 });
 
 test('parseEntryTimestamp: 날짜+시각 → 로컬 타임스탬프', () => {
