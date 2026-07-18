@@ -12,7 +12,14 @@ import {
   minutesToHHMM,
   formatEndMinutes,
   getTodayString,
-  SERVER_DAILY_CAP_MINUTES
+  SERVER_DAILY_CAP_MINUTES,
+  describeLoginServerError,
+  shouldRetryTrimmedPassword,
+  sanitizePasswordCandidate,
+  credentialInputDigest,
+  stripEdgeInvisibles,
+  diagRingAppend,
+  formatDiagEntry
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -36,9 +43,11 @@ const els = {
   loginForm: document.getElementById('login-form'),
   loginEmail: document.getElementById('login-email'),
   loginPassword: document.getElementById('login-password'),
+  loginPwToggle: document.getElementById('login-pw-toggle'),
   loginBtn: document.getElementById('login-btn'),
   loginError: document.getElementById('login-error'),
   loginLoading: document.getElementById('login-loading'),
+  loginOfficialLink: document.getElementById('login-official-link'),
 
   // 대시보드
   dashboard: document.getElementById('dashboard'),
@@ -111,11 +120,9 @@ const els = {
   alarmsList: document.getElementById('alarms-list'),
   alarmsEmpty: document.getElementById('alarms-empty'),
 
-  // 평가 알람 등록 (E1)
-  evalTitleInput: document.getElementById('eval-title-input'),
-  evalDatetimeInput: document.getElementById('eval-datetime-input'),
-  evalLeadInput: document.getElementById('eval-lead-input'),
-  btnAddEval: document.getElementById('btn-add-eval'),
+  // 평가 알람 (E2: 서버 목록 자동 연동 — S3: 수동 등록 UI 제거)
+  evalSyncStatus: document.getElementById('eval-sync-status'),
+  btnSyncEval: document.getElementById('btn-sync-eval'),
 
   // 권한 배너
   permissionBanner: document.getElementById('permission-banner'),
@@ -135,6 +142,17 @@ const els = {
   settingRefreshInterval: document.getElementById('setting-refresh-interval'),
   settingKeepAlive: document.getElementById('setting-keep-alive'),
   settingGateNotify: document.getElementById('setting-gate-notify'),
+  settingDash: document.getElementById('setting-dash'),
+  btnBatteryExempt: document.getElementById('btn-battery-exempt'),
+  btnExactAlarm: document.getElementById('btn-exact-alarm'),
+  settingDashStatus: document.getElementById('setting-dash-status'),
+  sessionExpiredBanner: document.getElementById('session-expired-banner'),
+  btnSessionRelogin: document.getElementById('btn-session-relogin'),
+  initSplash: document.getElementById('init-splash'),
+  loginDiag: document.getElementById('login-diag'),
+  loginDiagList: document.getElementById('login-diag-list'),
+  btnDiagCopy: document.getElementById('btn-diag-copy'),
+  btnDiagClear: document.getElementById('btn-diag-clear'),
   settingEvalLead: document.getElementById('setting-eval-lead'),
   settingEvalAutosync: document.getElementById('setting-eval-autosync'),
   settingEvalInstcdRow: document.getElementById('setting-eval-instcd-row'),
@@ -155,12 +173,15 @@ let currentSettings = null;
 let refreshTimer = null;
 let realtimeTimer = null;
 let alarmListTimer = null; // 문제1: 알람 목록 자동 갱신
+// 27차: 알람 목록은 innerHTML로 렌더되므로 클릭 핸들러를 data-index 위임 방식으로 처리한다.
+// (MV3 CSP가 인라인 onclick을 차단 — 익스텐션 팝업에서 "해제" 버튼이 동작하지 않던 오류 해소)
+let lastRenderedAlarmNames = [];
 let keepAliveTimer = null;
 let keepAliveEnabled = true;
 let exitAlarmEndMinutes = null;
 let goalAlarmEndMinutes = null;
 let currentViewDate = new Date(); // 캘린더용
-let evalLeadInitialized = false; // E1: 평가 사전 알림 기본값 1회 주입용
+let currentEvalSync = null; // S4: 평가 연동 상태 (GET_STATUS 응답의 evalSync)
 
 // ===== 크롬 런타임 메시지 전송 헬퍼 =====
 function sendMessage(type, data = {}) {
@@ -169,13 +190,72 @@ function sendMessage(type, data = {}) {
   });
 }
 
+// ===== 19차: 세션 진단 로그 (네이티브 DiagLog와 같은 링버퍼 — 웹 폴곤은 localStorage) =====
+async function diag(tag, msg) {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.logDiag) {
+      await p.logDiag({ tag, msg });
+      return;
+    }
+  } catch (e) { /* 폴곤으로 */ }
+  try {
+    const raw = localStorage.getItem('diag_log') || '[]';
+    localStorage.setItem('diag_log',
+      JSON.stringify(diagRingAppend(JSON.parse(raw), { t: Date.now(), tag, msg })));
+  } catch (e) { /* 진단 실패는 무시 */ }
+}
+
+async function readDiagEntries() {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.getDiagLog) {
+      const r = await p.getDiagLog();
+      const arr = JSON.parse(r.raw || '[]');
+      if (Array.isArray(arr)) return arr;
+    }
+  } catch (e) { /* 폴곤으로 */ }
+  try { return JSON.parse(localStorage.getItem('diag_log') || '[]'); } catch (e) { return []; }
+}
+
+async function clearDiagEntries() {
+  try {
+    const p = window.Capacitor?.Plugins?.PollingPlugin;
+    if (window.CodysseyNative?.isNative && p?.clearDiagLog) await p.clearDiagLog();
+  } catch (e) { /* 무시 */ }
+  try { localStorage.removeItem('diag_log'); } catch (e) { /* 무시 */ }
+}
+
+async function renderLoginDiag() {
+  if (!els.loginDiag) return;
+  const entries = await readDiagEntries();
+  if (!entries.length) { els.loginDiag.style.display = 'none'; return; }
+  els.loginDiagList.innerHTML = '';
+  entries.slice(-8).reverse().forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'login-diag-item';
+    div.textContent = formatDiagEntry(e);
+    els.loginDiagList.appendChild(div);
+  });
+  els.loginDiag.style.display = 'block';
+}
+
 // ===== UI 상태 관리 =====
-function showLoginScreen() {
+// 24차: 초기 스플래시 — 세션 확인 구간 동안 로그인 폼 섬광 노출을 차단
+function hideInitSplash() {
+  if (els.initSplash) els.initSplash.style.display = 'none';
+}
+
+function showLoginScreen(cause) {
+  hideInitSplash();
   els.loginScreen.style.display = 'block';
   els.dashboard.style.display = 'none';
   els.loginLoading.classList.remove('show');
   els.loginForm.style.display = 'flex';
   els.loginError.classList.remove('show');
+  // 19차: 왜 이 화면이 나왔는지를 진단 로그에 남김 + 즉시 표시
+  if (cause) diag('POPUP', '로그인 화면 표시 — ' + cause).then(renderLoginDiag);
+  else renderLoginDiag();
 }
 
 function showLoginLoading() {
@@ -184,8 +264,17 @@ function showLoginLoading() {
 }
 
 function showDashboard() {
+  hideInitSplash();
   els.loginScreen.style.display = 'none';
   els.dashboard.style.display = 'flex';
+}
+
+// 22차: 세션 만료 시 로그인 폼으로 화면을 뺏지 않고 캐시 대시보드 유지 + 배너
+function showExpiredBanner() {
+  if (els.sessionExpiredBanner) els.sessionExpiredBanner.style.display = 'flex';
+}
+function hideExpiredBanner() {
+  if (els.sessionExpiredBanner) els.sessionExpiredBanner.style.display = 'none';
 }
 
 function showLoginError(msg) {
@@ -216,7 +305,16 @@ async function loadDashboard(forceRefresh = false) {
     const response = await sendMessage('GET_STATUS', { force: forceRefresh });
     if (!response.success) {
       if (response.error === 'NOT_LOGGED_IN') {
-        showLoginScreen();
+        // 19차: 세션 무효 '확정'에만 여기 도달 (단발 302/401은 어댑터가 세션 유지 판정)
+        // 22차: member_id는 남아 있으므로 캐시 대시보드 + 만료 배너 유지 (폼으로 튕기지 않음)
+        if (currentMemberId || currentParsed) {
+          diag('POPUP', '세션 만료 — 캐시 대시보드 유지 (재로그인 대기)');
+          showDashboard();
+          showExpiredBanner();
+          updateLastUpdateTime();
+          return;
+        }
+        showLoginScreen('세션 무효 확정 — 상태 조회 반복 실패 + 회원 정보 재조사 실패 (만료 또는 서버측 로그아웃)');
         return;
       }
       throw new Error(response.error);
@@ -225,7 +323,10 @@ async function loadDashboard(forceRefresh = false) {
     currentMemberId = response.memberId;
     currentParsed = response.parsed;
     currentSettings = response.settings;
-    
+    currentEvalSync = response.evalSync || null; // S4: 평가 연동 상태
+
+    hideExpiredBanner(); // 22차: 세션 회복(재로그인 성공)되면 배너 해제
+
     updateDashboardUI();
     checkNotificationPermission();
     updateLastUpdateTime();
@@ -237,8 +338,15 @@ async function loadDashboard(forceRefresh = false) {
     showDashboard();
   } catch (error) {
     console.error('Dashboard load error:', error);
+    // 19차: 인증류 '확정'(위 분기)이 아닌 오류(망 흔들림·일시 응답 이상)는
+    // 기존 데이터가 있으면 화면 유지 — 로그인 폼으로 튕기지 않음. 다음 갱신 주기에 회복.
+    diag('POPUP', '대시보드 갱신 실패 (화면 유지) — ' + (error.message || '알 수 없는 오류'));
+    if (currentParsed) {
+      updateLastUpdateTime();
+      return;
+    }
     showLoginError(describeError(error));
-    showLoginScreen();
+    showLoginScreen('첫 데이터 로드 실패: ' + String(error.message || '').slice(0, 60));
   }
 }
 
@@ -285,10 +393,14 @@ function updateDashboardUI() {
   els.dailyRemain.textContent = `남음: ${minutesToTimeStr(Math.max(0, dailyMax - realtimeRecognized))}`;
   els.dailyRemain.className = `remain ${Math.max(0, dailyMax - realtimeRecognized) > 0 ? 'warning' : 'ok'}`;
 
-  // 입실 기록 누락 경고 (R5)
+  // 입실 기록 누락 경고 (R5) + S1: 낡은 미퇴실 세션 제외 안내
   if (els.dataWarning) {
     if (currentParsed.hasMissingEntry) {
       els.dataWarning.textContent = '⚠️ 입실 기록 누락이 감지되었습니다. 출입 내역이 실제와 다를 수 있습니다.';
+      els.dataWarning.style.display = 'block';
+    } else if (currentParsed.staleOpenSession) {
+      const st = currentParsed.staleOpenSession;
+      els.dataWarning.textContent = `⚠️ ${st.dateStr} ${st.entry} 입실 기록에 퇴실이 없어 오래된 세션으로 판단, 실시간 누적에서 제외했습니다. 퇴실 처리 여부를 확인해주세요.`;
       els.dataWarning.style.display = 'block';
     } else {
       els.dataWarning.style.display = 'none';
@@ -320,14 +432,53 @@ function updateDashboardUI() {
   resetAllCalculations();
   updateCalcModeUI(); // 토글 모드에 맞는 패널 표시
 
-  // E1: 평가 등록 폼의 사전 알림 기본값을 설정값으로 1회 주입 (사용자 입력 유지)
-  if (!evalLeadInitialized && els.evalLeadInput) {
-    els.evalLeadInput.value = currentSettings.evalLeadMinutes ?? 30;
-    evalLeadInitialized = true;
-  }
+  // S4: 평가 연동 상태 표시
+  renderEvalSyncStatus();
 
   // 알람 목록 로드 및 렌더링
   loadAndRenderAlarms();
+}
+
+// S4: 평가 연동 상태 한 줄 표시 (수동 등록 폼을 대체)
+function renderEvalSyncStatus() {
+  const el = els.evalSyncStatus;
+  if (!el) return;
+  if (currentSettings && currentSettings.evalAutoSyncEnabled === false) {
+    el.textContent = '평가 일정 자동 연동이 꺼져 있습니다. (설정에서 켤 수 있습니다)';
+    return;
+  }
+  const s = currentEvalSync;
+  const stamp = (t) => {
+    const d = new Date(t);
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  };
+  if (s && s.lastError) {
+    const when = s.fetchedAt ? ` (${stamp(s.fetchedAt)})` : '';
+    el.textContent = `⚠️ 연동 실패${when}: ${describeEvalSyncError(s.lastError)}`;
+    return;
+  }
+  let base;
+  if (!s || !s.fetchedAt) {
+    base = '아직 평가 일정을 가져오지 못했습니다. 잠시 후 자동으로 확인합니다.';
+  } else {
+    base = `✅ ${stamp(s.fetchedAt)} 확인 완료 · 예정된 평가 알람 ${s.items}건`;
+    if (s.noticeFresh) base += ` · 알림함 신규 감지 ${s.noticeFresh}건`;
+  }
+  if (s && s.alarmError) base += ' · ⚠️ 알림함 채널 오류 (스케줄 채널은 정상)';
+  el.textContent = base;
+}
+
+// S4: 평가 연동 오류 코드 → 사용자용 한글 설명
+function describeEvalSyncError(err) {
+  const e = String(err || '');
+  if (/AUTH_REQUIRED|NOT_LOGGED_IN|30[12378]|401|403/.test(e)) {
+    return '로그인 세션이 만료되었거나 확인할 수 없습니다. 로그아웃 후 다시 로그인해주세요.';
+  }
+  if (/no_instcd/.test(e)) return '기관 코드(instCd)를 찾지 못했습니다. 설정에서 직접 입력해주세요.';
+  if (/no_member/.test(e)) return '로그인 정보가 없습니다. 다시 로그인해주세요.';
+  if (/NETWORK_PLUGIN|unavailable/i.test(e)) return '기기 네트워크 기능을 사용할 수 없습니다.';
+  if (/api_-1|Failed to fetch|NetworkError|timeout/i.test(e)) return '네트워크 연결 상태를 확인해주세요.';
+  return e;
 }
 
 // 실시간 인정 시간 계산 (서버 규칙: 일 12시간 캡 — shared-attendance.js 참조)
@@ -495,15 +646,19 @@ function renderAlarms(alarms) {
   const liveAlarms = (alarms || []).filter(a => a && typeof a.time === 'number' && a.time > nowRender);
 
   if (liveAlarms.length === 0) {
+    lastRenderedAlarmNames = [];
     els.alarmsList.innerHTML = '<div class="alarms-empty">설정된 알람이 없습니다.</div>';
     els.alarmsCount.textContent = '0개';
     return;
   }
-  
+
   els.alarmsCount.textContent = `${liveAlarms.length}개`;
-  
+
+  // 27차: 렌더된 순서와 동일한 이름 배열 — 해제 버튼(data-alarm-idx) 위임 클릭 시 이 배열로 이름을 찾는다
+  lastRenderedAlarmNames = liveAlarms.map(a => String((a && a.name) || ''));
+
   const now = Date.now();
-  els.alarmsList.innerHTML = liveAlarms.map(alarm => {
+  els.alarmsList.innerHTML = liveAlarms.map((alarm, idx) => {
     const isEval = (alarm.type || '') === 'eval'; // E1: 평가 알람은 날짜+시각 표기
     const timeStr = isEval
       ? formatEvalWhen(alarm.evalWhen || alarm.time)
@@ -526,7 +681,7 @@ function renderAlarms(alarms) {
           <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
         <div class="alarm-actions">
-          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList('${alarm.name}')">해제</button>
+          <button class="btn btn-danger btn-sm" data-alarm-idx="${idx}">해제</button>
         </div>
       </div>
     `;
@@ -540,59 +695,20 @@ function formatEvalWhen(ms) {
   return `${date} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
-// E1: 평가 알람 등록
-async function addEvalAlarm() {
-  const title = els.evalTitleInput.value.trim() || '평가';
-  const whenMs = new Date(els.evalDatetimeInput.value).getTime();
-  if (!els.evalDatetimeInput.value || isNaN(whenMs)) {
-    alert('평가 일시를 선택해주세요.');
-    els.evalDatetimeInput.focus();
-    return;
-  }
-  const leadMinutes = Number(els.evalLeadInput.value);
-  if (isNaN(leadMinutes) || leadMinutes < 0 || leadMinutes > 1440) {
-    alert('사전 알림 시간은 0~1440분 사이로 입력해주세요.');
-    els.evalLeadInput.focus();
-    return;
-  }
-  if (whenMs - leadMinutes * 60000 <= Date.now()) {
-    alert('알림 시각(평가 시간 - 사전 알림)이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.');
-    return;
-  }
-
-  const hasPerm = await requestNotificationPermission();
-  if (!hasPerm) return;
-
-  try {
-    const response = await sendMessage('SET_EVAL_ALARM', { title, whenMs, leadMinutes });
-    if (response.success) {
-      els.evalTitleInput.value = '';
-      els.evalDatetimeInput.value = '';
-      showNotification('평가 알람 등록', `${title} — ${leadMinutes}분 전인 ${formatEvalWhen(response.triggerTime)}에 알림이 울립니다.`);
-      await loadAndRenderAlarms();
-      // M5: 정확 알람 권한 없음(Android) — 안내 재사용
-      if (response.exact === false) {
-        setTimeout(() => {
-          alert('정확한 알람 권한이 꺼져 있어 알림 시각이 몇 분 늦어질 수 있습니다.\n알림 권한 설정에서 "정확한 알람"을 허용해주세요.');
-          if (window.CodysseyNative && window.CodysseyNative.isNative) {
-            window.CodysseyNative.requestExactAlarmPermission().catch(() => {});
-          }
-        }, 300);
-      }
-    } else {
-      alert(response.reason === 'past'
-        ? '알림 시각이 이미 지났습니다. 일시 또는 사전 알림 시간을 조정해주세요.'
-        : `평가 알람 등록에 실패했습니다. (${response.error || '알 수 없는 오류'})`);
-    }
-  } catch (error) {
-    console.error('Add eval alarm error:', error);
-    alert('평가 알람 등록 중 오류가 발생했습니다.');
-  }
-}
+// (S3) E1 수동 평가 등록 UI/핸들러 제거 — 평가 알람은 서버 목록 자동 연동(E2)이 유일 경로
+// ※ SET_EVAL_ALARM 메시지 핸들러는 호환용으로 background/adapter에 유지
 
 // 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
 window.cancelAlarmFromList = async function(alarmName) {
   try {
+    // 26차: 목록에서 해제해도 당일 자동 재등록 금지 (exit/goal 타입만 해당)
+    try {
+      const resp = await sendMessage('GET_ALARMS');
+      const item = (resp.alarms || []).find(a => a && a.name === alarmName);
+      const t = item && (item.type || 'exit');
+      if (item && (t === 'exit' || t === 'goal')) setAutoAlarmDisabledToday(t, true);
+    } catch (e) { /* 플래그 실패는 무시 — 해제 자체는 진행 */ }
+
     await sendMessage('CANCEL_ALARM', { alarmName });
     showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
     await loadAndRenderAlarms();
@@ -928,20 +1044,12 @@ async function calculateExitTime() {
       els.exitWarning.classList.remove('show');
     }
     
-    // 알람 버튼
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetExitAlarm.style.display = 'block';
     els.btnCancelExitAlarm.style.display = 'none';
     els.exitResult.classList.add('show');
-    
-    // 기존 알람 확인
-    const alarmsResponse = await sendMessage('GET_ALARMS');
-    if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === exitAlarmEndMinutes && (a.type || 'exit') === 'exit');
-      if (existing) {
-        els.btnSetExitAlarm.style.display = 'none';
-        els.btnCancelExitAlarm.style.display = 'block';
-      }
-    }
+
+    await autoRegisterAlarm(exitAlarmEndMinutes, 'exit', '퇴실 알림');
     
   } catch (error) {
     console.error('Calculate exit error:', error);
@@ -1005,20 +1113,12 @@ async function calculateGoalTime() {
       els.goalWarning.classList.remove('show');
     }
     
-    // 알람 버튼
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetGoalAlarm.style.display = 'block';
     els.btnCancelGoalAlarm.style.display = 'none';
     els.goalResult.classList.add('show');
-    
-    // 기존 알람 확인
-    const alarmsResponse = await sendMessage('GET_ALARMS');
-    if (alarmsResponse.success) {
-      const existing = alarmsResponse.alarms.find(a => a.endMinutes === goalAlarmEndMinutes && (a.type || 'exit') === 'goal');
-      if (existing) {
-        els.btnSetGoalAlarm.style.display = 'none';
-        els.btnCancelGoalAlarm.style.display = 'block';
-      }
-    }
+
+    await autoRegisterAlarm(goalAlarmEndMinutes, 'goal', '목표 달성 알림');
     
   } catch (error) {
     console.error('Calculate goal error:', error);
@@ -1077,7 +1177,11 @@ async function cancelGoalAlarm() {
 
 async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
   const hasPerm = await requestNotificationPermission();
-  if (!hasPerm) return;
+  // 23차: 권한 없으면 조용히 return되어 사용자가 '설정된 줄'로 착각하던 결함 — 안내 + 설정 진입
+  if (!hasPerm) {
+    alert('알림 권한이 꺼져 있어 알람이 울리지 않습니다.\n설정 > 알림에서 이 앱의 알림을 허용한 뒤 다시 설정해주세요.');
+    return;
+  }
 
   try {
     const timeStr = formatEndMinutes(endMinutes);
@@ -1088,6 +1192,8 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
     });
     
     if (response.success) {
+      // 26차: 수동 재등록은 사용자 명시 행동 — 당일 자동 재등록 금지 해제
+      setAutoAlarmDisabledToday(alarmType, false);
       onSuccess();
       showNotification('알람 설정 완료', `${timeStr}에 ${label}이 울립니다.`);
       // M5: 정확 알람 권한이 없어 부정확 경로로 예약된 경우 안내
@@ -1114,11 +1220,78 @@ async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
 async function cancelGenericAlarm(endMinutes, alarmType, onSuccess) {
   try {
     await sendMessage('CANCEL_ALARM', { endMinutes, alarmType });
+    // 26차: 수동 해제는 사용자 명시 행동 — 당일 자동 재등록 금지 (재등록은 '설정' 버튼으로)
+    setAutoAlarmDisabledToday(alarmType, true);
     onSuccess();
-    showNotification('알람 해제', '설정된 알림이 취소되었습니다.');
+    showNotification('알람 해제', '설정된 알림이 취소되었습니다. (오늘은 자동으로 다시 등록되지 않습니다)');
   } catch (error) {
     console.error('Cancel alarm error:', error);
   }
+}
+
+// ===== 26차: 계산 즉시 자동 알람 등록 (익스텐션/앱 공유 popup.js — 양쪽 동일 동작) =====
+// 규칙:
+//  1) 계산으로 시각이 결정되면 같은 타입·시각 알람이 없을 때 자동 등록 (버튼은 '해제' 상태로)
+//  2) 사용자가 '해제'를 누르면 그 날은 자동 재등록 금지 (재등록은 '설정'으로 수동)
+//  3) 계산 시각이 바뀌면 오늘 자의 같은 타입 자동 알람을 교체
+const AUTO_ALARM_DISABLED_PREFIX = 'codyssey_auto_alarm_disabled_';
+
+function autoAlarmDisabledKey(type) {
+  const d = new Date();
+  return AUTO_ALARM_DISABLED_PREFIX + type + '_'
+    + d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function isAutoAlarmDisabledToday(type) {
+  try { return localStorage.getItem(autoAlarmDisabledKey(type)) === '1'; } catch (e) { return false; }
+}
+function setAutoAlarmDisabledToday(type, disabled) {
+  try {
+    const key = autoAlarmDisabledKey(type);
+    if (disabled) localStorage.setItem(key, '1');
+    else localStorage.removeItem(key);
+  } catch (e) { /* 웹뷰/익스텐션 저장 실패는 치명 아님 */ }
+}
+
+function isAlarmTimeToday(time) {
+  if (typeof time !== 'number') return false;
+  const d = new Date(time);
+  const t = new Date();
+  return d.getFullYear() === t.getFullYear() && d.getMonth() === t.getMonth() && d.getDate() === t.getDate();
+}
+
+async function autoRegisterAlarm(endMinutes, type, label) {
+  if (endMinutes === null) return;
+  if (isAutoAlarmDisabledToday(type)) return; // 오늘 해제한 알람은 자동 재등록하지 않음
+  try {
+    const alarmsResponse = await sendMessage('GET_ALARMS');
+    const alarms = (alarmsResponse && alarmsResponse.alarms) || [];
+
+    // 이미 동일 시각·타입으로 미래 알람이 있으면 유지 (버튼 상태만 동기화)
+    const sameFuture = alarms.find(a =>
+      a && a.endMinutes === endMinutes && (a.type || 'exit') === type && (a.time || 0) > Date.now());
+    if (sameFuture) { syncAlarmButtons(); return; }
+
+    // 계산 시각이 바뀐 경우 — 오늘 날짜의 같은 타입 알람을 교체
+    for (const a of alarms) {
+      if (a && (a.type || 'exit') === type && a.endMinutes !== endMinutes && isAlarmTimeToday(a.time)) {
+        try { await sendMessage('CANCEL_ALARM', { alarmName: a.name }); } catch (e) { /* 무시 */ }
+      }
+    }
+
+    const timeStr = formatEndMinutes(endMinutes);
+    const response = await sendMessage('SET_ALARM', {
+      endMinutes,
+      alarmType: type,
+      label: `${label} (${timeStr})`
+    });
+    if (response && response.success) {
+      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 삭제 가능)`);
+      if (response.exact === false) {
+        alert('정확한 알람 권한이 꺼져 있어 알림 시각이 늦어질 수 있습니다.\n시스템 설정에서 "정확한 알람"을 허용해주세요.');
+      }
+      syncAlarmButtons();
+    }
+  } catch (e) { /* 자동 등록 실패 시 버튼 수동 경로로 충분 */ }
 }
 
 // ===== 알림 표시 (백그라운드/네이티브 경유 — 팝업 Notification 생성자 대신) =====
@@ -1149,7 +1322,8 @@ function updateKeepAliveUI() {
   }
   
   els.keepAliveStatus.classList.add('show');
-  els.keepAliveText.textContent = keepAliveEnabled ? '로그인 유지: 활성' : '로그인 유지: 비활성';
+  // B4: 입·퇴실 감지/평가 연동이 켜져 있으면 그 15분 주기 조회가 세션을 유지하므로 별도 핑은 생략됨
+  els.keepAliveText.textContent = keepAliveEnabled ? '로그인 유지: 활성 (감지 켜짐 시 감지 조회로 대체)' : '로그인 유지: 비활성';
   if (els.keepAliveIndicator) {
     els.keepAliveIndicator.classList.toggle('active', keepAliveEnabled);
   }
@@ -1212,12 +1386,58 @@ function openSettings() {
   els.settingEvalAutosync.checked = currentSettings.evalAutoSyncEnabled !== false; // E2
   els.settingEvalInstcd.value = currentSettings.evalInstCd || ''; // E2 수동 instCd
   els.settingEvalInstcdRow.style.display = els.settingEvalAutosync.checked ? 'flex' : 'none';
+  els.settingDash.checked = currentSettings.dashEnabled !== false; // W7: 1분 상시 감지 기본 켬
+  refreshDashStatusUI();
   
   els.settingsModal.classList.add('show');
 }
 
+// W7: 상시 감지 상태 요약 (설정: 켜짐 · 마지막 감지 HH:mm · 절전 예외 여부)
+async function refreshDashStatusUI() {
+  if (!els.settingDashStatus) return;
+  const polling = window.Capacitor?.Plugins?.PollingPlugin;
+  if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !polling) {
+    els.settingDashStatus.textContent = '(Android 앱에서 사용 가능)';
+    return;
+  }
+  try {
+    const st = await polling.getDashStatus();
+    const bat = await polling.isIgnoringBatteryOptimizations();
+    let txt = '설정: ' + (st.enabled ? '켜짐' : '꺼짐');
+    txt += st.lastTick
+      ? ' · 마지막 감지 ' + new Date(st.lastTick).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })
+      : ' · 마지막 감지 없음';
+    txt += ' · ' + (bat.granted ? '절전 예외 ✅' : '절전 예외 안 됨 ⚠️');
+    // 20차: 정확 알람 권한 상태 — 꺼져 있으면 백그라운드 알람이 밀리는 직접 원인
+    if (st.exactAlarm !== undefined) {
+      txt += ' · ' + (st.exactAlarm ? '정확 알람 ✅' : '정확 알람 꺼짐 ⚠️');
+    }
+    els.settingDashStatus.textContent = txt;
+  } catch (e) {
+    els.settingDashStatus.textContent = '상태 조회 실패';
+  }
+}
+
 function closeSettings() {
   els.settingsModal.classList.remove('show');
+}
+
+// W7: 네이티브 런타임 설정 즉시 적용 (웹/익스텐션에서는 무시)
+async function applyNativeRuntimeSettings(settings) {
+  if (!(window.CodysseyNative && window.CodysseyNative.isNative)) return;
+  try {
+    const polling = window.Capacitor?.Plugins?.PollingPlugin;
+    if (polling) {
+      if (settings.dashEnabled === false) await polling.stopDash();
+      else await polling.startDash();
+    }
+  } catch (e) { /* 구버전 앱/플러그인 부재 — 무시 */ }
+  try {
+    const alarm = window.Capacitor?.Plugins?.AlarmPlugin;
+    if (alarm && alarm.setAlarmSound) {
+      await alarm.setAlarmSound({ enabled: settings.soundEnabled !== false });
+    }
+  } catch (e) { /* 무시 */ }
 }
 
 async function saveSettings() {
@@ -1232,13 +1452,16 @@ async function saveSettings() {
     gateNotifyEnabled: els.settingGateNotify.checked, // G1
     evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
     evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
-    evalInstCd: els.settingEvalInstcd.value.trim() // E2 수동 instCd (빈값=자동 감지)
+    evalInstCd: els.settingEvalInstcd.value.trim(), // E2 수동 instCd (빈값=자동 감지)
+    dashEnabled: els.settingDash.checked // W7: 1분 상시 감지
   };
+
+  // W7: 네이티브 즉시 반영 — 설정 저장과 같은 동작으로 상시 감지/알람 소리 적용
+  await applyNativeRuntimeSettings(settings);
 
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
     currentSettings = settings;
-    els.evalLeadInput.value = settings.evalLeadMinutes; // E1: 새 기본값을 등록 폼에 반영
     closeSettings();
     updateDashboardUI();
     updateKeepAliveUI();
@@ -1254,19 +1477,26 @@ async function performLogin(email, password) {
   // 1. Android (Capacitor 네이티브) 경로
   if (window.CodysseyNative && window.CodysseyNative.isNative) {
     const pre = await window.CodysseyNative.preCheckLogin(email);
-    if (pre.status >= 400) throw new Error('사전 인증 실패');
+    if (pre.status >= 400) throw new Error(`사전 인증 실패 (HTTP ${pre.status})`);
     const fromValue = pre.body?.result?.from || '';
 
     const auth = await window.CodysseyNative.authenticate(email, password, fromValue);
     if (auth.status >= 400) {
-      throw new Error(auth.body?.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+      // L2: 서버 문구(E0000 "등록되지 않은 회원입니다." 등)를 원인별 안내로 해석 (16차 실측 매트릭스 근거)
+      const mapped = describeLoginServerError(auth.status, auth.body);
+      throw new Error(mapped || auth.body?.message || `로그인에 실패했습니다. (HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
+    }
+    // 리다이렉트 대상이 로그인 페이지면 인증 실패 (익스텐션 final URL 판정과 동일)
+    if (auth.location && /login/i.test(auth.location) && !/authenticate/i.test(auth.location)) {
+      throw new Error(`로그인에 실패했습니다. (로그인 페이지 회귀: HTTP ${auth.status}) 이메일과 비밀번호를 확인해주세요.`);
     }
     // L1: 네트워크는 성공이어도 본문의 실패 코드 확인 (서버가 200+에러 JSON 반환 대응)
     if (auth.body && typeof auth.body === 'object') {
       const failed = auth.body.success === false
         || (typeof auth.body.code === 'number' && auth.body.code >= 400);
       if (failed) {
-        throw new Error(auth.body.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+        const mapped = describeLoginServerError(auth.status, auth.body);
+        throw new Error(mapped || auth.body.message || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
       }
     }
     return;
@@ -1329,7 +1559,8 @@ async function performLogin(email, password) {
       || (typeof bodyJson.code === 'string' && /^[45]\d\d/.test(bodyJson.code))
       || (bodyJson.error && !bodyJson.result);
     if (failed) {
-      throw new Error(bodyJson.message || bodyJson.errorMessage || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
+      const mapped = describeLoginServerError(loginResponse.status, bodyJson);
+      throw new Error(mapped || bodyJson.message || bodyJson.errorMessage || '로그인에 실패했습니다. 이메일과 비밀번호를 확인해주세요.');
     }
   }
 
@@ -1352,7 +1583,7 @@ async function logout() {
     currentParsed = null;
     window.calendarParsed = null; // Q1: 캘린더 데이터도 폐기 (계정 전환 잔여 데이터 방지)
     currentViewDate = new Date();
-    showLoginScreen();
+    showLoginScreen('사용자 로그아웃');
     els.loginEmail.value = '';
     els.loginPassword.value = '';
     showNotification('로그아웃', '성공적으로 로그아웃되었습니다.');
@@ -1386,8 +1617,11 @@ function setupEventListeners() {
     e.preventDefault();
     setLoginButtonLoading(true);
     
-    const email = els.loginEmail.value.trim();
-    const password = els.loginPassword.value;
+    // L2+: 원본을 보존해 두고(진단 표시용), 이메일은 앞뒤 공백·보이지 않는 문자까지 제거
+    const rawEmail = els.loginEmail.value;
+    const rawPassword = els.loginPassword.value;
+    const email = stripEdgeInvisibles(rawEmail);
+    const password = rawPassword;
     
     if (!email || !password) {
       showLoginError('이메일과 비밀번호를 모두 입력해주세요.');
@@ -1398,7 +1632,26 @@ function setupEventListeners() {
     showLoginLoading();
 
     try {
-      await performLogin(email, password);
+      let removedOnRetry = 0;
+      try {
+        await performLogin(email, password);
+        // L2+: 붙여넣기 오염(앞뒤 공백·보이지 않는 문자) 시 정리 후 1회 자동 재시도
+      } catch (firstError) {
+        const retry = shouldRetryTrimmedPassword(password, firstError && firstError.message)
+          ? sanitizePasswordCandidate(password)
+          : null;
+        if (retry) {
+          await performLogin(email, retry.candidate);
+          removedOnRetry = retry.removed;
+        } else {
+          throw firstError;
+        }
+      }
+      if (removedOnRetry > 0) {
+        els.loginPassword.value = '';
+        showNotification('로그인 완료', `비밀번호 앞뒤 공백·보이지 않는 문자 ${removedOnRetry}개를 제거하고 로그인했습니다.`);
+      }
+      els.loginOfficialLink?.classList.remove('show');
 
       // Q1: 세션 전환 — 저장된 이전 memberId/캐시 폐기 후 신선 조회
       // (다른 계정으로 로그인 시 이전 mbrId로 API를 호출하는 스테일 방지)
@@ -1409,8 +1662,10 @@ function setupEventListeners() {
       const response = await sendMessage('GET_STATUS', { force: true });
       if (response.success) {
         currentMemberId = response.memberId;
+        diag('LOGIN', '로그인 완료 — 대시보드 진입');
         currentParsed = response.parsed;
         currentSettings = response.settings;
+        currentEvalSync = response.evalSync || null; // S4
         updateDashboardUI();
         checkNotificationPermission();
         updateLastUpdateTime();
@@ -1423,15 +1678,86 @@ function setupEventListeners() {
       }
     } catch (error) {
       console.error('Login error:', error);
-      showLoginError(error.message || '로그인 처리 중 오류가 발생했습니다.');
+      showLoginError((error.message || '로그인 처리 중 오류가 발생했습니다.')
+        + '\n(입력 진단: ' + credentialInputDigest(rawEmail, rawPassword) + ')');
+      // L2: 인증 계열 실패 시 공식 사이트 확인 경로 제공 (비밀번호 찾기/재설정)
+      els.loginOfficialLink?.classList.add('show');
     } finally {
       setLoginButtonLoading(false);
     }
   });
 
+  // W7: 절전모드 예외 요청 — 시스템 다이얼로그 열고 돌아오면 상태 재조회
+  els.btnBatteryExempt?.addEventListener('click', async () => {
+    try {
+      await window.Capacitor?.Plugins?.PollingPlugin?.requestBatteryOptimizationExemption();
+    } catch (e) { /* 웹/구버전 무시 */ }
+    setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 20차: 정확한 알람(알람·리마인더) 권한 화면 열기 — 백그라운드 알람 지연의 직접 원인 해소
+  els.btnExactAlarm?.addEventListener('click', async () => {
+    try {
+      await window.CodysseyNative?.requestExactAlarmPermission?.();
+    } catch (e) { /* 웹/구버전 무시 */ }
+    setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 22차: 세션 만료 배너의 재로그인 — 배너는 유지하되 로그인 폼으로 전환해 재인증 유도
+  els.btnSessionRelogin?.addEventListener('click', () => {
+    showLoginScreen('세션 만료 — 재로그인 시도');
+  });
+
+  // 19차: 진단 로그 복사 (원인 판독 공유용) / 지우기
+  els.btnDiagCopy?.addEventListener('click', async () => {
+    const entries = await readDiagEntries();
+    const txt = entries.map(formatDiagEntry).join('\n');
+    try {
+      await navigator.clipboard.writeText(txt);
+      els.btnDiagCopy.textContent = '복사됨 ✓';
+      setTimeout(() => { els.btnDiagCopy.textContent = '진단 로그 복사'; }, 1500);
+    } catch (e) {
+      showLoginError('클립보드 복사 실패 — 로그를 길게 눌러 수동 복사해주세요.');
+    }
+  });
+  els.btnDiagClear?.addEventListener('click', async () => {
+    await clearDiagEntries();
+    renderLoginDiag();
+  });
+
+  // L2+: 비밀번호 표시/숨기기 토글 — 붙여넣기 내용 확인용 (공식 로그인 폼도 동일 기능 제공)
+  els.loginPwToggle?.addEventListener('click', () => {
+    const showing = els.loginPassword.type === 'text';
+    els.loginPassword.type = showing ? 'password' : 'text';
+    els.loginPwToggle.textContent = showing ? '👁' : '🙈';
+    els.loginPwToggle.title = showing ? '비밀번호 표시' : '비밀번호 숨기기';
+  });
+
+  // L2: 공식 사이트 바로가기 — 공식 로그인 확인 + 비밀번호 찾기/재설정용
+  els.loginOfficialLink?.addEventListener('click', async () => {
+    const url = 'https://ams.codyssey.kr/loginForm';
+    try {
+      const app = window.Capacitor?.Plugins?.App;
+      if (window.CodysseyNative?.isNative && app?.openUrl) {
+        await app.openUrl({ url });
+        return;
+      }
+    } catch (e) { /* 폴아웃: window.open */ }
+    window.open(url, '_blank', 'noopener');
+  });
+
   // 대시보드 버튼들 (⟳는 캐시를 우회해서 강제 갱신 — J1)
   els.btnRefresh.addEventListener('click', () => loadDashboard(true));
   els.btnSettings.addEventListener('click', openSettings);
+
+  // 27차: 알람 목록 "해제" 버튼 — 이벤트 위임 (MV3 CSP: 인라인 onclick 불가)
+  els.alarmsList.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-alarm-idx]') : null;
+    if (!btn) return;
+    const idx = Number(btn.dataset.alarmIdx);
+    const name = lastRenderedAlarmNames[idx];
+    if (name) cancelAlarmFromList(name);
+  });
   
   // 로그인 유지 토글
   els.btnKeepAlive.addEventListener('click', () => {
@@ -1469,10 +1795,23 @@ function setupEventListeners() {
   els.btnSetGoalAlarm.addEventListener('click', setGoalAlarm);
   els.btnCancelGoalAlarm.addEventListener('click', cancelGoalAlarm);
 
-  // E1: 평가 알람 등록
-  els.btnAddEval.addEventListener('click', addEvalAlarm);
-  els.evalDatetimeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') addEvalAlarm();
+  // S4: 평가 일정 즉시 동기화 (자동 연동 — 수동 등록은 제거됨)
+  els.btnSyncEval.addEventListener('click', async () => {
+    if (els.evalSyncStatus) els.evalSyncStatus.textContent = '평가 일정을 가져오는 중...';
+    try {
+      const res = await sendMessage('SYNC_EVAL_ALARMS');
+      const r = res && res.result;
+      if (r && r.ok !== false) {
+        currentEvalSync = { fetchedAt: Date.now(), items: Number(r.items) || 0, lastError: null };
+      } else {
+        const reason = (r && r.reason) || (res && res.error) || 'unknown';
+        currentEvalSync = { ...(currentEvalSync || {}), lastError: reason };
+      }
+    } catch (e) {
+      currentEvalSync = { ...(currentEvalSync || {}), lastError: String(e && e.message || 'unknown') };
+    }
+    renderEvalSyncStatus();
+    loadAndRenderAlarms();
   });
 
   // 캘린더 네비게이션
@@ -1524,7 +1863,7 @@ async function init() {
     await loadDashboard();
     startAutoRefresh();
   } else {
-    showLoginScreen();
+    showLoginScreen('초기 진입 — 저장된 로그인 없음 (정상)');
   }
 }
 

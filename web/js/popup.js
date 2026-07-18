@@ -173,6 +173,9 @@ let currentSettings = null;
 let refreshTimer = null;
 let realtimeTimer = null;
 let alarmListTimer = null; // 문제1: 알람 목록 자동 갱신
+// 27차: 알람 목록은 innerHTML로 렌더되므로 클릭 핸들러를 data-index 위임 방식으로 처리한다.
+// (MV3 CSP가 인라인 onclick을 차단 — 익스텐션 팝업에서 "해제" 버튼이 동작하지 않던 오류 해소)
+let lastRenderedAlarmNames = [];
 let keepAliveTimer = null;
 let keepAliveEnabled = true;
 let exitAlarmEndMinutes = null;
@@ -643,15 +646,19 @@ function renderAlarms(alarms) {
   const liveAlarms = (alarms || []).filter(a => a && typeof a.time === 'number' && a.time > nowRender);
 
   if (liveAlarms.length === 0) {
+    lastRenderedAlarmNames = [];
     els.alarmsList.innerHTML = '<div class="alarms-empty">설정된 알람이 없습니다.</div>';
     els.alarmsCount.textContent = '0개';
     return;
   }
-  
+
   els.alarmsCount.textContent = `${liveAlarms.length}개`;
-  
+
+  // 27차: 렌더된 순서와 동일한 이름 배열 — 해제 버튼(data-alarm-idx) 위임 클릭 시 이 배열로 이름을 찾는다
+  lastRenderedAlarmNames = liveAlarms.map(a => String((a && a.name) || ''));
+
   const now = Date.now();
-  els.alarmsList.innerHTML = liveAlarms.map(alarm => {
+  els.alarmsList.innerHTML = liveAlarms.map((alarm, idx) => {
     const isEval = (alarm.type || '') === 'eval'; // E1: 평가 알람은 날짜+시각 표기
     const timeStr = isEval
       ? formatEvalWhen(alarm.evalWhen || alarm.time)
@@ -674,7 +681,7 @@ function renderAlarms(alarms) {
           <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
         <div class="alarm-actions">
-          <button class="btn btn-danger btn-sm" onclick="cancelAlarmFromList('${alarm.name}')">해제</button>
+          <button class="btn btn-danger btn-sm" data-alarm-idx="${idx}">해제</button>
         </div>
       </div>
     `;
@@ -694,7 +701,7 @@ function formatEvalWhen(ms) {
 // 문제2 수정: 해제는 목록에 표시된 "실제 알람 이름"으로 요청 — 순간의 memberId와 무관하게 정확히 해제
 window.cancelAlarmFromList = async function(alarmName) {
   try {
-    // 26차: 목록에서 해제핟도 당일 자동 재등록 금지 (exit/goal 타입만 해당)
+    // 26차: 목록에서 해제해도 당일 자동 재등록 금지 (exit/goal 타입만 해당)
     try {
       const resp = await sendMessage('GET_ALARMS');
       const item = (resp.alarms || []).find(a => a && a.name === alarmName);
@@ -1742,6 +1749,15 @@ function setupEventListeners() {
   // 대시보드 버튼들 (⟳는 캐시를 우회해서 강제 갱신 — J1)
   els.btnRefresh.addEventListener('click', () => loadDashboard(true));
   els.btnSettings.addEventListener('click', openSettings);
+
+  // 27차: 알람 목록 "해제" 버튼 — 이벤트 위임 (MV3 CSP: 인라인 onclick 불가)
+  els.alarmsList.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest ? e.target.closest('[data-alarm-idx]') : null;
+    if (!btn) return;
+    const idx = Number(btn.dataset.alarmIdx);
+    const name = lastRenderedAlarmNames[idx];
+    if (name) cancelAlarmFromList(name);
+  });
   
   // 로그인 유지 토글
   els.btnKeepAlive.addEventListener('click', () => {

@@ -16,10 +16,9 @@
   <div class="spinner"></div>
   <div>로딩 중...</div>
 </div>
-<script>
-  // Capacitor 앱 시작 시 popup.html로 리다이렉트
-  // (Q5: replace로 대체해 히스토리에 남기지 않음 — 뒤로가기 시 index↔popup 무한 루프 방지)
-  window.location.replace('popup.html');
-</script>
+<!-- Capacitor 앱 시작 시 popup.html로 리다이렉트.
+     27차: 인라인 스크립트 → 외부 파일로 분리 (MV3 CSP script-src 'self'는 인라인 스크립트 차단).
+     replace로 대체해 히스토리에 남기지 않음 — 뒤로가기 시 index↔popup 무한 루프 방지 -->
+<script src="js/index-redirect.js"></script>
 </body>
 </html>
