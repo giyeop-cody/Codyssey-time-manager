@@ -5,7 +5,6 @@
   "scripts": {
     "build": "cap sync android",
     "check:js": "node scripts/check-js.js",
-    "check:sync": "node scripts/check-sync.js",
     "test:js": "node --test tests/",
     "test:relay": "node sandbox/test_relay_e2e.mjs",
     "android": "cap open android",

@@ -15,3 +15,6 @@ android/local.properties
 .idea/
 .DS_Store
 *.iml
+
+# cap sync 생성물 (web/의 복사본 — 커밋 금지, CI에서 생성)
+android/app/src/main/assets/public/
