@@ -41,6 +41,9 @@ jobs:
       - name: Check JS syntax
         run: npm run check:js
 
+      - name: Check web/ <-> android assets sync (D2 drift guard)
+        run: npm run check:sync
+
       - name: Run JS unit tests
         run: npm run test:js
 

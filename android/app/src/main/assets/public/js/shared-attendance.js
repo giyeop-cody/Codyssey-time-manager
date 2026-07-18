@@ -73,16 +73,38 @@ export function parseEntryTimestamp(dateStr, entryTime) {
   return isNaN(ts) ? null : ts;
 }
 
-// 마지막 입실부터 현재까지 경과 분 (자정 경계 안전)
+// 미퇴실(열린) 세션이 "현재 입실 중"으로 인정되는 최대 시간 — 서버 일 12시간 캡 + 1시간 여유.
+// 이 시간을 넘긴 미퇴실 세션은 퇴실 태그 누락/자동 퇴실 등 낡은 기록으로 보고 입실 중에서 제외한다.
+// (이전엔 날짜와 무관하게 영구 누적되어, 며칠 전 미퇴실 세션 때문에 "입실 중 · 12시간 채움"으로 표시되는 결함 — S1)
+export const MAX_OPEN_SESSION_MS = 13 * 60 * 60 * 1000;
+export const MAX_OPEN_SESSION_MINUTES = MAX_OPEN_SESSION_MS / 60000;
+export function isOpenSessionFresh(entryTs, nowMs = Date.now()) {
+  return !!entryTs && entryTs <= nowMs && (nowMs - entryTs) <= MAX_OPEN_SESSION_MS;
+}
+
+// 마지막 입실부터 현재까지 경과 분 (자정 경계 안전, S1: 개방 세션 상한 캡)
 export function elapsedSinceEntry(parsed, nowMs = Date.now()) {
   if (!parsed || !parsed.isCurrentlyIn) return 0;
   if (parsed.entryTimestamp) {
-    return Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000));
+    if (!isOpenSessionFresh(parsed.entryTimestamp, nowMs)) return 0; // 낡은 개방 세션 이중 방어
+    return Math.min(
+      Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000)),
+      MAX_OPEN_SESSION_MINUTES
+    );
   }
   if (parsed.lastInTime === null) return 0;
   const now = new Date(nowMs);
   const nowMin = now.getHours() * 60 + now.getMinutes();
   return Math.max(0, nowMin - parsed.lastInTime);
+}
+
+// 두 월 데이터의 detail_list를 하나로 병합 (월 경계 입실·야간 퇴실 감지용 — B8)
+export function mergeDetailLists(a, b) {
+  const al = (a && (a.detail_list || a.result || a.data)) || [];
+  const bl = (b && (b.detail_list || b.result || b.data)) || [];
+  if (!al.length) return b;
+  if (!bl.length) return a;
+  return { detail_list: [...al, ...bl] };
 }
 
 // ===== 서버 규칙(일별 12시간 캡) 기준 실시간/예측 계산 =====
@@ -117,8 +139,9 @@ export function projectedMonthly(parsed, additionalMinutes, nowMs = Date.now()) 
 // ===== 출입기록 파싱 =====
 // targetDate 기준 월의 detail_list를 파싱.
 // - 세션은 입실 시각순 정렬해 상태 판정 (순서 뒤집힌 응답 대응)
-// - 퇴실 누락 세션은 날짜와 무관하게 "현재 입실 중"으로 감지 (전날 입실 포함)
-export function parseAttendance(data, targetDate = new Date()) {
+// - 퇴실 누락 세션이 "현재 입실 중"이려면 입실 시각이 MAX_OPEN_SESSION_MS 이내여야 함 (S1)
+//   → 더 오래된 미퇴실 세션은 낡은 기록으로 간주하고 staleOpenSession에만 남김
+export function parseAttendance(data, targetDate = new Date(), nowMs = Date.now()) {
   const detailList = (data && (data.detail_list || data.result || data.data)) || [];
   const year = targetDate.getFullYear();
   const month = targetDate.getMonth() + 1;
@@ -131,6 +154,7 @@ export function parseAttendance(data, targetDate = new Date()) {
   let isCurrentlyIn = false;
   let entryTimestamp = null;
   let hasMissingEntry = false;
+  let staleOpenSession = null; // S1: 최근 미퇴실 세션 중 인정 한도(13h)를 넘긴 낡은 세션 (진단용)
   const dailyBreakdown = {};
 
   for (const day of detailList) {
@@ -155,10 +179,17 @@ export function parseAttendance(data, targetDate = new Date()) {
       const isMissing = session.is_missing === true;
 
       if (isMissing && session.missing_type === 'exit' && entryMin !== null) {
-        isCurrentlyIn = true;
-        lastInTime = entryMin;
-        lastOutTime = null;
-        entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
+        const ts = parseEntryTimestamp(dateStr, session.entry_time);
+        if (isOpenSessionFresh(ts, nowMs)) {
+          // 유효한 개방 세션 — 현재 입실 중
+          isCurrentlyIn = true;
+          lastInTime = entryMin;
+          lastOutTime = null;
+          entryTimestamp = ts;
+        } else {
+          // S1: 13시간 이상 경과한 미퇴실 세션은 낡은 기록 (퇴실 태그 누락/자동 퇴실)
+          if (ts) staleOpenSession = { dateStr, entry: session.entry_time };
+        }
       } else if (isMissing && session.missing_type === 'entry') {
         hasMissingEntry = true;
       } else if (entryMin !== null && exitMin !== null && dateStr === todayStr) {
@@ -180,6 +211,7 @@ export function parseAttendance(data, targetDate = new Date()) {
     isCurrentlyIn,
     entryTimestamp,
     hasMissingEntry,
+    staleOpenSession,
     dailyBreakdown,
     rawDetailList: detailList
   };
@@ -187,7 +219,9 @@ export function parseAttendance(data, targetDate = new Date()) {
 
 // 전월 데이터에서 미퇴실 세션 감지 (월 경계 입실 — R2)
 // parsed에 입실 중 세션이 없을 때만 적용. 변경 시 true 반환.
-export function applyOvernightFromPrevMonth(parsed, prevMonthData) {  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
+// S1: MAX_OPEN_SESSION_MS(13h) 이내 개방 세션만 유효 — 더 오래된 전월 미퇴실은 낡은 기록
+export function applyOvernightFromPrevMonth(parsed, prevMonthData, nowMs = Date.now()) {
+  if (!parsed || parsed.isCurrentlyIn || !prevMonthData) return false;
   const detailList = prevMonthData.detail_list || prevMonthData.result || prevMonthData.data || [];
 
   // 뒤에서부터(최근 날짜 우선) 퇴실 누락 세션 탐색
@@ -198,10 +232,15 @@ export function applyOvernightFromPrevMonth(parsed, prevMonthData) {  if (!parse
     for (const session of (day.sessions || [])) {
       const entryMin = timeStrToMinutes(session.entry_time);
       if (session.is_missing === true && session.missing_type === 'exit' && entryMin !== null) {
+        const ts = parseEntryTimestamp(dateStr, session.entry_time);
+        if (!isOpenSessionFresh(ts, nowMs)) {
+          if (ts) parsed.staleOpenSession = { dateStr, entry: session.entry_time };
+          return false; // 가장 최근 미퇴실 세션조차 낡았으면 더 오래된 것은 볼 필요 없음
+        }
         parsed.isCurrentlyIn = true;
         parsed.lastInTime = entryMin;
         parsed.lastOutTime = null;
-        parsed.entryTimestamp = parseEntryTimestamp(dateStr, session.entry_time);
+        parsed.entryTimestamp = ts;
         return true;
       }
     }
@@ -403,16 +442,33 @@ export function validateEvalAlarm(whenMs, leadMinutes, nowMs = Date.now()) {
 
 // ============================================================
 // E2: 평가 일정 자동 연동 (schedule/scheduleAllList 응답 해석)
-// - 사용자 제공 명세: reqDetail "R||"=피평가자 / "A||"=평가자,
-//   scdlReqUsr=피평가자 이름, fixedCd 00004=평가거절 / 00005=요청취소 / 00006=완료
-// - 응답 행의 날짜·시각·제목·고유키 필드명은 샘플이 없어 폴곤 체인으로 추정
-//   (실패 시 해당 행은 건수만 세고 건갈 — sampleKeys로 응답 키 목록을 남겨 다음 보정에 사용)
+// - 2026-07-17 usr 프론트엔드 번들(usr.codyssey.kr/assets/index-*.js) 실측 근거:
+//   · 호출: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/
+//           ?mbrId=&instCd=&bgngYmd=YYYY.MM.DD&endYmd=YYYY.MM.DD&scheduleType=request (본문 없음)
+//   · 응답: result.reqList[] (+ academicList[]·timeList[] — 출직표/학사일정, 미사용)
+//   · 평가 행 식별: scdlGubunCd === 'EV' (AM=오전점호 / EXAM=시험 / MT=멘토링 등은 제외)
+//   · 시작 시각: bgngYmd('YYYY.MM.DD') + bgngTm('HH:MM') — 두 필드 조합
+//   · 상태(fixedCd): 00001=요청(수락 대기) 00002=평가 대기중 00003=평가 진행중
+//                    00004=요청 거절 / 00005=요청 취소 / 00006=평가 완료 → 이 3개는 알람 제외
+//   · 역할(reqDetail): '|' 연속 구분으로 쪼갠 첫 토큰 — R=내가 피평가자(request) /
+//     A=내가 평가자(participation). 실 형식: "R||mtlEvlSn||projectNo||lcorsNo||uqstnNo"
+//   · 제목: title || scdlGubunNm (캘린더 표시 규칙과 동일)
+// - 구 배포/필드 변종 대비 폴곤 체인은 유지 (EV 행의 키 목록을 sampleKeys에 남김)
 // ============================================================
 
 export const EVAL_AUTO_ID_PREFIX = 'auto_'; // codyssey_eval_auto_{key} — 수동 등록(e...)과 구분
 export const EVAL_CANCEL_FIXED_CODES = ['00004', '00005', '00006']; // 거절/요청취소/완료 → 알람 대상 아님
+export const EVAL_GUBUN_VALUE = 'EV'; // scdlGubunCd === 'EV' 인 행만 평가 (AM/EXAM/MT 등 제외)
+// C2: "평가 일정 감지" 알림은 확정/진행(00002/00003) 상태일 때만 — 00001(요청·협의중)은
+// 알람만 조용히 등록 (파기 가능성이 있는 협의 시간으로 미리 알리지 않음). 미상(코드 없음)은 알림.
+export const EVAL_CONFIRMED_STATES = ['00002', '00003'];
+export function isEvalConfirmed(state) {
+  return !state || EVAL_CONFIRMED_STATES.includes(state);
+}
 
 // 멤버 정보 응답 어디에 있든 instCd를 재귀 탐색 (키 이름만 확실하다는 전제)
+// S4: 숫자형(instCd: 21)도 수용 (JSON number로 오는 변종 대비 — 자동 감지 실패로
+// 평가 동기화가 no_instcd 상태로 멈추는 경로 방지. 실패 시 설정 수동 입력 안내와 병행)
 export function findInstCd(root) {
   if (!root || typeof root !== 'object') return null;
   const stack = [root];
@@ -422,7 +478,10 @@ export function findInstCd(root) {
     if (!cur || typeof cur !== 'object' || seen.has(cur)) continue;
     seen.add(cur);
     for (const [k, v] of Object.entries(cur)) {
-      if (/^inst(cd|code)?$/i.test(k) && typeof v === 'string' && v.trim()) return v.trim();
+      if (/^inst(cd|code)?$/i.test(k)) {
+        if (typeof v === 'string' && v.trim()) return v.trim();
+        if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+      }
     }
     for (const v of Object.values(cur)) {
       if (v && typeof v === 'object') stack.push(v);
@@ -439,12 +498,14 @@ function pickFirst(row, names) {
   return null;
 }
 
-// 'YYYY.MM.DD' / 'YYYY-MM-DD' / 'YYYYMMDD' → [y, m, d]
+// 'YYYY.MM.DD' / 'YYYY-MM-DD' / 'YYYYMMDD' → [y, m, d] (+ 'YY.MM.DD' 2자리 연도 폴곤)
 function ymdFromString(s) {
   if (!s) return null;
   const m = String(s).match(/(20\d\d)[.\-/]?(0[1-9]|1[0-2])[.\-/]?(0[1-9]|[12]\d|3[01])/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (m) return [Number(m[1]), Number(m[2]), Number(m[3])];
+  const s2 = String(s).trim().match(/^(\d{2})[.\-/](0?[1-9]|1[0-2])[.\-/](0?[1-9]|[12]\d|3[01])$/);
+  if (s2) return [2000 + Number(s2[1]), Number(s2[2]), Number(s2[3])];
+  return null;
 }
 
 // 'HH:mm' / 'HHmm' → [h, m] (날짜가 붙은 문자열에서는 뒤쪽 시각만 추출)
@@ -474,8 +535,9 @@ const EVAL_DT_DATE_KEYS = [
   'scdlDe', 'scdlDt', 'scdlYmd', 'evlDe', 'bgngYmd', 'evlYmd', 'scdlDay', 'evlDate', 'scdlDate'
 ];
 const EVAL_DT_TIME_KEYS = [
-  'scdlTime', 'scdlHm', 'bgngHm', 'bgngTime', 'evlBgngHm', 'startTime', 'startHm', 'scdlStartHm'
-];
+  'scdlTime', 'scdlHm', 'bgngTm', 'bgngHm', 'bgngTime', 'evlBgngHm',
+  'startTime', 'startHm', 'scdlStartHm'
+]; // ※ 'endTm' 등 종료 시각 키는 넣지 않음 — 시작 날짜+종료 시각이 섞이는 오파싱 방지
 
 // 평가 행에서 시작 시각(epoch ms) 추출 — 전체 일시 키 → 날짜+시각 키 조합 → 전 필드 스캔 순
 export function extractEvalDateTimeMs(row) {
@@ -520,17 +582,25 @@ export function extractEvalDateTimeMs(row) {
   return null;
 }
 
-// reqList[] → 정규화된 평가 일정 [{key, title, role, whenMs}] (+ 진단: skipped, sampleKeys)
+// reqList[] → 정규화된 평가 일정 [{key, title, role, whenMs}] (+ 진단: skipped, nonEv, sampleKeys)
+// - scdlGubunCd가 있고 'EV'가 아닌 행(오전점호/시험/멘토링 등)은 평가가 아니므로 nonEv로만 집계
+// - sampleKeys는 진단 가치가 높은 "첫 번째 EV 행"의 키 목록 (EV 행이 없으면 첫 행)
 export function parseScheduleRows(rawList) {
   const list = Array.isArray(rawList) ? rawList : [];
   const items = [];
   let skipped = 0;
+  let nonEv = 0;
   let sampleKeys = null;
+  let evSampleKeys = null;
 
   for (let i = 0; i < list.length; i++) {
     const row = list[i];
     if (!row || typeof row !== 'object') { skipped++; continue; }
     if (i === 0 && !sampleKeys) sampleKeys = Object.keys(row);
+
+    const gubun = pickFirst(row, ['scdlGubunCd']);
+    if (gubun && gubun !== EVAL_GUBUN_VALUE) { nonEv++; continue; } // 평가(EV)가 아닌 행
+    if (!evSampleKeys) evSampleKeys = Object.keys(row);
 
     const fixed = pickFirst(row, ['fixedCd', 'fixedCode', 'sttsCd', 'stusCd']);
     if (fixed && EVAL_CANCEL_FIXED_CODES.includes(fixed)) continue; // 거절/취소/완료 제외
@@ -539,19 +609,21 @@ export function parseScheduleRows(rawList) {
     if (!whenMs || isNaN(whenMs)) { skipped++; continue; }
 
     const detail = pickFirst(row, ['reqDetail', 'reqDtl', 'detailCd']) || '';
-    const role = detail.startsWith('R||') ? 'R' : detail.startsWith('A||') ? 'A' : '';
-    const course = pickFirst(row, ['lcorsNm', 'mtlEvlNm', 'evlNm', 'courseNm', 'projectNm', 'subjectNm', 'evlTtl', 'ttmsNm']) || '평가';
+    const dTokens = detail.split(/\|+/).filter(Boolean); // "R||35||…" → ['R','35','…']
+    const role = (dTokens[0] === 'R' || dTokens[0] === 'A') ? dTokens[0] : '';
+    const course = pickFirst(row, ['title', 'scdlGubunNm', 'lcorsNm', 'mtlEvlNm', 'evlNm', 'courseNm', 'projectNm', 'subjectNm', 'evlTtl', 'ttmsNm']) || '평가';
     const reqUsr = pickFirst(row, ['scdlReqUsr', 'reqUsrNm', 'reqNm']) || '';
     const roleLabel = role === 'R' ? '피평가자' : role === 'A' ? '평가자' : '평가';
     const title = reqUsr ? `${course} (${roleLabel}: ${reqUsr})` : `${course} (${roleLabel})`;
 
-    const idParts = ['scdlNo', 'evlScdlNo', 'evlNo', 'evlDegr', 'reqNo', 'scdlSn', 'evalReqNo', 'evlReqNo']
+    const idParts = ['mtlEvlSn', 'scdlNo', 'evlScdlNo', 'evlNo', 'evlDegr', 'reqNo', 'scdlSn', 'scheduleNo', 'evalReqNo', 'evlReqNo']
       .map(k => pickFirst(row, [k]))
       .filter(Boolean);
+    if (!idParts.length && dTokens.length >= 2) idParts.push(dTokens[1]); // reqDetail의 mtlEvlSn
     const key = (idParts.length ? idParts.join('_') : `${whenMs}_${detail}_${reqUsr}`)
       .replace(/[^A-Za-z0-9_.-]/g, '_');
 
-    items.push({ key, title, role, whenMs });
+    items.push({ key, title, role, whenMs, state: fixed || '' }); // state=고정코드(협의/확정 구분 알림용)
   }
 
   // key 중복 제거(앞쪽 유지) + 시각순 정렬
@@ -559,7 +631,12 @@ export function parseScheduleRows(rawList) {
   for (const it of items) {
     if (!seen.has(it.key)) seen.set(it.key, it);
   }
-  return { items: [...seen.values()].sort((a, b) => a.whenMs - b.whenMs), skipped, sampleKeys };
+  return {
+    items: [...seen.values()].sort((a, b) => a.whenMs - b.whenMs),
+    skipped,
+    nonEv,
+    sampleKeys: evSampleKeys || sampleKeys
+  };
 }
 
 // 이전 동기화 항목과 새 항목 비교 — added/removed/changed (시각·lead·제목 변경 감지)
@@ -582,4 +659,203 @@ export function diffEvalItems(prevItems, nextItems, leadMinutes) {
     if (k && !nextMap.has(k)) removed.push(p);
   }
   return { added, removed, changed };
+}
+
+// ============================================================
+// E3: 알림함(alarm/alarmList/list) 기반 평가 감지 채널 (15차)
+// - "평가가 잡혔다"는 시스템 알림(알림함)에서 평가 정보를 읽어 알람을 잡는 보조 채널
+// - 실측 샘플(2026-07-14, 사용자 제공): sysDivCd 00017 "동료평가자로 지정 되었습니다."
+//   pstartCn: <평가일정> 요청자 / Discord ID / 평가예정일시(YYYY-MM-DD HH:MM:SS) /
+//             프로젝트명 / 학습과정명 / 단위문제명 (HTML 엔티티·<br/> 포함)
+// - 선별 규칙: 본문에서 "평가예정일시" 시각을 파싱할 수 있는 행만 채택
+//   (sysDivCd 00017 선호하되 미상의 변종 코드도 본문 신호로 수용)
+// - "평가종료"(00020) 등 종료 계열은 '평가예정일시'가 아니라 '평가종료일시'라 자연 제외
+// - 캐시(pstartSn)로 신규 1회만 알림 → N분 전 알람까지 이어지는 흐름은 각 클라이언트가 구현
+// ============================================================
+export const EVAL_NOTICE_SYS_CODES = ['00017']; // 실측: 동료평가자 지정
+export const EVAL_NOTICE_PAGE_PER_ROWS = 30; // 최신 알림 1페이지 이상 여유 있게
+export const EVAL_NOTICE_DEDUP_MS = 2 * 60 * 1000; // 스케줄 채널 알람과 같은 평가로 볼 시각 오차
+export const EVAL_NOTICE_SEEN_TTL_MS = 90 * 24 * 3600 * 1000; // seen 캐시 보존 기간
+
+// 알림 본문 HTML 디코드: 엔티티 풀고 <br>은 개행, 나머지 태그는 제거
+export function unescapeAlarmHtml(s) {
+  if (!s || typeof s !== 'string') return '';
+  return s
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&#x27;/gi, "'")
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&amp;/gi, '&') // 다른 치환 뒤에 &amp; 처리 (연속 엔티티 안전)
+    .replace(/\r/g, '');
+}
+
+// 라인 필드(label : value) 추출 — 개행까지. 괄호 안 부가정보(이메일)는 분리해 반환
+function noticeField(text, label, groupLabels = []) {
+  const labels = [label, ...groupLabels].join('|');
+  const m = text.match(new RegExp(`^\\s*(?:${labels})\\s*[:：]\\s*(.+)$`, 'm'));
+  return m ? m[1].trim() : '';
+}
+
+export function parseEvalNoticeDateTimeMs(text) {
+  const m = text.match(/평가예정일시\s*[:：]\s*(20\d\d)-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])[ T]([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?/);
+  if (!m) return null;
+  return new Date(
+    Number(m[1]), Number(m[2]) - 1, Number(m[3]),
+    Number(m[4]), Number(m[5]), m[6] ? Number(m[6]) : 0
+  ).getTime();
+}
+
+// alarmList result.list[] → 평가 지정 알림만 [{key, pstartSn, title, whenMs, role, ...}]
+export function parseEvalNoticeAlarms(rawList, nowMs = Date.now()) {
+  const list = Array.isArray(rawList) ? rawList : [];
+  const items = [];
+  for (const row of list) {
+    if (!row || typeof row !== 'object') continue;
+    const body = unescapeAlarmHtml(row.pstartCn || '');
+    if (!/평가예정일시/.test(body)) continue; // 본문 신호 — 종료/포인트/레벨 등은 여기서 배제
+    const whenMs = parseEvalNoticeDateTimeMs(body);
+    if (!whenMs || isNaN(whenMs)) continue;
+
+    const title0 = String(row.pstartTitlNm || '').trim();
+    if (/종료|취소/.test(title0) && !/지정|배정|안내/.test(title0)) continue; // 종료/취소 변종 방어
+
+    const requesterRaw = noticeField(body, '요청자');
+    const requester = requesterRaw.replace(/\s*\([^)]*\)\s*$/, '').trim(); // 이름(이메일) → 이름
+    const project = noticeField(body, '프로젝트명');
+    const course = noticeField(body, '학습과정명');
+    const mission = noticeField(body, '단위문제명');
+    const discordId = noticeField(body, 'Discord ID', ['Discord']) || '';
+
+    const role = /동료평가자/.test(title0 + ' ' + body) ? 'A'
+      : /피평가자|평가\s*(요청|신청)/.test(title0 + ' ' + body) ? 'R' : '';
+    const roleLabel = role === 'A' ? '평가자' : role === 'R' ? '피평가자' : '';
+
+    const bits = [];
+    if (roleLabel) bits.push(roleLabel);
+    if (requester) bits.push(`요청자: ${requester}`);
+    const title = `${project || '평가'}${bits.length ? ` (${bits.join(' · ')})` : ''}`;
+
+    const sn = row.pstartSn !== null && row.pstartSn !== undefined ? String(row.pstartSn) : '';
+    if (!sn) continue;
+    items.push({
+      key: `notice_${sn}`,
+      pstartSn: sn,
+      title,
+      whenMs,
+      role,
+      requester,
+      project,
+      course,
+      mission,
+      discordId,
+      readYn: row.readYn || '',
+      sysDivCd: row.sysDivCd || '',
+      regDt: row.regDt || '',
+      past: whenMs <= nowMs
+    });
+  }
+  // 시각순 정렬 + pstartSn 중복 제거(앞쪽 유지)
+  const seen = new Set();
+  return items
+    .sort((a, b) => a.whenMs - b.whenMs)
+    .filter(it => (seen.has(it.pstartSn) ? false : (seen.add(it.pstartSn), true)));
+}
+
+// seen 캐시({sn: {...}}) 대비 신규 알림만 추림
+export function filterNewEvalNotices(seenIds, items) {
+  const seen = seenIds && typeof seenIds === 'object' ? seenIds : {};
+  return (Array.isArray(items) ? items : []).filter(it => it && !seen[it.pstartSn]);
+}
+
+// ===== L2(16차): 로그인 서버 오류 해석 =====
+// 실측(sandbox/README 부록 3): AMS /authenticate는 401 + {message_code, success:false, message}로 거부.
+//  - 등록된 이메일 + 비번 불일치 → "등록되지 않은 회원입니다." (문구는 오해 소지가 크지만
+//    미등록 이메일에는 "입력하신 아이디 혹은 비밀번호가 일치하지 않습니다."가 나가므로 구분됨)
+//  - 5회 연속 실패 → message_code "E0001", 10분 잠금
+// 공식 사이트도 이 message를 그대로 alert하므로 동일 문구가 공식 사이트에서도 노출된다.
+// 반환: 안내 문구(줄바꿈 포함) 또는 null(특별 매핑 없음 — 호출부가 원문 표시).
+export function describeLoginServerError(status, body) {
+  const msg = (body && typeof body.message === 'string') ? body.message : '';
+  const code = body ? (body.message_code || body.code || '') : '';
+  if (code === 'E0001' || /입력정보가 틀려|로그인이 제한/.test(msg)) {
+    return '5회 이상 입력 정보가 틀려 10분간 로그인이 제한됩니다. 잠시 후 다시 시도해주세요.';
+  }
+  if (/등록되지 않은 회원/.test(msg)) {
+    return '비밀번호가 일치하지 않거나, 이 계정에 비밀번호가 등록되어 있지 않습니다.\n'
+      + '· 비밀번호를 다시 확인해주세요 (대소문자 · 한/영 키 · 앞뒤 공백).\n'
+      + '· Google/네이버 등 소셜 계정으로 가입했다면 비밀번호가 없을 수 있습니다 — 공식 사이트(ams.codyssey.kr)의 "비밀번호 찾기"에서 먼저 설정해주세요.\n'
+      + '· 공식 사이트에서도 같은 문구가 나오면 비밀번호 재설정이 필요합니다.\n'
+      + '(서버 응답: ' + msg + ')';
+  }
+  return null;
+}
+
+// 비밀번호 앞뒤 공백/보이지 않는 문자로 인한 오입력 재시도 판정 (모바일 붙여넣기 대응)
+export function shouldRetryTrimmedPassword(rawPassword, errorMessage) {
+  if (!/등록되지 않은 회원|일치하지 않습니다|비밀번호/.test(errorMessage || '')) return false;
+  return !!sanitizePasswordCandidate(rawPassword);
+}
+
+// ===== L2+(17차): 붙여넣기 오염 대응 — 보이지 않는 문자 정리·진단 =====
+// 메모앱/메신저/패스워드 매니저에서 복사한 자격증명은 끝 공백·줄바꿈·제로폭 문자
+// (U+200B/200C/200D/2060/FEFF, NBSP U+00A0)를 동반하는 사례가 잦다.
+// .trim()은 이 중 일부(제로폭 등)를 제거하지 못하므로 명시 클래스로 처리한다.
+// 비밀번호 난수에는 절대 내용을 표시하지 않고 개수·클스만 진단에 쓴다.
+export function stripEdgeInvisibles(s) {
+  if (typeof s !== 'string') return '';
+  const EDGE = '^[​‌‍⁠﻿ ]+|[​‌‍⁠﻿ ]+$';
+  let out = s;
+  let prev;
+  do {
+    prev = out;
+    out = out.trim().replace(new RegExp(EDGE, 'g'), '');
+  } while (out !== prev);
+  return out;
+}
+
+// 실패 재시도용 후보: 앞뒤 공백·보이지 않는 문자를 모두 걷어낸 비밀번호 (없으면 null)
+export function sanitizePasswordCandidate(rawPassword) {
+  if (typeof rawPassword !== 'string' || rawPassword.length === 0) return null;
+  const candidate = stripEdgeInvisibles(rawPassword);
+  if (candidate === rawPassword || candidate === '') return null;
+  return { candidate, removed: rawPassword.length - candidate.length };
+}
+
+// 진단 요약: 내용은 절대 포함하지 않고 길이와 문자 클래스만 표기
+export function credentialInputDigest(email, password) {
+  const em = typeof email === 'string' ? email : '';
+  const pw = typeof password === 'string' ? password : '';
+  const parts = [`이메일 ${em.length}자`, `비밀번호 ${pw.length}자`];
+  const emEdge = em.length - stripEdgeInvisibles(em).length;
+  if (emEdge > 0) parts.push(`이메일 앞뒤 공백/보이지 않는 문자 ${emEdge}개`);
+  const stripped = stripEdgeInvisibles(pw);
+  const pwEdge = pw.length - stripped.length;
+  if (pwEdge > 0) parts.push(`비밀번호 앞뒤 공백/보이지 않는 문자 ${pwEdge}개`);
+  const inner = (stripped.match(/[​‌‍⁠﻿ ]/g) || []).length;
+  if (inner > 0) parts.push(`비밀번호 중간 보이지 않는 문자 ${inner}개`);
+  if (/[‘’“”–—]/.test(pw)) parts.push('스마트 따옴표/대시 포함');
+  return parts.join(' · ');
+}
+
+// ===== 19차: 세션 진단 링버퍼 (네이티브 DiagLog.java와 같은 형식: {t, tag, msg}) =====
+export const DIAG_LOG_MAX = 80;
+
+export function diagRingAppend(list, entry, max = DIAG_LOG_MAX) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  if (entry && entry.msg) arr.push(entry);
+  while (arr.length > max) arr.shift();
+  return arr;
+}
+
+export function formatDiagEntry(e) {
+  if (!e || !e.t) return '';
+  const d = new Date(e.t);
+  const md = (d.getMonth() + 1) + '/' + d.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return md + ' ' + hh + ':' + mm + ':' + ss + ' [' + (e.tag || '-') + '] ' + (e.msg || '');
 }

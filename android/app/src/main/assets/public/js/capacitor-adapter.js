@@ -18,7 +18,14 @@ import {
   findInstCd,
   parseScheduleRows,
   diffEvalItems,
-  EVAL_AUTO_ID_PREFIX
+  isEvalConfirmed,
+  mergeDetailLists,
+  EVAL_AUTO_ID_PREFIX,
+  parseEvalNoticeAlarms,
+  filterNewEvalNotices,
+  EVAL_NOTICE_PAGE_PER_ROWS,
+  EVAL_NOTICE_DEDUP_MS,
+  EVAL_NOTICE_SEEN_TTL_MS
 } from './shared-attendance.js';
 
 (function() {
@@ -183,7 +190,11 @@ import {
 
   async function notificationIdFor(idKey) {
     if (ONESHOT_NOTIF_KEY_RE.test(idKey)) {
-      return (Date.now() % 2000000000) | 0;
+      // W2: 키에 박힌 생성 시각으로 id를 "결정적"으로 계산 — create와 clear가 같은 id를 얻음
+      //     (기존은 Date.now() 재계산이라 clear가 다른 id를 지워 알림이 남았음)
+      // W3: 카운터형(1000~)과 네임스페이스 분리 — 1e9 대역으로 이동 (충돌·23일 주기 제거)
+      const embedded = Number(idKey.split('_')[1]) || Date.now();
+      return (1000000000 + (embedded % 1000000000)) | 0;
     }
     try {
       const map = (await getPrefs(NOTIF_ID_MAP_KEY)) || {};
@@ -195,8 +206,8 @@ import {
       await setPrefs(NOTIF_ID_MAP_KEY, map);
       return next;
     } catch (e) {
-      // 저장소 실패 시에도 알림은 떠야 함 — 시간 기반 폴리곤
-      return (Date.now() % 2000000000) | 0;
+      // 저장소 실패 시에도 알림은 떠야 함 — 시간 기반 폴리곤 (W3: 1e9 대역)
+      return (1000000000 + (Date.now() % 1000000000)) | 0;
     }
   }
 
@@ -235,17 +246,23 @@ import {
 
         const parsed = result.parsed;
 
+        // 전월 데이터가 필요한 경우를 한 번의 조회로 합침 (background.js와 동일 규칙):
+        // ①이달에 입실 중이 아님(R2/L4) ②월 초 1~2일(G1 '어제'가 전월에 걸침 — B8)
+        // W7: force 시 전월도 캐시 바이패스
+        let gateSource = parsed.rawDetailList;
+        if (!parsed.isCurrentlyIn || now.getDate() <= 2) {
+          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1, message.force === true);
+          if (prevResult.raw) {
+            if (!parsed.isCurrentlyIn) applyOvernightFromPrevMonth(parsed, prevResult.raw);
+            if (now.getDate() <= 2) gateSource = mergeDetailLists(prevResult.raw, parsed.rawDetailList);
+          }
+        }
+
         // G1: 새 조회 결과로 입·퇴실 처리 이벤트 감지 (스냅샷 중복 제거로 다중 호출 안전)
-        processGateEvents(memberId, parsed.rawDetailList).catch(() => {});
+        processGateEvents(memberId, gateSource).catch(() => {});
         // E2: 평가 일정 자동 연동 (상태 diff로 다중 호출 안전)
         syncEvalAlarms(memberId).catch(() => {});
-
-        // 월 경계 입실(R2/L4): 이달 데이터에 입실 중이 없으면 전월 말 확인 (월초 제한 제거)
-        if (!parsed.isCurrentlyIn) {
-          const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-          const prevResult = await getAttendanceRaw(memberId, prev.getFullYear(), prev.getMonth() + 1);
-          if (prevResult.raw) applyOvernightFromPrevMonth(parsed, prevResult.raw);
-        }
 
         const settings = await getSettings();
         await syncKeepAliveWork(settings); // N7: keep-alive 설정과 백그라운드 작업 동기화
@@ -255,7 +272,9 @@ import {
           memberId,
           parsed,
           settings,
-          alarms: await getStoredAlarms()
+          alarms: await getStoredAlarms(),
+          // S4: 평가 연동 상태 (네이티브 EvalSync.java와 같은 prefs 키 공유)
+          evalSync: summarizeEvalSyncState(await getPrefs(EVAL_STATE_KEY))
         };
       }
 
@@ -516,8 +535,11 @@ import {
     const list = Array.isArray(alarms) ? alarms : [];
     // K8: 발화하지 못한 채 지나간 알람(기기 전원 꺼짐 중 소실 등)은 읽을 때 자가정비.
     // (M6의 네이티브 목록 제거와 경합하지 않음 — 제거된 항목만 재기록하지 않으면 됨)
+    // 25차: 발화 시각 직후 즉시 목록에서 사라져 "지워져서 안 온 것 아닌가"로 보이던
+    // 혼동을 막기 위해, 네이티브 stale 상한(15분)만큼은 목록에 남겨 증적을 보존.
     const now = Date.now();
-    const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now);
+    const PRUNE_GRACE_MS = 15 * 60 * 1000;
+    const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now - PRUNE_GRACE_MS);
     if (fresh.length !== list.length) {
       await setPrefs(STORE_KEYS.ALARMS, fresh);
     }
@@ -564,7 +586,10 @@ import {
     if (!Plugins.NetworkPlugin) return null;
 
     const res = await Plugins.NetworkPlugin.getMemberInfo({});
-    if (isAuthStatus(res.status)) return null;
+    if (isAuthStatus(res.status)) {
+      diagNative('AUTH', '회원 정보 조회 인증류 HTTP ' + res.status + ' — memberId 확보 실패');
+      return null;
+    }
     const info = res.json || safeJson(res.data);
     if (res.status && res.status >= 400) return null;
     memberId = extractMemberId(info);
@@ -576,9 +601,37 @@ import {
   }
 
   // 세션 만료로 분류할 상태 코드 (네이티브는 리다이렉트 비추적이라 3xx가 그대로 옴 — N4)
+  // 19차: 403(정책/일시 차단)·301/307/308(정규화 리다이렉트)은 세션 만료 아님 — 단발 302/303/401도
+  // 즉시 폐기하지 않고 shouldDiscardSession의 연속+재조사를 거친다.
   function isAuthStatus(status) {
-    return status === 301 || status === 302 || status === 303 || status === 307 || status === 308 ||
-           status === 401 || status === 403;
+    return status === 302 || status === 303 || status === 401;
+  }
+
+  // 19차: 단발 인증류 응답은 일시 오류(망 흔들림·포털 리다이렉트)일 수 있어 즉시 세션을 버리지 않는다.
+  // 연속 2회 이상 + 회원 정보 재조사까지 실패해야 세션 종료(만료/중복 로그인 로그아웃)로 확정.
+  let authFailStreak = 0;
+  async function diagNative(tag, msg) {
+    try {
+      if (Plugins.PollingPlugin && Plugins.PollingPlugin.logDiag) {
+        await Plugins.PollingPlugin.logDiag({ tag, msg });
+      }
+    } catch (e) { /* 진단 로그 실패는 무시 */ }
+  }
+  async function shouldDiscardSession(source, status) {
+    authFailStreak++;
+    diagNative('AUTH', source + ' 인증류 응답 HTTP ' + status + ' (' + authFailStreak + '회째)');
+    if (authFailStreak < 2) return false;
+    try {
+      const res = await Plugins.NetworkPlugin.getMemberInfo({});
+      if (res.status === 200) {
+        authFailStreak = 0;
+        diagNative('AUTH', source + ' HTTP ' + status + '였지만 회원 정보 재조사는 정상 — 일시 오류 판정, 세션 유지');
+        return false;
+      }
+      diagNative('AUTH', source + ' HTTP ' + status + ' 연속 ' + authFailStreak + '회 + 회원 정보 재조사 HTTP ' + res.status);
+    } catch (e) { /* 재조사 실패 → 폐기 확정 */ }
+    diagNative('AUTH', '세션 종료 확정 (' + source + ' 연속 실패 + 재조사 실패) — 만료 또는 서버측 로그아웃(중복 로그인)');
+    return true;
   }
 
   // 원본 JSON 조회 (N8 캐시 적용, J1: force면 캐시 바이패스). { raw } 또는 { error }
@@ -592,8 +645,11 @@ import {
     const res = await Plugins.NetworkPlugin.getAttendance({ memberId, year, month });
 
     if (isAuthStatus(res.status)) {
-      await clearSessionIdentity(); // R7 캐시 + Q1 memberId 폐기
-      return { error: 'NOT_LOGGED_IN' };
+      if (await shouldDiscardSession('출입 조회', res.status)) {
+        await clearSessionIdentity(); // R7 캐시 + Q1 memberId 폐기
+        return { error: 'NOT_LOGGED_IN' };
+      }
+      return { error: `ATTENDANCE_API_ERROR_${res.status}` }; // 일시 — 대시보드 유지
     }
     if (res.status && res.status >= 400) {
       return { error: `ATTENDANCE_API_ERROR_${res.status}` };
@@ -603,12 +659,16 @@ import {
     if (!raw || !raw.detail_list) {
       // 로그인 페이지 HTML이 그대로 온 경우 인증 오류로 분류 (N4)
       if (typeof res.data === 'string' && /login|로그인/i.test(res.data)) {
-        await clearSessionIdentity();
-        return { error: 'NOT_LOGGED_IN' };
+        if (await shouldDiscardSession('출입 본문 검사', 0)) {
+          await clearSessionIdentity();
+          return { error: 'NOT_LOGGED_IN' };
+        }
+        return { error: 'ATTENDANCE_PARSE_ERROR' };
       }
       return { error: 'ATTENDANCE_PARSE_ERROR' };
     }
 
+    authFailStreak = 0; // 정상 응답 — 인증류 연속 카운터 리셋 (19차)
     await setCachedAttendance(memberId, year, month, raw);
     return { raw };
   }
@@ -627,6 +687,9 @@ import {
     // E2: 평가 동기화 상태/instCd 캐시도 계정과 함께 폐기
     try { await Plugins.Preferences.remove({ key: 'eval_sync_state' }); } catch (e) { /* 무시 */ }
     try { await Plugins.Preferences.remove({ key: 'eval_inst_cd' }); } catch (e) { /* 무시 */ }
+    // 21차: 죽은 세션의 쿠키 백업도 폐기 — 다음 재시작 때 무효 세션이 부활하지 않게
+    // (네이티브 CookieManager.clearPersistedSession과 동일 키, Capacitor Preferences 공유 파일)
+    try { await Plugins.Preferences.remove({ key: 'session_jsessionid' }); } catch (e) { /* 무시 */ }
   }
 
   // ===== G1: 입·퇴실 처리 감지 =====
@@ -673,11 +736,12 @@ import {
   }
 
   // ===== E2: 평가 일정 자동 연동 =====
-  // API: POST https://codyssey.kr/schedule/scheduleAllList/ (쿼리스트링 + body "null")
+  // API: POST https://api.usr.codyssey.kr/schedule/scheduleAllList/ (쿼리스트링, 본문 없음)
+  // ※ usr 프론트엔드 번들 실측(2026-07-17) 확정 — 레거시 명세(api.codyssey.kr) 아님
   // 저장 상태키 eval_sync_state는 네이티브 EvalSync.java와 공유 — 어느 쪽이 동기화하든 중복 없음
   const EVAL_STATE_KEY = 'eval_sync_state';
   const EVAL_INST_CD_KEY = 'eval_inst_cd';
-  const EVAL_SCHEDULE_API = 'https://codyssey.kr';
+  const EVAL_SCHEDULE_API = 'https://api.usr.codyssey.kr';
 
   function evalYmdDot(d) {
     return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
@@ -696,12 +760,16 @@ import {
       + `&bgngYmd=${evalYmdDot(fromDate)}&endYmd=${evalYmdDot(toDate)}&scheduleType=request`;
     const res = await Plugins.NetworkPlugin.fetch({ url, method: 'POST' }); // 명세: 본문 무시(전송 안 함)
     if (isAuthStatus(res.status)) {
-      await clearSessionIdentity();
-      throw new Error('NOT_LOGGED_IN');
+      if (await shouldDiscardSession('평가 스케줄', res.status)) {
+        await clearSessionIdentity();
+        throw new Error('NOT_LOGGED_IN');
+      }
+      throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status || 0}`);
     }
     if (res.status !== 200) throw new Error(`EVAL_SCHEDULE_API_ERROR_${res.status || 0}`);
     const json = res.json || safeJson(res.data);
     if (!json) throw new Error('EVAL_SCHEDULE_PARSE_ERROR');
+    authFailStreak = 0;
     return json;
   }
 
@@ -743,20 +811,162 @@ import {
     return evalSyncInFlight;
   }
 
+  // 15차(E3): 스케줄 채널 + 알림함 채널 이원화 — 한쪽 실패필도 다른 채널로 감지
   async function doSyncEvalAlarms(memberId) {
+    if (!memberId || !Plugins.AlarmPlugin) return { ok: false, reason: 'unavailable' };
+    const settings = await getSettings();
+    if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
+
+    let schedErr = null;
+    let schedInfo = null;
+    let noticeErr = null;
+    let noticeInfo = null;
     try {
-      if (!memberId || !Plugins.AlarmPlugin) return { ok: false, reason: 'unavailable' };
-      const settings = await getSettings();
-      if (settings.evalAutoSyncEnabled === false) return { ok: false, reason: 'disabled' };
-      const instCd = await resolveInstCd();
-      if (!instCd) return { ok: false, reason: 'no_instcd' };
+      schedInfo = await syncEvalScheduleChannel(memberId, settings);
+    } catch (e) {
+      schedErr = String(e.message || 'unknown');
+      console.warn('[Adapter] 평가 동기화(스케줄 채널) 실패:', schedErr);
+    }
+    try {
+      noticeInfo = await syncEvalNoticeChannel(memberId, settings);
+    } catch (e) {
+      noticeErr = String(e.message || 'unknown');
+      console.warn('[Adapter] 평가 동기화(알림함 채널) 실패:', noticeErr);
+    }
+
+    // S4/15차: 채널별 실패 사유 병합 기록
+    try {
+      const cur = (await getPrefs(EVAL_STATE_KEY)) || {};
+      const merged = { ...cur };
+      if (schedErr) { merged.lastError = schedErr; merged.lastErrorAt = Date.now(); }
+      else { delete merged.lastError; delete merged.lastErrorAt; }
+      if (noticeErr) { merged.alarmError = noticeErr; merged.alarmErrorAt = Date.now(); }
+      else { delete merged.alarmError; delete merged.alarmErrorAt; }
+      if (noticeInfo) merged.noticeFresh = noticeInfo.fresh;
+      await setPrefs(EVAL_STATE_KEY, merged);
+    } catch (e2) { /* 상태 기록 실패는 무시 */ }
+
+    return {
+      ok: !schedErr || !noticeErr,
+      ...(schedInfo || {}),
+      reason: schedErr || undefined,
+      noticeError: noticeErr || undefined,
+      noticeFresh: noticeInfo ? noticeInfo.fresh : undefined
+    };
+  }
+
+  // E3(15차): 알림함(alarmList/list) 평가 감지 채널 — body으로 페이로드 전송
+  const EVAL_NOTICE_STATE_KEY = 'eval_notice_seen';
+
+  async function fetchEvalNoticeList(page = 1, pagePerRows = EVAL_NOTICE_PAGE_PER_ROWS) {
+    if (!Plugins.NetworkPlugin) throw new Error('NETWORK_PLUGIN_UNAVAILABLE');
+    const res = await Plugins.NetworkPlugin.fetch({
+      url: `${EVAL_SCHEDULE_API}/alarm/alarmList/list`,
+      method: 'POST',
+      body: { page, pagePerRows } // 실측 페이로드 (사용자 제공 명세)
+    });
+    if (isAuthStatus(res.status)) {
+      if (await shouldDiscardSession('평가 알림함', res.status)) {
+        await clearSessionIdentity();
+        throw new Error('NOT_LOGGED_IN');
+      }
+      throw new Error(`EVAL_NOTICE_API_ERROR_${res.status || 0}`);
+    }
+    if (res.status !== 200) throw new Error(`EVAL_NOTICE_API_ERROR_${res.status || 0}`);
+    const json = res.json || safeJson(res.data);
+    if (!json) throw new Error('EVAL_NOTICE_PARSE_ERROR');
+    authFailStreak = 0;
+    return json;
+  }
+
+  async function upsertEvalAlarmEntryNative(entry) {
+    const alarms = await getStoredAlarms();
+    const kept = alarms.filter(a => !a || a.name !== entry.name);
+    kept.push(entry);
+    await setPrefs(STORE_KEYS.ALARMS, kept);
+  }
+
+  async function syncEvalNoticeChannel(memberId, settings) {
+    const raw = await fetchEvalNoticeList(1);
+    const list = (raw && raw.result && (raw.result.list || raw.result.items)) || raw.list || [];
+    const items = parseEvalNoticeAlarms(list);
+    const seen = ((await getPrefs(EVAL_NOTICE_STATE_KEY)) || {}).ids || {};
+    const fresh = filterNewEvalNotices(seen, items);
+    let notified = 0;
+    let scheduled = 0;
+
+    if (fresh.length) {
+      const lead = settings.evalLeadMinutes ?? 30;
+      const now = Date.now();
+      const currentAlarms = (await getStoredAlarms())
+        .filter(a => a && a.type === 'eval' && typeof a.evalWhen === 'number');
+
+      for (const it of fresh) {
+        seen[it.pstartSn] = { whenMs: it.whenMs, title: it.title, firstSeenAt: now };
+
+        // E3 중복 방지: 스케줄 채널이 같은 평가(±2분)를 이미 알람으로 잡았으면 캐시만
+        const covered = currentAlarms.some(a => Math.abs(a.evalWhen - it.whenMs) <= EVAL_NOTICE_DEDUP_MS);
+        if (covered) continue;
+        if (it.whenMs <= now) continue;
+
+        const name = buildEvalAlarmName(EVAL_AUTO_ID_PREFIX + it.key);
+        const triggerAt = Math.max(it.whenMs - lead * 60000, now + 5000);
+        if (Plugins.AlarmPlugin) {
+          await Plugins.AlarmPlugin.schedule({
+            triggerTimeMillis: triggerAt,
+            label: `📋 평가 ${lead}분 전: ${it.title}`,
+            id: name
+          });
+        }
+        await upsertEvalAlarmEntryNative({
+          name,
+          time: triggerAt,
+          label: `📋 ${it.title}`,
+          endMinutes: null,
+          type: 'eval',
+          evalTitle: it.title,
+          evalWhen: it.whenMs,
+          leadMinutes: lead,
+          auto: true,
+          state: it.state || '',
+          createdAt: now
+        });
+        currentAlarms.push({ evalWhen: it.whenMs, type: 'eval' });
+        scheduled++;
+        if (settings.notificationsEnabled && notified < 3) {
+          notified++;
+          // 안정 id — 캐시 쓰기 전 재실행돼도 같은 알림 id로 중복 표시되지 않음
+          await scheduleLocalNotification(
+            '📋 평가 일정 감지',
+            `${formatEvalWhenKo(it.whenMs)} — ${it.title} (알림함 감지 · ${lead}분 전 알람 등록)`,
+            `evalnotice_${it.pstartSn}`
+          );
+        }
+      }
+
+      // seen 캐시 프루닝 + 저장
+      const cutoff = Date.now() - EVAL_NOTICE_SEEN_TTL_MS;
+      for (const k of Object.keys(seen)) {
+        if ((seen[k].firstSeenAt || 0) < cutoff) delete seen[k];
+      }
+      await setPrefs(EVAL_NOTICE_STATE_KEY, { ids: seen, updatedAt: Date.now() });
+    }
+    return { ok: true, fresh: fresh.length, notified, scheduled, total: items.length };
+  }
+
+  // 채널1: scheduleAllList (기존 E2 로직)
+  async function syncEvalScheduleChannel(memberId, settings) {
+    const instCd = await resolveInstCd();
+    if (!instCd) throw new Error('no_instcd');
+    try {
 
       const state = await getPrefs(EVAL_STATE_KEY);
       const prevItems = (state && state.memberId === String(memberId) && Array.isArray(state.items))
         ? state.items : [];
 
+      // C1: 어제~+365일 (30일 밖 평가도 잡히는 즉시 등록)
       const from = new Date(); from.setDate(from.getDate() - 1);
-      const to = new Date(); to.setDate(to.getDate() + 30);
+      const to = new Date(); to.setDate(to.getDate() + 365);
       const raw = await fetchEvalSchedule(memberId, instCd, from, to);
       const reqList = (raw && raw.result && (raw.result.reqList || raw.result.list)) || raw.reqList || [];
       const parsed = parseScheduleRows(reqList);
@@ -800,10 +1010,12 @@ import {
             evalWhen: it.whenMs,
             leadMinutes: lead,
             auto: true,
+            state: it.state || '',
             createdAt: now
           });
           await setPrefs(STORE_KEYS.ALARMS, kept);
-          if (settings.notificationsEnabled && notified < 3) {
+          // C2: 협의중(00001)은 조용히 등록 — 확정/진행(00002/00003) 또는 미상일 때만 "감지" 알림
+          if (settings.notificationsEnabled && notified < 3 && isEvalConfirmed(it.state)) {
             notified++;
             await scheduleLocalNotification(
               '📋 평가 일정 감지',
@@ -812,7 +1024,18 @@ import {
             );
           }
         } else if (existing) {
-          nextItems.push(existing);
+          // C2: 협의중 → 확정/진행 전환 시 "확정" 알림 (알람 재예약 없이 안내)
+          const prevState = existing.state || '';
+          if (!isEvalConfirmed(prevState) && isEvalConfirmed(it.state)
+              && settings.notificationsEnabled && notified < 3) {
+            notified++;
+            await scheduleLocalNotification(
+              '📋 평가 확정',
+              `${formatEvalWhenKo(it.whenMs)} — ${it.title} 평가가 확정되었습니다. (${lead}분 전 알람 유지)`,
+              `evalconf_${it.key}_${now}`
+            );
+          }
+          nextItems.push({ ...existing, ...it, name: existing.name });
           continue;
         }
         nextItems.push({ ...it, name, leadMinutes: lead, auto: true });
@@ -836,13 +1059,25 @@ import {
         items: nextItems,
         fetchedAt: now,
         skipped: parsed.skipped,
-        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단
+        nonEv: parsed.nonEv || 0,
+        sampleKeys: parsed.sampleKeys || null // 필드명 보정용 진단 (첫 EV 행의 키 목록)
       });
       return { ok: true, added: diff.added.length, changed: diff.changed.length, removed: diff.removed.length, items: nextItems.length };
     } catch (e) {
-      console.warn('[Adapter] 평가 일정 동기화 실패:', e.message);
-      return { ok: false, reason: e.message };
+      throw e; // 실패 병합 기록은 오케스트레이터(doSyncEvalAlarms)에서 일원 처리
     }
+  }
+
+  // GET_STATUS 팝업 표시용 평가 동기화 상태 요약 (S4/15차: 알림함 채널 오류 포함)
+  function summarizeEvalSyncState(state) {
+    if (!state) return { fetchedAt: 0, items: 0, lastError: null, alarmError: null };
+    return {
+      fetchedAt: state.fetchedAt || 0,
+      items: Array.isArray(state.items) ? state.items.length : 0,
+      lastError: state.lastError || null,
+      alarmError: state.alarmError || null,
+      noticeFresh: state.noticeFresh || 0
+    };
   }
 
   function safeJson(s) {
@@ -863,12 +1098,12 @@ import {
     preCheckLogin: async function(userId) {
       if (!this.isNative) throw new Error('NATIVE_NOT_AVAILABLE');
       const res = await Plugins.NetworkPlugin.preCheckLogin({ userId });
-      return { status: res.status || 0, body: res.json || safeJson(res.data) || {} };
+      return { status: res.status || 0, body: res.json || safeJson(res.data) || {}, location: res.location || '' };
     },
     authenticate: async function(userId, password, from) {
       if (!this.isNative) throw new Error('NATIVE_NOT_AVAILABLE');
       const res = await Plugins.NetworkPlugin.authenticate({ userId, password, from: from || '' });
-      return { status: res.status || 0, body: res.json || safeJson(res.data) || {} };
+      return { status: res.status || 0, body: res.json || safeJson(res.data) || {}, location: res.location || '' };
     },
     // M5: 정확 알람 권한 설정 화면 열기 (Android 12+)
     requestExactAlarmPermission: async function() {
@@ -885,8 +1120,18 @@ import {
     Plugins.LocalNotifications.requestPermissions().catch(() => {});
   }
 
+  // ===== W7: 1분 상시 감지 복원 (기본 켬 — 설정에서 끄면 dashEnabled=false) =====
+  if (isCapacitor && Plugins.PollingPlugin) {
+    getPrefs(STORE_KEYS.SETTINGS).then(settings => {
+      if (settings && settings.dashEnabled === false) return;
+      return Plugins.PollingPlugin.startDash();
+    }).catch(() => {});
+  }
+
   // ===== Q5: 하드웨어 뒤로가기 처리 (미처리 시 앱이 바로 종료됨) =====
-  if (isCapacitor && Plugins.App && Plugins.App.addListener) {
+  // W5: 재진입/중복 로드 시 리스너가 두 번 등록되지 않도록 단일 등록 가드
+  if (isCapacitor && Plugins.App && Plugins.App.addListener && !window.__codysseyBackButtonHooked) {
+    window.__codysseyBackButtonHooked = true;
     try {
       Plugins.App.addListener('backButton', ({ canGoBack }) => {
         if (canGoBack) {

@@ -128,6 +128,16 @@ async function loadAttendance() {
     // J4 평균 계산 시 인접 월 날짜가 포함되지 않도록 현재 월 분해를 별도 보관
     attendanceData.currentMonthBreakdown = response.parsed.dailyBreakdown;
 
+    // B1/W1: 인접 월 셀의 상세 모달용 원본 행도 날짜 키로 병합 보관
+    // (기존엔 dailyBreakdown만 병합하고 원본은 당월만이라 인접 월 셀이 '기록 없음'으로 표시됐음)
+    attendanceData.rawByDate = {};
+    const collectRaw = (list) => {
+      (list || []).forEach(d => { if (d && d.date) attendanceData.rawByDate[d.date] = d; });
+    };
+    collectRaw(response.parsed.rawDetailList);
+    if (prevRes && prevRes.success) collectRaw(prevRes.parsed.rawDetailList);
+    if (nextRes && nextRes.success) collectRaw(nextRes.parsed.rawDetailList);
+
     renderCalendar();
     updateMonthSummary();
     startRealtimeIfNeeded();
@@ -303,9 +313,10 @@ function openDayDetail(dateStr, minutes) {
   els.dayTotal.className = `day-detail-value ${isOver ? 'over' : 'normal'}`;
   els.dayLimit.textContent = `최대 ${currentSettings.dailyMaxHours}시간`;
 
-  // 상세 기록 - rawDetailList에서 세션 정보 사용
+  // 상세 기록 - 날짜 키 병합 맵(인접 월 포함) 우선, 없으면 당월 원본에서 검색
   const todayStr = getTodayString();
-  const dayData = (attendanceData.rawDetailList || []).find(d => d.date === dateStr);
+  const dayData = (attendanceData.rawByDate && attendanceData.rawByDate[dateStr])
+    || (attendanceData.rawDetailList || []).find(d => d.date === dateStr);
   const isToday = dateStr === todayStr;
 
   const rows = [];

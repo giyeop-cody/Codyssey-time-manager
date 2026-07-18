@@ -142,10 +142,33 @@ body {
 .login-links { display: flex; justify-content: space-between; margin-top: 8px; font-size: 11px; }
 .login-links a { color: var(--accent-teal); text-decoration: none; }
 .login-links a:hover { text-decoration: underline; }
-.login-error { display: none; padding: 10px; background: rgba(244,67,54,0.1); border: 1px solid rgba(244,67,54,0.3); border-radius: var(--radius-sm); color: var(--accent-red); font-size: 12px; }
+.login-error { display: none; padding: 10px; background: rgba(244,67,54,0.1); border: 1px solid rgba(244,67,54,0.3); border-radius: var(--radius-sm); color: var(--accent-red); font-size: 12px; white-space: pre-line; }
 .login-error.show { display: block; }
+.login-official-link { display: none; margin-top: 12px; width: 100%; padding: 10px; background: none; border: 1px dashed rgba(255,255,255,0.25); border-radius: var(--radius-sm); color: var(--text-secondary, #9aa0a6); font-size: 12px; cursor: pointer; transition: color .15s, border-color .15s; }
+.login-official-link:hover { color: var(--accent-teal); border-color: var(--accent-teal); }
+.login-official-link.show { display: block; }
+.password-wrap { position: relative; }
+.password-wrap .input { padding-right: 42px; }
+.pw-toggle { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; opacity: 0.55; padding: 4px; }
+.pw-toggle:hover { opacity: 1; }
+/* W7(18차): 헤더/연동꼭지 버튼에 이모지+미니 라벨 — 🔃(동기)와 🔄(갱신) 시각 혼동 해소 */
+.header-btn { display: inline-flex !important; flex-direction: column; align-items: center; justify-content: center; gap: 1px; min-width: 44px; padding: 4px 6px !important; line-height: 1; }
+.header-btn .hb-emoji { font-size: 15px; }
+.header-btn .hb-label { font-size: 9px; color: var(--text-muted); }
+.setting-dash-status { font-size: 11px; color: var(--text-muted); padding: 6px 2px 0; min-height: 14px; }
+/* 19차: 로그인 화면 세션 진단 블록 */
+.login-diag { margin-top: 14px; padding: 10px; border: 1px solid rgba(255,255,255,0.12); border-radius: var(--radius-sm); background: rgba(255,255,255,0.04); text-align: left; }
+.session-expired-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 180, 60, 0.45); border-radius: var(--radius-sm); background: rgba(255, 180, 60, 0.10); color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+.session-expired-banner .seb-text { flex: 1; }
+.session-expired-banner button { flex-shrink: 0; white-space: nowrap; }
+.login-diag-title { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
+.login-diag-item { font-size: 10px; color: var(--text-muted); font-family: monospace; line-height: 1.6; word-break: break-all; }
+.login-diag-actions { display: flex; gap: 8px; margin-top: 8px; }
 .login-loading { display: none; text-align: center; color: var(--text-muted); margin-top: 16px; }
 .login-loading.show { display: block; }
+.init-splash { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 90px 20px; }
+.init-splash .splash-text { color: var(--text-muted); font-size: 12px; }
+.init-splash .splash-spinner { width: 26px; height: 26px; border-width: 3px; margin-right: 0; }
 .spinner { display: inline-block; width: 18px; height: 18px; border: 2px solid var(--border-light); border-top-color: var(--accent-teal); border-radius: 50%; animation: spin 1s linear infinite; margin-right: 8px; vertical-align: middle; }
 @keyframes spin { to { transform: rotate(360deg); } }
 

@@ -9,8 +9,15 @@
 <script type="module" src="./js/capacitor-adapter.js"></script>
 </head>
 <body>
+<!-- 24차: 초기 세션 확인 스플래시 — 재실행 시 로그인 폼이 잠깐 번쩍이는 현상 방지.
+     세션 확인(GET_STATUS) 중에는 이 화멸만 보이고, 확인이 끝나면 대시보드/로그인 중 하나로만 갈음 -->
+<div id="init-splash" class="init-splash">
+  <span class="spinner splash-spinner"></span>
+  <div class="splash-text">세션 확인 중...</div>
+</div>
+
 <!-- 로그인 화면 -->
-<div id="login-screen" class="login-screen">
+<div id="login-screen" class="login-screen" style="display:none;">
   <div class="login-logo">🔔</div>
   <h1 class="login-title">코디세이 출입 현황 알리미</h1>
   <p class="login-subtitle">월 80시간 · 일 12시간 관리 · 퇴실 알림</p>
@@ -25,7 +32,10 @@
     
     <div class="form-group">
       <label class="form-label">비밀번호</label>
-      <input type="password" id="login-password" class="input" placeholder="비밀번호 입력" autocomplete="current-password" required>
+      <div class="password-wrap">
+        <input type="password" id="login-password" class="input" placeholder="비밀번호 입력" autocomplete="current-password" required>
+        <button type="button" id="login-pw-toggle" class="pw-toggle" title="비밀번호 표시" aria-label="비밀번호 표시/숨기기">👁</button>
+      </div>
     </div>
     
     <button type="submit" class="btn btn-primary btn-block" id="login-btn">
@@ -33,6 +43,19 @@
       <span class="btn-loading" style="display:none;"><span class="spinner"></span>로그인 중...</span>
     </button>
   </form>
+  
+  <button type="button" id="login-official-link" class="login-official-link" title="공식 사이트에서 로그인 / 비밀번호 찾기">
+    🔗 공식 사이트에서 로그인 · 비밀번호 찾기 (ams.codyssey.kr)
+  </button>
+  
+  <div class="login-diag" id="login-diag" style="display:none;">
+    <div class="login-diag-title">🔍 최근 세션 진단 — 갑자기 이 화면이 나온 원인 후보 (최신순)</div>
+    <div class="login-diag-list" id="login-diag-list"></div>
+    <div class="login-diag-actions">
+      <button type="button" id="btn-diag-copy" class="btn btn-secondary btn-sm">진단 로그 복사</button>
+      <button type="button" id="btn-diag-clear" class="btn btn-ghost btn-sm">지우기</button>
+    </div>
+  </div>
   
   <div id="login-loading" class="login-loading">
     <span class="spinner"></span>로그인 중...
@@ -45,10 +68,16 @@
   <div class="dashboard-header">
     <h2 class="dashboard-title">🔔 출입 현황 알리미</h2>
     <div class="header-actions">
-      <button class="btn btn-ghost btn-sm" id="btn-keep-alive" title="로그인 유지">🔄</button>
-      <button class="btn btn-ghost btn-sm" id="btn-settings" title="설정">⚙️</button>
-      <button class="btn btn-ghost btn-sm" id="btn-refresh" title="새로고침">🔄</button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-keep-alive" title="로그인 유지"><span class="hb-emoji">💓</span><span class="hb-label">유지</span></button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-settings" title="설정"><span class="hb-emoji">⚙️</span><span class="hb-label">설정</span></button>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-refresh" title="새로고침"><span class="hb-emoji">🔄</span><span class="hb-label">갱신</span></button>
     </div>
+  </div>
+
+  <!-- 22차: 세션 만료 배너 — 세션이 죽어도 로그인 폼으로 화면을 뺏지 않고 캐시 대시보드 유지 -->
+  <div id="session-expired-banner" class="session-expired-banner" style="display:none;">
+    <span class="seb-text">🔒 세션이 만료됐어요 (다른 기기 로그인 또는 세션 만료). 지금 수치는 마지막 동기화 데이터이고 알람·갱신은 멈춰 있습니다.</span>
+    <button type="button" class="btn btn-primary btn-sm" id="btn-session-relogin">재로그인</button>
   </div>
 
   <!-- 요약 카드: 월 누적 + 오늘 실시간 인정 -->
@@ -223,23 +252,14 @@
   </div>
 </div>
 
-  <!-- 평가 알람 등록 (E1) -->
+  <!-- 평가 알람 (E2: 서버 목록 자동 연동 — 수동 등록 아님) -->
   <div class="alarms-section" id="eval-section">
     <div class="alarms-header">
       <h3 class="alarms-title">📋 평가 알람</h3>
+      <button class="btn btn-ghost btn-sm header-btn" id="btn-sync-eval" title="지금 동기화"><span class="hb-emoji">📥</span><span class="hb-label">동기</span></button>
     </div>
-    <div class="calculator-input-row">
-      <input type="text" id="eval-title-input" class="input" placeholder="평가 이름 (예: 중간 평가)" maxlength="30" autocomplete="off">
-    </div>
-    <div class="calculator-input-row" style="margin-top:6px;">
-      <input type="datetime-local" id="eval-datetime-input" class="input">
-    </div>
-    <div class="calculator-input-row" style="margin-top:6px;">
-      <input type="number" id="eval-lead-input" class="input" min="0" max="1440" step="5" value="30" style="width:70px;text-align:center;">
-      <span style="font-size:13px;color:#888;white-space:nowrap;">분 전에 알림</span>
-      <button class="btn btn-primary" id="btn-add-eval">➕ 등록</button>
-    </div>
-    <div class="alarms-empty" id="eval-hint">직접 등록한 평가 + 코디세이 평가 일정이 활성 알람 목록에 표시되며, 평가 시간 N분 전에 알림이 울립니다. (자동 연동은 설정에서 끌 수 있습니다)</div>
+    <div class="alarms-empty" id="eval-sync-status">평가 일정을 확인하는 중...</div>
+    <div class="alarms-empty" id="eval-hint">코디세이 평가 목록을 주기적으로 확인해 ①새 평가가 잡히면 1회, ②설정한 시점(N분 전)에 다시 알려줍니다. 예정된 평가는 아래 활성 알람 목록에 자동으로 올라가며, 설정에서 끄거나 알림 시점을 바꿀 수 있습니다.</div>
   </div>
 
   <!-- 활성 알람 목록 -->
@@ -358,10 +378,36 @@
       <div class="setting-row">
         <div>
           <div class="setting-label">자동 로그인 유지</div>
-          <div class="setting-desc">25~28분마다 서버 통신</div>
+          <div class="setting-desc">25~28분마다 서버 통신 (1분 상시 감지 켜짐 시 1분 간격)</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-keep-alive" checked><span class="toggle-slider"></span></label>
       </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">상시 감지 (Android)</div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">1분 상시 감지</div>
+          <div class="setting-desc">앱이 꺼져 있어도 1분마다 입·퇴실/평가 확인 · 배터리 소모 커짐</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-dash" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">절전모드 예외 (배터리 최적화)</div>
+          <div class="setting-desc">미해제 시 1분 감지가 단말 절전 중 지연될 수 있음</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-battery-exempt">예외 요청</button>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">정확한 알람 (알람·리마인더 권한)</div>
+          <div class="setting-desc">꺼져 있으면 예약 알람이 화면이 꺼진 동안 늦게 울리거나 밀림</div>
+        </div>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-exact-alarm">권한 허용</button>
+      </div>
+      <div class="setting-dash-status" id="setting-dash-status"></div>
     </div>
 
     <div class="settings-actions">
