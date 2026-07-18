@@ -15,6 +15,8 @@
     <!-- W7(18차): 1분 상시 감지 포그라운드 서비스 + 절전모드 예외 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- 25차: 알람 울림 전담 서비스(미디어 재생 타입) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
@@ -70,6 +72,12 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="학원 출입 처리와 평가 일정을 1분 간격으로 감지해 알람을 울리는 상시 감지 도구" />
         </service>
+
+        <!-- 25차: 알람 울림 전담 서비스 (최대 1분 반복 재생 + 해제 고정 알림) -->
+        <service
+            android:name="kr.codyssey.attendance.service.AlarmSoundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
 
         <!-- 알림 채널용 프로바이더 -->
         <provider

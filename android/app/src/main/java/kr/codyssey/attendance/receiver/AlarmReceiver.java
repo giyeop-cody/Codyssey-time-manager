@@ -61,7 +61,25 @@ public class AlarmReceiver extends BroadcastReceiver {
         String title = (id != null && id.startsWith("codyssey_eval_"))
                 ? "📋 평가 알림"
                 : "⏰ 코디세이 출입 알림";
-        NotificationHelper.showNotification(context, title, label != null ? label : "알림", id);
+
+        // 25차: 알람 소리 설정이 켜져 있으면 AlarmSoundService가 "최대 1분 반복 울림 +
+        // 해제 버튼 고정 알림"을 담당. 꺼져 있으면 기존 조용한 일회성 알림 경로.
+        boolean soundOn = context.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
+                .getBoolean("alarm_sound", true);
+        if (soundOn) {
+            try {
+                kr.codyssey.attendance.service.AlarmSoundService.start(context,
+                        title + ": " + (label != null ? label : "알림"), id);
+                // 단발 채널 알림도 함께 유지 (울림 알림을 끊어도 기록은 남도록)
+                NotificationHelper.showNotification(context, title, label != null ? label : "알림", id);
+            } catch (Exception e) {
+                kr.codyssey.attendance.util.DiagLog.add(context, "ALARM-F",
+                        "⚠️ 울림 서비스 시작 실패 — 일회성 알림으로 대체: " + e.getMessage());
+                NotificationHelper.showNotification(context, title, label != null ? label : "알림", id);
+            }
+        } else {
+            NotificationHelper.showNotification(context, title, label != null ? label : "알림", id);
+        }
 
         // R8: 앱이 살아있으면 WebView JS로 이벤트 전달 (화면 자동 갱신)
         MainActivity.emitNativeEvent("ALARM_TRIGGERED", label, id);

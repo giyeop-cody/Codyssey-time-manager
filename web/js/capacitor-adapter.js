@@ -535,8 +535,11 @@ import {
     const list = Array.isArray(alarms) ? alarms : [];
     // K8: 발화하지 못한 채 지나간 알람(기기 전원 꺼짐 중 소실 등)은 읽을 때 자가정비.
     // (M6의 네이티브 목록 제거와 경합하지 않음 — 제거된 항목만 재기록하지 않으면 됨)
+    // 25차: 발화 시각 직후 즉시 목록에서 사라져 "지워져서 안 온 것 아닌가"로 보이던
+    // 혼동을 막기 위해, 네이티브 stale 상한(15분)만큼은 목록에 남겨 증적을 보존.
     const now = Date.now();
-    const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now);
+    const PRUNE_GRACE_MS = 15 * 60 * 1000;
+    const fresh = list.filter(a => !a || typeof a.time !== 'number' || a.time > now - PRUNE_GRACE_MS);
     if (fresh.length !== list.length) {
       await setPrefs(STORE_KEYS.ALARMS, fresh);
     }

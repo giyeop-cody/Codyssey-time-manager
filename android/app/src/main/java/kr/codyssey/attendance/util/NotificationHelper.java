@@ -168,4 +168,9 @@ public class NotificationHelper {
         } catch (Exception e) { /* 폴곤으로 */ }
         return android.R.drawable.ic_dialog_info;
     }
+
+    // 25차: AlarmSoundService 울림 알림에서도 동일 아이콘 재사용 (public 공개)
+    public static int getRingIcon(Context context) {
+        return getSmallIcon(context);
+    }
 }

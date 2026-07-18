@@ -42,6 +42,11 @@ public class MainActivity extends BridgeActivity {
         if (alarmId != null) {
             emitAlarmEventWhenAdapterReady(alarmId, 30); // 300ms × 30 = 최대 9초 대기
         }
+        // 25차: 울림 알림을 탭해서 열린 경우 알람 울림 정지
+        if (getIntent() != null && getIntent().getBooleanExtra(
+                kr.codyssey.attendance.service.AlarmSoundService.EXTRA_STOP_ALARM_SOUND, false)) {
+            kr.codyssey.attendance.service.AlarmSoundService.stopSound(this);
+        }
 
         // WebView 디버깅은 디버그 빌드에서만 허용
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
@@ -98,6 +103,11 @@ public class MainActivity extends BridgeActivity {
         // L7: singleTask이므로 백그라운드 복귀(onNewIntent) 경로의 알림 탭도 처리
         if (intent != null && intent.getStringExtra("alarmId") != null) {
             emitNativeEvent("ALARM_TRIGGERED", "알림에서 열기", intent.getStringExtra("alarmId"));
+        }
+        // 25차: 울림 알림 탭으로 복귀 — 알람 울림 정지
+        if (intent != null && intent.getBooleanExtra(
+                kr.codyssey.attendance.service.AlarmSoundService.EXTRA_STOP_ALARM_SOUND, false)) {
+            kr.codyssey.attendance.service.AlarmSoundService.stopSound(this);
         }
     }
 
