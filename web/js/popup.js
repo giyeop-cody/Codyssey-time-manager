@@ -146,6 +146,8 @@ const els = {
   btnBatteryExempt: document.getElementById('btn-battery-exempt'),
   btnExactAlarm: document.getElementById('btn-exact-alarm'),
   settingDashStatus: document.getElementById('setting-dash-status'),
+  sessionExpiredBanner: document.getElementById('session-expired-banner'),
+  btnSessionRelogin: document.getElementById('btn-session-relogin'),
   loginDiag: document.getElementById('login-diag'),
   loginDiagList: document.getElementById('login-diag-list'),
   btnDiagCopy: document.getElementById('btn-diag-copy'),
@@ -256,6 +258,14 @@ function showDashboard() {
   els.dashboard.style.display = 'flex';
 }
 
+// 22차: 세션 만료 시 로그인 폼으로 화면을 뺏지 않고 캐시 대시보드 유지 + 배너
+function showExpiredBanner() {
+  if (els.sessionExpiredBanner) els.sessionExpiredBanner.style.display = 'flex';
+}
+function hideExpiredBanner() {
+  if (els.sessionExpiredBanner) els.sessionExpiredBanner.style.display = 'none';
+}
+
 function showLoginError(msg) {
   els.loginError.textContent = msg;
   els.loginError.classList.add('show');
@@ -285,6 +295,14 @@ async function loadDashboard(forceRefresh = false) {
     if (!response.success) {
       if (response.error === 'NOT_LOGGED_IN') {
         // 19차: 세션 무효 '확정'에만 여기 도달 (단발 302/401은 어댑터가 세션 유지 판정)
+        // 22차: member_id는 남아 있으므로 캐시 대시보드 + 만료 배너 유지 (폼으로 튕기지 않음)
+        if (currentMemberId || currentParsed) {
+          diag('POPUP', '세션 만료 — 캐시 대시보드 유지 (재로그인 대기)');
+          showDashboard();
+          showExpiredBanner();
+          updateLastUpdateTime();
+          return;
+        }
         showLoginScreen('세션 무효 확정 — 상태 조회 반복 실패 + 회원 정보 재조사 실패 (만료 또는 서버측 로그아웃)');
         return;
       }
@@ -295,6 +313,8 @@ async function loadDashboard(forceRefresh = false) {
     currentParsed = response.parsed;
     currentSettings = response.settings;
     currentEvalSync = response.evalSync || null; // S4: 평가 연동 상태
+
+    hideExpiredBanner(); // 22차: 세션 회복(재로그인 성공)되면 배너 해제
 
     updateDashboardUI();
     checkNotificationPermission();
@@ -1601,6 +1621,11 @@ function setupEventListeners() {
       await window.CodysseyNative?.requestExactAlarmPermission?.();
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshDashStatusUI, 2000);
+  });
+
+  // 22차: 세션 만료 배너의 재로그인 — 배너는 유지하되 로그인 폼으로 전환해 재인증 유도
+  els.btnSessionRelogin?.addEventListener('click', () => {
+    showLoginScreen('세션 만료 — 재로그인 시도');
   });
 
   // 19차: 진단 로그 복사 (원인 판독 공유용) / 지우기

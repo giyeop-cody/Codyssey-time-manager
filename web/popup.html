@@ -67,6 +67,12 @@
     </div>
   </div>
 
+  <!-- 22차: 세션 만료 배너 — 세션이 죽어도 로그인 폼으로 화면을 뺏지 않고 캐시 대시보드 유지 -->
+  <div id="session-expired-banner" class="session-expired-banner" style="display:none;">
+    <span class="seb-text">🔒 세션이 만료됐어요 (다른 기기 로그인 또는 세션 만료). 지금 수치는 마지막 동기화 데이터이고 알람·갱신은 멈춰 있습니다.</span>
+    <button type="button" class="btn btn-primary btn-sm" id="btn-session-relogin">재로그인</button>
+  </div>
+
   <!-- 요약 카드: 월 누적 + 오늘 실시간 인정 -->
   <div class="summary-grid">
     <div class="summary-card monthly">
