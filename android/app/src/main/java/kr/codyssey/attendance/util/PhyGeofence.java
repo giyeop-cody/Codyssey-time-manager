@@ -54,7 +54,7 @@ public final class PhyGeofence {
     public static void setGeofenceEnabled(Context context, boolean enabled) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putBoolean("phy_geofence", enabled).apply();
-        if (enabled) startIfEnabled(context);
+        if (enabled) startIfEnabled(context, true); // 32차: 토글 ON은 캐시와 무관하게 즉시 등록
         else stop(context);
     }
 
@@ -83,8 +83,22 @@ public final class PhyGeofence {
 
     @SuppressLint("MissingPermission")
     public static void startIfEnabled(Context context) {
+        startIfEnabled(context, false);
+    }
+
+    @SuppressLint("MissingPermission")
+    public static void startIfEnabled(Context context, boolean force) {
         try {
             if (!isGeofenceEnabled(context)) return;
+            SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            long now = System.currentTimeMillis();
+            // 32차 N31-8: 앱 열 때마다 재등록 호출은 낭비 — 등록 성공 상태가 6시간 유효하면 간극 둠.
+            // 실패/만료 시엔 다음 호출에서 재시도. 재부팅 복구처럼 OS가 등록을 잃었을 때는
+            // 호출측이 force=true로 강제한다 (reg_ok는 단말 저장값이라 부팅 후에도 남기 때문).
+            if (!force && prefs.getBoolean("phy_geo_reg_ok", false)
+                    && now - prefs.getLong("phy_geo_reg_at", 0) < 6L * 60 * 60 * 1000) {
+                return;
+            }
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)
                     != PackageManager.PERMISSION_GRANTED) {
                 DiagLog.addOnChange(context, "PHY", "geonofine", "⚠️ 지오펜스: 위치 권한 없음 — 등록 보류");
@@ -117,10 +131,19 @@ public final class PhyGeofence {
                     .build();
 
             client.addGeofences(request, geofencePendingIntent(context))
-                    .addOnSuccessListener(v ->
-                            DiagLog.add(context, "PHY", "지오펜스 등록 완료 (학원 좌표 반경 150m)"))
-                    .addOnFailureListener(e ->
-                            DiagLog.add(context, "PHY", "⚠️ 지오펜스 등록 실패: " + e.getMessage()));
+                    .addOnSuccessListener(v -> {
+                        prefs.edit()
+                                .putBoolean("phy_geo_reg_ok", true)
+                                .putLong("phy_geo_reg_at", System.currentTimeMillis())
+                                .apply();
+                        DiagLog.add(context, "PHY", "지오펜스 등록 완료 (학원 좌표 반경 150m)");
+                    })
+                    // 32차 N31-8: 실패는 호출마다 반복되므로 상태 변화 시에만 기록
+                    .addOnFailureListener(e -> {
+                        prefs.edit().putBoolean("phy_geo_reg_ok", false).apply();
+                        DiagLog.addOnChange(context, "PHY", "geofail",
+                                "⚠️ 지오펜스 등록 실패: " + e.getMessage());
+                    });
             startActivityUpdates(context);
         } catch (SecurityException se) {
             DiagLog.addOnChange(context, "PHY", "geodeny", "⚠️ 지오펜스 등록 거부 (권한)");
@@ -134,7 +157,10 @@ public final class PhyGeofence {
             LocationServices.getGeofencingClient(context)
                     .removeGeofences(geofencePendingIntent(context));
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .edit().putInt("phy_geo_hint", 0).apply();
+                    .edit()
+                    .putInt("phy_geo_hint", 0)
+                    .putBoolean("phy_geo_reg_ok", false) // 32차: 해제 상태를 등록 캐시에도 반영
+                    .apply();
             DiagLog.add(context, "PHY", "지오펜스 해제");
         } catch (Exception ignored) { }
         stopActivityUpdates(context);

@@ -1859,6 +1859,16 @@ function setupEventListeners() {
   });
 
   // W7: 절전모드 예외 요청 — 시스템 다이얼로그 열고 돌아오면 상태 재조회
+  // 32ch N31-9: native permission result -> refresh status line immediately
+  window.addEventListener('CodysseyNativeEvent', (e) => {
+    if (e && e.detail && e.detail.type === 'PHY_PERMISSION_RESULT') {
+      refreshPhyStatusUI();
+      if (e.detail.label === 'denied') {
+        showNotification('위치 권한 거부됨', '학원 근처 감지는 위치 권한이 있어야 동작합니다. 앱 설정에서 허용해 주세요.');
+      }
+    }
+  });
+
   els.btnBatteryExempt?.addEventListener('click', async () => {
     try {
       await window.Capacitor?.Plugins?.PollingPlugin?.requestBatteryOptimizationExemption();

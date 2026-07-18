@@ -9,7 +9,8 @@
     "test:relay": "node sandbox/test_relay_e2e.mjs",
     "android": "cap open android",
     "run:android": "cap run android",
-    "dev": "cap run android --livereload --external"
+    "dev": "cap run android --livereload --external",
+    "check:phy": "node scripts/check-phy.js"
   },
   "dependencies": {
     "@capacitor/android": "^6.1.0",

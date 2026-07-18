@@ -60,7 +60,16 @@ public class GateCheck {
             gateEnabled = settings.optBoolean("gateNotifyEnabled", true);
             notifEnabled = settings.optBoolean("notificationsEnabled", true);
         } catch (Exception e) { /* 기본값 유지 */ }
-        if (!gateEnabled) return; // 감지 비활성 — API 조회 자체를 하지 않음 (배터리/트래픽 절약)
+        // 32차 N31-5: 게이트 알림이 꺼져 있어도, 물리 탐지(phy_enabled)가 켜져 있으면
+        // 세션 스냅샷 갱신은 유지 — 스냅샷 30분 신선도가 물리 판정(S1/S2)의 근가라
+        // 함께 멈추면 "감지 중"이면서 알림이 안 나가는 정체 상태가 생긴다.
+        // 이 경로에서는 입·퇴실 이벤트 알림만 생략하고 스냅샷 갱신+롤오버 확인은 수행.
+        boolean phyOn = prefs.getBoolean("phy_enabled", false);
+        if (!gateEnabled && !phyOn) return; // 감지 비활성 — API 조회 자체를 하지 않음 (배터리/트래픽 절약)
+        if (!gateEnabled) {
+            DiagLog.addOnChange(context, "GATE", "phy_only",
+                    "입·퇴실 알림 꺼짐 — 물리 탐지 근거(세션 스냅샷) 갱신만 수행");
+        }
 
         Calendar cal = Calendar.getInstance();
         String todayStr = formatDate(cal.getTime());

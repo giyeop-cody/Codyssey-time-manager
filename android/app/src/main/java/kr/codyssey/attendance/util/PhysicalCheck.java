@@ -63,6 +63,10 @@ public final class PhysicalCheck {
     private static final int LOCATIONS_CAP = 300;
     private static final int SAMPLES_CAP = 1200;
     private static final long SNAPSHOT_FRESH_MS = 30L * 60 * 1000; // 게이트 스냅샷 신선도 하한
+    private static final long HINT_TTL_MS = 6L * 60 * 60 * 1000; // 32차 N31-3: 지오펜스 힌트 유효시간
+    private static final int SAMPLE_FLUSH_THRESHOLD = 6; // 32차 N31-10: 샘플 배치 저장 간격
+    private static final long LEARN_GEO_FRESH_MS = 2L * 60 * 1000; // 32차 N31-4: 학습 좌표 신선도 요구
+    private static final float LEARN_GEO_MAX_ACCURACY_M = 100f; // 32차 N31-4: 학습 좌표 정확도 상한
 
     private PhysicalCheck() {}
 
@@ -105,9 +109,20 @@ public final class PhysicalCheck {
             int score = scoreSignals(locations, sig);
 
             // 지오펜스 힌트 반영 (ENTER=1 / EXIT=-1 / 없음=0) — ⑤ 반응속도 경로
+            // 32차 N31-3: 힌트는 이벤트 수신 시각 기준 6시간만 유효. 이벤트가 멈춰도
+            // 마지막 값이 영구 고정돼 S1/S2 허위 판정을 유발하지 않도록 만료 처리.
             int hint = prefs.getInt("phy_geo_hint", 0);
-            if (hint == 1) score = Math.max(score, THRESHOLD_INSIDE);
-            else if (hint == -1) score = 0;
+            if (hint != 0) {
+                long hintAt = prefs.getLong("phy_geo_hint_at", 0);
+                if (hintAt > 0 && now - hintAt <= HINT_TTL_MS) {
+                    if (hint == 1) score = Math.max(score, THRESHOLD_INSIDE);
+                    else if (hint == -1) score = 0;
+                } else {
+                    prefs.edit().putInt("phy_geo_hint", 0).apply();
+                    DiagLog.addOnChange(context, "PHY", "hint_expired",
+                            "지오펜스 힌트 만료(6시간 무갱신) — 이후 판정은 신호 점수만 사용");
+                }
+            }
 
             Decision prev = readState(prefs);
             Decision next = decide(prev, sessionOpen, sig.hasSignal, locations.length() > 0, score);
@@ -119,7 +134,9 @@ public final class PhysicalCheck {
                 appendSample(prefs, sig, sessionOpen, score, next, now);
             }
 
-            DiagLog.addOnChange(context, "PHY", "state_" + insideName(next.inside) + "_s" + score,
+            // 32차 N31-8: 로그 키에서 점수 제외 — 셀 환경 누화로 점수가 출렁일 때마다
+            // 새 키가 만들어지며 진단 링버퍼가 씻기는 것을 방지 (점수는 메시지에만)
+            DiagLog.addOnChange(context, "PHY", "state_" + insideName(next.inside),
                     "물리 판정: " + insideName(next.inside) + " (점수 " + score
                             + (sessionOpen != null ? ", 서버세션 " + (sessionOpen ? "열림" : "닫힘") : ", 서버세션 불명") + ")");
         } catch (Exception e) { /* 틱 실패는 다음 틱으로 */ }
@@ -423,25 +440,40 @@ public final class PhysicalCheck {
             if (sig.bssid != null) { boost(locations, "bssid", sig.bssid, now); added++; }
             for (String c : sig.cells) { boost(locations, "cell", c, now); added++; }
 
-            // 지오펜스용 좌표 1건 (⑤ 지오펜스 토글의 시드)
+            // 지오펜스용 좌표 (⑤ 토글의 시드)
+            // 32차 N31-4: 마지막 잡힌 위치는 수 시간 전 전혀 다른 장소일 수 있음 —
+            // 신선도(2분 이내)와 정확도(100m 이내) 검사를 통과한 좌표만 반영.
+            // 32차 N31-11: 검증된 신선 좌표가 있으면 기존 좌표도 최신 바닥으로 교체
+            // (처음 1걸만 학습하고 멈추던 규칙의 정체 문제 해결)
             Location last = lastKnownLocation(context);
-            int geoCount = 0;
-            for (int i = 0; i < locations.length(); i++) {
-                if ("geo".equals(locations.optJSONObject(i) != null
-                        ? locations.optJSONObject(i).optString("kind") : "")) geoCount++;
-            }
-            if (last != null && geoCount == 0) {
-                locations.put(new JSONObject()
-                        .put("kind", "geo")
-                        .put("value", last.getLatitude() + "," + last.getLongitude())
-                        .put("hits", 5)
-                        .put("lastSeen", now));
+            boolean geoFresh = isFreshUsableLocation(last, now);
+            if (geoFresh) {
+                String geoValue = last.getLatitude() + "," + last.getLongitude();
+                boolean geoUpdated = false;
+                for (int i = 0; i < locations.length(); i++) {
+                    JSONObject loc = locations.optJSONObject(i);
+                    if (loc == null || !"geo".equals(loc.optString("kind"))) continue;
+                    loc.put("value", geoValue);
+                    loc.put("hits", loc.optInt("hits", 0) + 5);
+                    loc.put("lastSeen", now);
+                    geoUpdated = true;
+                    break;
+                }
+                if (!geoUpdated) {
+                    locations.put(new JSONObject()
+                            .put("kind", "geo")
+                            .put("value", geoValue)
+                            .put("hits", 5)
+                            .put("lastSeen", now));
+                }
                 added++;
             }
 
             prefs.edit().putString("phy_locations", pruneLocations(locations).toString()).apply();
-            DiagLog.add(context, "PHY", "수동 학습 완료 — " + added + "건 (SSID/셀" + (last != null ? "+좌표" : "") + ")");
-            return "학습 " + added + "건 반영" + (last == null ? " (좌표는 미확보)" : " (좌표 포함)");
+            DiagLog.add(context, "PHY", "수동 학습 완료 — " + added + "건 (SSID/셀"
+                    + (geoFresh ? "+좌표" : ", 좌표 미갱신") + ")");
+            return "학습 " + added + "건 반영"
+                    + (geoFresh ? " (좌표 포함)" : " (좌표 미갱신 — 최근 잡힌 위치가 오래됐거나 부정확함. 지도 앱을 한 번 열고 다시 시도)");
         } catch (Exception e) {
             return "학습 실패: " + e.getMessage();
         }
@@ -458,6 +490,13 @@ public final class PhysicalCheck {
             }
         }
         arr.put(new JSONObject().put("kind", kind).put("value", value).put("hits", 5).put("lastSeen", now));
+    }
+
+    // 32차 N31-4: 학습에 쓸 수 있는 신선한 좌표인지 (2분 이내 + 정확도 100m 이내)
+    private static boolean isFreshUsableLocation(Location l, long now) {
+        if (l == null) return false;
+        if (now - l.getTime() > LEARN_GEO_FRESH_MS) return false;
+        return !l.hasAccuracy() || l.getAccuracy() <= LEARN_GEO_MAX_ACCURACY_M;
     }
 
     private static Location lastKnownLocation(Context context) {
@@ -478,10 +517,13 @@ public final class PhysicalCheck {
     }
 
     // ===== 수집 모드 (베타) =====
+    // 32차 N31-10: 틱마다 최대 1200건짜리 JSON 전체를 재저장하면 I/O가 크므로
+    // 메모리 대기열에 모았다가 6걸 단위로 플러시 (프로세스 사망 시 유실은 대기열 최대 5걸)
+    private static final List<JSONObject> PENDING_SAMPLES = new ArrayList<>();
+
     private static void appendSample(SharedPreferences prefs, SignalBundle sig, Boolean sessionOpen,
                                      int score, Decision d, long now) {
         try {
-            JSONArray samples = new JSONArray(prefs.getString("phy_samples", "[]"));
             String activity = prefs.getString("phy_activity", null);
             JSONObject s = new JSONObject()
                     .put("t", now)
@@ -492,22 +534,40 @@ public final class PhysicalCheck {
                     .put("score", score)
                     .put("inside", d.inside == null ? JSONObject.NULL : d.inside == 1)
                     .put("act", activity != null ? activity : JSONObject.NULL);
-            samples.put(s);
-            if (samples.length() > SAMPLES_CAP) {
-                JSONArray trimmed = new JSONArray();
-                for (int i = samples.length() - SAMPLES_CAP; i < samples.length(); i++) {
-                    trimmed.put(samples.get(i));
+            synchronized (PENDING_SAMPLES) {
+                PENDING_SAMPLES.add(s);
+                if (PENDING_SAMPLES.size() >= SAMPLE_FLUSH_THRESHOLD) {
+                    flushPendingSamples(prefs);
                 }
-                samples = trimmed;
             }
-            prefs.edit().putString("phy_samples", samples.toString()).apply();
         } catch (Exception ignored) { }
+    }
+
+    // 대기열을 저장소의 phy_samples 링버퍼에 병합 (상한 1200 유지)
+    static void flushPendingSamples(SharedPreferences prefs) {
+        synchronized (PENDING_SAMPLES) {
+            if (PENDING_SAMPLES.isEmpty()) return;
+            try {
+                JSONArray samples = new JSONArray(prefs.getString("phy_samples", "[]"));
+                for (JSONObject o : PENDING_SAMPLES) samples.put(o);
+                PENDING_SAMPLES.clear();
+                if (samples.length() > SAMPLES_CAP) {
+                    JSONArray trimmed = new JSONArray();
+                    for (int i = samples.length() - SAMPLES_CAP; i < samples.length(); i++) {
+                        trimmed.put(samples.get(i));
+                    }
+                    samples = trimmed;
+                }
+                prefs.edit().putString("phy_samples", samples.toString()).apply();
+            } catch (Exception ignored) { }
+        }
     }
 
     // 내보내기 JSON — 개발자가 학원 신호 사전을 만들 때 쓰는 원자료. 사용자가 직접 공유.
     public static String exportJson(Context context) {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+            flushPendingSamples(prefs); // 32ch N31-10: include pending queue in export
             JSONObject out = new JSONObject()
                     .put("app", "codyssey-time-manager")
                     .put("kind", "phy-export")
@@ -526,6 +586,10 @@ public final class PhysicalCheck {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             if (!prefs.getBoolean("phy_enabled", false)) return;
+            // 32차 N31-8: 앱을 자주 열어도 스캔은 30분 간격으로 제한 (OS 쓰로틀 + 로그 노이즈 절감)
+            long lastScan = prefs.getLong("phy_scan_at", 0);
+            if (System.currentTimeMillis() - lastScan < 30L * 60 * 1000) return;
+            prefs.edit().putLong("phy_scan_at", System.currentTimeMillis()).apply();
             boolean fine = ContextCompat.checkSelfPermission(context,
                     Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
             boolean nearbyOk = Build.VERSION.SDK_INT < 33
@@ -555,7 +619,8 @@ public final class PhysicalCheck {
                             }
                         }
                     }
-                    DiagLog.add(context, "PHY",
+                    // 32차 N31-8: 결과 수가 바뀔 때만 기록 (앱을 자주 열어도 로그 씻김 방지)
+                    DiagLog.addOnChange(context, "PHY", "scan_" + matched,
                             "포그라운드 스캔: 학원 등록 신호 " + matched + "건 보임 (주변 AP " + results.size() + "개 중)");
                 } catch (SecurityException se) {
                     DiagLog.addOnChange(context, "PHY", "scandeny", "⚠️ Wi-Fi 스캔 거부 (권한)");
@@ -576,7 +641,7 @@ public final class PhysicalCheck {
             if (d.inside == null) out.put("inside", JSONObject.NULL);
             else out.put("inside", d.inside == 1);
             out.put("locations", new JSONArray(prefs.getString("phy_locations", "[]")).length());
-            out.put("samples", new JSONArray(prefs.getString("phy_samples", "[]")).length());
+            out.put("samples", new JSONArray(prefs.getString("phy_samples", "[]")).length() + PENDING_SAMPLES.size());
             out.put("lastCheck", prefs.getString("phy_state", "{}").contains("lastCheck")
                     ? new JSONObject(prefs.getString("phy_state", "{}")).optLong("lastCheck", 0) : 0);
             out.put("activity", prefs.getString("phy_activity", "unknown"));

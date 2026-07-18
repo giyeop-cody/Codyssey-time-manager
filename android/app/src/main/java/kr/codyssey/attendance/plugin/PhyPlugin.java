@@ -41,7 +41,9 @@ import kr.codyssey.attendance.util.PhysicalCheck;
 public class PhyPlugin extends Plugin {
 
     private static final String PREFS_NAME = "codyssey_prefs";
-    private static final int REQ_PHY_PERMS = 9021;
+    // 32차 N31-9: MainActivity.onRequestPermissionsResult가 같은 코드로 결과를 잡아
+    // 팝업에 즉시 알릴 수 있도록 public 공개
+    public static final int REQ_PHY_PERMS = 9021;
 
     @PluginMethod
     public void setPhyEnabled(PluginCall call) {

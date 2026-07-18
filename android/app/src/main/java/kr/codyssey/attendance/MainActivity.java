@@ -135,6 +135,20 @@ public class MainActivity extends BridgeActivity {
         );
     }
 
+    // 32차 N31-9: 물리 탐지 권한 요청 결과를 팝업에 즉시 전달 — 수락/거절 후 상태 줄이
+    // 다음 갱신 시점까지 낡은 문구로 남는 문제 해소
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == kr.codyssey.attendance.plugin.PhyPlugin.REQ_PHY_PERMS) {
+            boolean anyGranted = false;
+            for (int r : grantResults) {
+                if (r == android.content.pm.PackageManager.PERMISSION_GRANTED) anyGranted = true;
+            }
+            emitNativeEvent("PHY_PERMISSION_RESULT", anyGranted ? "granted" : "denied", "");
+        }
+    }
+
     @Override
     public void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent);

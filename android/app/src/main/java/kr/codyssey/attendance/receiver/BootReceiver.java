@@ -46,8 +46,9 @@ public class BootReceiver extends BroadcastReceiver {
         restoreOneShotAlarms(context);
 
         // 31차: 지오펜스는 재부팅 시 소실 — 활성 상태면 재등록 (PhysicalCheck.learnNow가 학습한 좌표 사용)
+        // 32차 N31-8: 부팅 경로는 reg_ok 캐시와 무관하게 강제 재등록이 필요 (OS가 등록을 잃은 상태)
         try {
-            kr.codyssey.attendance.util.PhyGeofence.startIfEnabled(context);
+            kr.codyssey.attendance.util.PhyGeofence.startIfEnabled(context, true);
         } catch (Exception e) { /* 다음 앱 실행에서 재시도 */ }
     }
 

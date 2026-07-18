@@ -2,21 +2,20 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main, master]
+    branches: [main]  # 32차 N28-3: master 브랜치 없음 — 트리거 정리
     tags: ['v*']  # N2: 태그 푸시 시 릴리스 빌드+GitHub Release 자동 생성
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_dispatch:  # 수동 실행 가능
-
-permissions:
-  # N2 개선: 태그 릴리스 시 action-gh-release가 Release를 생성하려면 쓰기 권한 필요
-  contents: write
 
 jobs:
   build:
     name: Build Debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # 32차 N28-3: 최상위 대신 job 레벨로 (태그 릴리스 시 action-gh-release가 Release 생성에 필요)
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout repository
@@ -49,6 +48,12 @@ jobs:
           fi
           echo "OK — assets/public 은 미커밋 상태 (CI가 cap sync로 생성)"
 
+      - name: Check phy mirror constants (N31-12)
+        run: npm run check:phy
+
+      - name: Check phy mirror constants (N31-12)
+        run: npm run check:phy
+
       - name: Run JS unit tests
         run: npm run test:js
 
@@ -61,16 +66,6 @@ jobs:
           api-level: 34
           ndk-version: r26c
           emulator: false
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            ${{ runner.os }}-gradle-
 
       - name: Grant execute permission for gradlew
         working-directory: ./android

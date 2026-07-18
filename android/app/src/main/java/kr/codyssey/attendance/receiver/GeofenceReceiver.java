@@ -27,16 +27,21 @@ public class GeofenceReceiver extends BroadcastReceiver {
         }
         int transition = event.getGeofenceTransition();
         final Context appCtx = context.getApplicationContext();
+        int hintValue;
         if (transition == Geofence.GEOFENCE_TRANSITION_ENTER
                 || transition == Geofence.GEOFENCE_TRANSITION_DWELL) {
-            appCtx.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
-                    .edit().putInt("phy_geo_hint", 1).apply();
+            hintValue = 1;
         } else if (transition == Geofence.GEOFENCE_TRANSITION_EXIT) {
-            appCtx.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
-                    .edit().putInt("phy_geo_hint", -1).apply();
+            hintValue = -1;
         } else {
             return;
         }
+        // 32차 N31-3: 힌트 수신 시각을 함께 저장 — PhysicalCheck가 6시간 유효기간을 판정
+        appCtx.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
+                .edit()
+                .putInt("phy_geo_hint", hintValue)
+                .putLong("phy_geo_hint_at", System.currentTimeMillis())
+                .apply();
         DiagLog.add(context, "PHY",
                 transition == Geofence.GEOFENCE_TRANSITION_EXIT
                         ? "지오펜스 이탈 — 즉시 물리 판정 실행" : "지오펜스 진입 — 즉시 물리 판정 실행");

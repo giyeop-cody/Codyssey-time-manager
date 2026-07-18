@@ -24,8 +24,9 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
+    <!-- 32차 N31-6: 스캔 결과를 위치(학원 근처) 판정에 쓰므로 neverForLocation 선언은
+         실제 용도와 모순 — 플래그 제거하고 위치 권한을 함께 요청하는 구조로 정렬 -->
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
     <application
         android:allowBackup="false"
