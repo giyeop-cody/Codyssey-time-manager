@@ -140,6 +140,53 @@ public class GateCheck {
         snap.put("dates", nextDates);
         snap.put("updatedAt", System.currentTimeMillis());
         prefs.edit().putString(GATE_SNAP_PREFIX + memberId, snap.toString()).apply();
+
+        // 29차: 자정 롤오버 확인 — 전날 입실 후 미퇴실이면 밤샘/누락 확인 알림 (당일 1회)
+        checkOvernightRollover(context, prefs, monthData, prevMonthData, todayStr, yesterdayStr);
+    }
+
+    // 29차: 전날 시작 미퇴실 세션 감지 → 확인 요청 알림.
+    // JS측 표시 정책(임시 집계 제외/밤샘/누락)과 같은 판단 대상을, 앱이 닫혀 있을 때도 묻기 위한 알림.
+    private static void checkOvernightRollover(Context context, SharedPreferences prefs,
+                                               JSONObject monthData, JSONObject prevMonthData,
+                                               String todayStr, String yesterdayStr) {
+        try {
+            if (todayStr.equals(prefs.getString("overnight_notified", ""))) return; // 당일 1회
+
+            JSONArray y = sessionsOf(monthData, yesterdayStr);
+            if (y.length() == 0 && prevMonthData != null) {
+                y = sessionsOf(prevMonthData, yesterdayStr); // 월 1일 롤오버
+            }
+            String openEntry = null;
+            for (int i = 0; i < y.length(); i++) {
+                JSONArray pair = y.optJSONArray(i);
+                if (pair == null || pair.length() < 2 || !pair.isNull(1)) continue;
+                openEntry = pair.optString(0, null); // 입실 시각순 — 마지막이 최신
+            }
+            if (openEntry == null) return;
+
+            // S1과 같은 기준: 입실부터 13시간 넘은 낡은 세션은 확인 대상 아님
+            long entryTs = eventTimestamp(yesterdayStr, openEntry, null);
+            if (entryTs <= 0 || System.currentTimeMillis() - entryTs > 13L * 60 * 60 * 1000) return;
+
+            // 사용자가 이미 선택한 건(entryDate 일치)이면 다시 묻지 않음
+            String decRaw = prefs.getString("overnight_decision", null);
+            if (decRaw != null) {
+                try {
+                    JSONObject dec = new JSONObject(unquoteJson(decRaw));
+                    if (yesterdayStr.equals(dec.optString("entryDate", ""))) return;
+                } catch (Exception ignore) { /* 파싱 실패 시 알림 진행 */ }
+            }
+
+            NotificationHelper.showNotification(context,
+                    "⏰ 퇴실 기록 확인 — 자정을 넘겼습니다",
+                    "전날 " + openEntry + " 입실 기록이 아직 열려 있습니다. 밤샘 근무인가요, 퇴실 누락인가요? "
+                            + "앱을 열어 선택해 주세요. (확인 전까지 오늘 집계에서 제외)",
+                    "overnight_check");
+            prefs.edit().putString("overnight_notified", todayStr).apply();
+            DiagLog.add(context, "GATE",
+                    "자정 롤오버 확인 알림 — 전날 " + openEntry + " 입실 세션 미퇴실 (임시 처리 안내)");
+        } catch (Exception e) { /* 확인 알림 실패는 다음 주기로 */ }
     }
 
     // diff: events에 [type, dateStr, entry, exit]를, holder에 [atMs]를 병렬 수집

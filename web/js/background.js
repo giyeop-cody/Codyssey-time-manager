@@ -28,6 +28,7 @@ import {
   diffEvalItems,
   isEvalConfirmed,
   mergeDetailLists,
+  OVERNIGHT_PREF_KEY,
   EVAL_AUTO_ID_PREFIX,
   parseEvalNoticeAlarms,
   filterNewEvalNotices,
@@ -279,8 +280,57 @@ async function processGateEvents(memberId, rawData) {
     }
 
     await setStorage({ [key]: { dates: nextDates, updatedAt: Date.now() } });
+
+    // 29차: 자정 롤오버 확인 — 전날 미퇴실 세션이면 밤샘/누락 확인 알림 (당일 1회)
+    await processOvernightRollover(memberId, rawData, settings);
   } catch (e) {
     console.warn('입·퇴실 감지 처리 실패:', e); // 감지 실패가 본래 조회를 깨면 안 됨
+  }
+}
+
+// 29차: 자정 롤오버 확인 — 전날 입실 후 미퇴실이면 확인 요청 알림 (당일 1회).
+// 팝업 표시 정책(임시 집계 제외/밤샘/누락)과 동일한 판단 대상을, 팝업을 열지 않아도 묻기 위한 경로.
+async function processOvernightRollover(memberId, rawData, settings) {
+  try {
+    if (!memberId || !rawData) return;
+    const todayStr = getTodayString();
+    const yd = new Date();
+    yd.setDate(yd.getDate() - 1);
+    const yesterdayStr = getTodayString(yd);
+
+    const snap = snapshotSessionsByDate(rawData, [yesterdayStr]);
+    const sessions = snap[yesterdayStr] || [];
+    let openEntry = null;
+    for (const pair of sessions) {
+      if (pair && pair[0] && !pair[1]) openEntry = pair[0]; // 퇴실 없는 세션 (입실 시각순 마지막이 최신)
+    }
+    if (!openEntry) return;
+
+    // S1 동일 기준 — 입실부터 13시간 넘은 낡은 세션은 확인 대상 아님
+    const [hh, mm] = openEntry.split(':').map(Number);
+    const entryAt = new Date();
+    entryAt.setDate(entryAt.getDate() - 1);
+    entryAt.setHours(hh, mm, 0, 0);
+    if (Date.now() - entryAt.getTime() > 13 * 60 * 60 * 1000) return;
+
+    // 이미 선택한 건(entryDate 일치)이거나 오늘 이미 물었으면 스킵
+    const stored = await getStorage([OVERNIGHT_PREF_KEY, 'overnight_notified']);
+    const dec = stored[OVERNIGHT_PREF_KEY];
+    if (dec && dec.entryDate === yesterdayStr) return;
+    if (stored.overnight_notified === todayStr) return;
+    if (settings.gateNotifyEnabled === false || settings.notificationsEnabled === false) return;
+
+    await chrome.notifications.create('overnight_check', {
+      type: 'basic',
+      iconUrl: 'icons/icon48.png',
+      title: '⏰ 퇴실 기록 확인 — 자정을 넘겼습니다',
+      message: `전날 ${openEntry} 입실 기록이 아직 어려 있습니다. 밤샘 근무인가요, 퇴실 누락인가요? 팝업에서 선택해 주세요. (확인 전까지 오늘 집계 제외)`,
+      priority: 2,
+      requireInteraction: true
+    });
+    await setStorage({ overnight_notified: todayStr });
+  } catch (e) {
+    console.warn('자정 롤오버 확인 실패:', e);
   }
 }
 

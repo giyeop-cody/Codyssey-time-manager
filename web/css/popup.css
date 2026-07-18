@@ -161,6 +161,14 @@ body {
 .session-expired-banner { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(255, 180, 60, 0.45); border-radius: var(--radius-sm); background: rgba(255, 180, 60, 0.10); color: var(--text-primary); font-size: 11px; line-height: 1.5; }
 .session-expired-banner .seb-text { flex: 1; }
 .session-expired-banner button { flex-shrink: 0; white-space: nowrap; }
+
+/* 29차: 자정 롤오버 임시 기록 배너 */
+.overnight-banner { display: none; align-items: center; gap: 8px; margin-bottom: 10px; padding: 10px 12px; border: 1px solid rgba(120, 160, 255, 0.5); border-radius: var(--radius-sm); background: rgba(120, 160, 255, 0.10); color: var(--text-primary); font-size: 11px; line-height: 1.5; }
+.overnight-banner.show { display: flex; }
+.overnight-banner #overnight-banner-text { flex: 1; }
+.overnight-banner .overnight-actions { display: none; gap: 6px; flex-shrink: 0; }
+.overnight-banner .overnight-actions .btn { white-space: nowrap; }
+.overnight-banner .overnight-change { display: none; flex-shrink: 0; background: none; border: none; color: var(--accent, #4ec9b0); font-size: 11px; text-decoration: underline; cursor: pointer; padding: 2px 4px; }
 .login-diag-title { font-size: 11px; color: var(--text-secondary); margin-bottom: 6px; }
 .login-diag-item { font-size: 10px; color: var(--text-muted); font-family: monospace; line-height: 1.6; word-break: break-all; }
 .login-diag-actions { display: flex; gap: 8px; margin-top: 8px; }

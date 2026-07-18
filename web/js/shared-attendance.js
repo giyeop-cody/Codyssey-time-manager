@@ -248,6 +248,81 @@ export function applyOvernightFromPrevMonth(parsed, prevMonthData, nowMs = Date.
   return false;
 }
 
+// ===== 29차: 자정 롤오버 — 전날 시작 미퇴실 세션 "임시 기록" 처리 =====
+// 문제: 자정을 넘겨도 퇴실 기록이 없으면, 전날 입실부터 현재까지의 경과가
+// 그대로 오늘 누적으로 표시되어 "당일 기록처럼 보이는" 결함이 있었다.
+// 정책:
+//  ① 자정이 지나 세션이 열린 채면 "임시" 상태 — 오늘 집계 합산 제외 + 괄호 표기
+//  ② 사용자에게 알람/배너로 확인: 밤샘(집계 정상 반영) / 퇴실 누락(계속 제외)
+//  ③ 확인 결과는 OVERNIGHT_PREF_KEY 로 저장 (앱은 Capacitor Preferences=네이티브 공유)
+
+export const OVERNIGHT_PREF_KEY = 'overnight_decision';
+
+function localDateStrOf(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function localHHMMOf(d) {
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+// 현재 입실 중인 세션이 "전날(또는 그 이전)"에 시작됐는지 감지
+export function detectCrossMidnightOpen(parsed, nowMs = Date.now()) {
+  if (!parsed || !parsed.isCurrentlyIn || !parsed.entryTimestamp) return null;
+  const entry = new Date(parsed.entryTimestamp);
+  const now = new Date(nowMs);
+  if (localDateStrOf(entry) === localDateStrOf(now)) return null; // 같은 날 — 롤오버 아님
+  const dayMs = 24 * 60 * 60 * 1000;
+  return {
+    entryTimestamp: parsed.entryTimestamp,
+    entryDateStr: localDateStrOf(entry),
+    entryTimeStr: localHHMMOf(entry),
+    crossedDays: Math.max(1, Math.round((new Date(localDateStrOf(now)) - new Date(localDateStrOf(entry))) / dayMs)),
+    elapsedMinutes: Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000))
+  };
+}
+
+// 저장된 확인 결과 유효성 검사 — 감지된 전날 입실 건과 날짜/회원이 일치할 때만 적용
+// raw: localStorage/prefs에 저장된 JSON 문자열 또는 객체 {entryDate, memberId, decision, at}
+export function readOvernightDecision(raw, detection, memberId) {
+  if (!detection || !raw) return null;
+  let obj = raw;
+  if (typeof raw === 'string') {
+    try { obj = JSON.parse(raw); } catch (e) { return null; }
+  }
+  if (!obj || obj.entryDate !== detection.entryDateStr) return null;
+  if (memberId && obj.memberId && obj.memberId !== memberId) return null;
+  return (obj.decision === 'overnight' || obj.decision === 'missing') ? obj.decision : null;
+}
+
+// 오늘 경과분 합산 여부 — 미확인(임시)/누락이면 제외, 밤샘이면 기존 규칙대로 포함
+export function includeCrossMidnightElapsed(detection, decision) {
+  if (!detection) return true;
+  return decision === 'overnight';
+}
+
+// 29차 인지형 버전의 오늘 인정 시간 (임시/누락이면 오늘분 경과 미합산 → 당일 기록 오인 방지)
+export function recognizedTodayOvernightAware(parsed, detection, decision, nowMs = Date.now()) {
+  if (!parsed) return 0;
+  if (!includeCrossMidnightElapsed(detection, decision)) return parsed.dailyTotal;
+  return recognizedToday(parsed, nowMs);
+}
+
+// 29차 인지형 월 누적 (임시/누락이면 서버 확정분만)
+export function recognizedMonthlyOvernightAware(parsed, detection, decision, nowMs = Date.now()) {
+  if (!parsed) return 0;
+  if (!includeCrossMidnightElapsed(detection, decision)) return parsed.monthlyTotal;
+  return recognizedMonthly(parsed, nowMs);
+}
+
+// 상태 표시 괄호 문구: 임시 / 밤샘 / 누락 — 사용자 요청의 "()로 묶어 처리"
+export function overnightStatusSuffix(detection, decision) {
+  if (!detection) return '';
+  const base = `전날 ${detection.entryTimeStr} 입실`;
+  if (decision === 'overnight') return ` (${base}부터 · 밤샘 집계)`;
+  if (decision === 'missing') return ` (${base} · 퇴실 누락 — 오늘 집계 제외)`;
+  return ` (${base}부터 · 임시 — 확인 필요)`;
+}
+
 // ===== 알람 이름 유틸 (background.js와 공유 — L11 중복 제거) =====
 export const ALARM_PREFIX = 'codyssey_alarm_';
 export const LEGACY_ALARM_PREFIX = 'codyssey_exit_';

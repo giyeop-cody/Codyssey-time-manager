@@ -5,8 +5,6 @@
 // 공통 출입 로직 (단일 소스 — background/adapter와 공유)
 import {
   elapsedSinceEntry,
-  recognizedToday,
-  recognizedMonthly,
   projectedMonthly,
   minutesToTimeStr,
   minutesToHHMM,
@@ -19,7 +17,13 @@ import {
   credentialInputDigest,
   stripEdgeInvisibles,
   diagRingAppend,
-  formatDiagEntry
+  formatDiagEntry,
+  detectCrossMidnightOpen,
+  readOvernightDecision,
+  recognizedTodayOvernightAware,
+  recognizedMonthlyOvernightAware,
+  overnightStatusSuffix,
+  OVERNIGHT_PREF_KEY
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -147,6 +151,13 @@ const els = {
   btnExactAlarm: document.getElementById('btn-exact-alarm'),
   settingDashStatus: document.getElementById('setting-dash-status'),
   sessionExpiredBanner: document.getElementById('session-expired-banner'),
+  // 29차: 자정 롤오버 임시 기록 배너
+  overnightBanner: document.getElementById('overnight-banner'),
+  overnightBannerText: document.getElementById('overnight-banner-text'),
+  overnightBannerActions: document.getElementById('overnight-banner-actions'),
+  btnOvernightStay: document.getElementById('btn-overnight-stay'),
+  btnOvernightMissing: document.getElementById('btn-overnight-missing'),
+  btnOvernightChange: document.getElementById('btn-overnight-change'),
   btnSessionRelogin: document.getElementById('btn-session-relogin'),
   initSplash: document.getElementById('init-splash'),
   loginDiag: document.getElementById('login-diag'),
@@ -169,6 +180,9 @@ const els = {
 // 상태 변수
 let currentMemberId = null;
 let currentParsed = null;
+// 29차: 자정 롤오버 "임시 기록" — 전날 시작 미퇴실 세션 감지/확인 상태
+let overnightDetection = null;
+let overnightDecision = null; // 'overnight' | 'missing' | null
 let currentSettings = null;
 let refreshTimer = null;
 let realtimeTimer = null;
@@ -327,6 +341,7 @@ async function loadDashboard(forceRefresh = false) {
 
     hideExpiredBanner(); // 22차: 세션 회복(재로그인 성공)되면 배너 해제
 
+    await syncOvernightFromStorage(); // 29차: 롤오버 선택 상태 병합
     updateDashboardUI();
     checkNotificationPermission();
     updateLastUpdateTime();
@@ -368,8 +383,104 @@ function describeError(error) {
   return '데이터를 불러오는데 실패했습니다. 다시 시도해주세요.';
 }
 
+// ===== 29차: 자정 롤오버 "임시 기록" — 전날 미퇴실 세션 확인 =====
+function getOvernightDecisionRaw() {
+  try { return JSON.parse(localStorage.getItem(OVERNIGHT_PREF_KEY) || 'null'); } catch (e) { return null; }
+}
+
+async function persistOvernightDecision(obj) {
+  const v = JSON.stringify(obj || null);
+  try {
+    if (obj) localStorage.setItem(OVERNIGHT_PREF_KEY, v);
+    else localStorage.removeItem(OVERNIGHT_PREF_KEY);
+  } catch (e) { /* 무시 */ }
+  // 앱: 네이티브 GateCheck(백그라운드 자정 확인 알림)도 읽을 수 있게 공유 prefs에 반영
+  try {
+    const P = window.Capacitor?.Plugins?.Preferences;
+    if (P && window.CodysseyNative?.isNative) {
+      if (obj) await P.set({ key: OVERNIGHT_PREF_KEY, value: v });
+      else await P.remove({ key: OVERNIGHT_PREF_KEY });
+    }
+  } catch (e) { /* 무시 */ }
+  // 익스텐션: 백그라운드(SW)의 자정 확인이 읽을 수 있게 chrome.storage에도 반영
+  try {
+    if (!window.CodysseyNative?.isNative && typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [OVERNIGHT_PREF_KEY]: obj || null });
+    }
+  } catch (e) { /* 무시 */ }
+}
+
+// 익스텐션: SW 측 알림 경로와 선택 상태 공유 — chrome.storage의 최신값을 localStorage로 병합
+async function syncOvernightFromStorage() {
+  try {
+    if (window.CodysseyNative?.isNative) return; // 앱은 localStorage 기준으로 충분
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const r = await chrome.storage.local.get(OVERNIGHT_PREF_KEY);
+      const v = r ? r[OVERNIGHT_PREF_KEY] : undefined;
+      if (v) localStorage.setItem(OVERNIGHT_PREF_KEY, JSON.stringify(v));
+    }
+  } catch (e) { /* 무시 */ }
+}
+
+function refreshOvernightState() {
+  overnightDetection = detectCrossMidnightOpen(currentParsed);
+  overnightDecision = readOvernightDecision(getOvernightDecisionRaw(), overnightDetection, currentMemberId);
+  updateOvernightBanner();
+  // 세션이 닫히면(정상 퇴실 처리) 지난 확인 결과는 정리
+  if (!overnightDetection && getOvernightDecisionRaw()) {
+    persistOvernightDecision(null);
+    overnightDecision = null;
+  }
+}
+
+function updateOvernightBanner() {
+  const banner = els.overnightBanner;
+  if (!banner) return;
+  if (!overnightDetection) { banner.classList.remove('show'); return; }
+  banner.classList.add('show');
+  const d = overnightDetection;
+  if (!overnightDecision) {
+    els.overnightBannerText.textContent =
+      `🌙 전날 ${d.entryTimeStr} 입실 기록이 자정을 넘겼습니다. 밤샘 근무인가요, 퇴실 누락인가요? (확인 전까지 "임시"로 오늘 집계 제외)`;
+    els.overnightBannerActions.style.display = 'flex';
+    els.btnOvernightChange.style.display = 'none';
+  } else if (overnightDecision === 'overnight') {
+    els.overnightBannerText.textContent = `🌙 전날 ${d.entryTimeStr} 입실 — 밤샘 근무로 집계 중입니다.`;
+    els.overnightBannerActions.style.display = 'none';
+    els.btnOvernightChange.style.display = 'inline';
+  } else {
+    els.overnightBannerText.textContent = `🚪 전날 ${d.entryTimeStr} 입실 — 퇴실 누락으로 처리해 오늘 집계에서 제외 중입니다.`;
+    els.overnightBannerActions.style.display = 'none';
+    els.btnOvernightChange.style.display = 'inline';
+  }
+}
+
+async function chooseOvernight(decision) {
+  if (!overnightDetection) return;
+  if (decision) {
+    await persistOvernightDecision({
+      entryDate: overnightDetection.entryDateStr,
+      memberId: currentMemberId,
+      decision,
+      at: Date.now()
+    });
+    overnightDecision = decision;
+    diag('OVN', decision === 'overnight'
+      ? `밤샘 근무 선택 — 전날 ${overnightDetection.entryTimeStr} 입실분 정상 집계`
+      : `퇴실 누락 선택 — 전날 ${overnightDetection.entryTimeStr} 입실분 오늘 집계 제외`);
+  } else {
+    await persistOvernightDecision(null);
+    overnightDecision = null;
+    diag('OVN', '자정 롤오버 확인 결과 초기화 (변경)');
+  }
+  updateOvernightBanner();
+  updateDashboardUI();
+}
+
 function updateDashboardUI() {
   if (!currentParsed || !currentSettings) return;
+
+  refreshOvernightState(); // 29차: 자정 롤오버 임시 처리 상태 최신화
 
   const { monthlyTotal, dailyTotal, lastInTime, lastOutTime, isCurrentlyIn } = currentParsed;
   const monthlyReq = currentSettings.monthlyRequiredHours * 60;
@@ -412,10 +523,11 @@ function updateDashboardUI() {
     ? '실시간 추정치 (입실 경과 포함, 서버 확정 전)'
     : '';
 
-  // 현재 상태
+  // 현재 상태 (29차: 자정 롤오버 시 괄호 표기 — 임시/밤샘/누락)
   if (isCurrentlyIn && lastInTime !== null) {
     els.currentStatus.className = 'current-status show in';
-    els.currentStatusText.textContent = `입실 중 (입실: ${minutesToHHMM(lastInTime)})`;
+    els.currentStatusText.textContent = `입실 중 (입실: ${minutesToHHMM(lastInTime)})`
+      + overnightStatusSuffix(overnightDetection, overnightDecision);
     // 실시간 상세 표시
     els.realtimeStatus.classList.add('show');
     els.realtimeEntryTime.textContent = minutesToHHMM(lastInTime);
@@ -482,16 +594,18 @@ function describeEvalSyncError(err) {
 }
 
 // 실시간 인정 시간 계산 (서버 규칙: 일 12시간 캡 — shared-attendance.js 참조)
+// 29차: 자정 롤오버 임시/누락 상태면 전날 세션 경과를 오늘에 합산하지 않음
 function calculateRealtimeRecognized() {
   if (!currentParsed) return 0;
-  return recognizedToday(currentParsed);
+  return recognizedTodayOvernightAware(currentParsed, overnightDetection, overnightDecision);
 }
 
 // formatEndMinutes는 shared-attendance.js 단일 소스 사용 (K11)
 
-// 실시간 월 누적 인정 시간 계산 (일일 상한 적용)
+// 실시간 월 누적 인정 시간 계산 (일일 상한 적용, 29차: 롤오버 인지형)
 function calculateRealtimeMonthly() {
-  return recognizedMonthly(currentParsed);
+  if (!currentParsed) return 0;
+  return recognizedMonthlyOvernightAware(currentParsed, overnightDetection, overnightDecision);
 }
 
 // 실시간 업데이트 (1초마다)
@@ -537,7 +651,7 @@ function updateRealtimeUI() {
   }
   
   const elapsed = elapsedSinceEntry(currentParsed);
-  const recognized = recognizedToday(currentParsed);
+  const recognized = calculateRealtimeRecognized(); // 29차: 롤오버 인지
   
   els.realtimeElapsed.textContent = minutesToTimeStr(elapsed);
   els.realtimeRecognized.textContent = minutesToTimeStr(recognized);
@@ -552,7 +666,7 @@ function updateRealtimeUI() {
   els.dailyRemain.className = `remain ${Math.max(0, dailyMax - recognized) > 0 ? 'warning' : 'ok'}`;
   
   // 월 누적도 실시간으로 함께 업데이트 (서버 누적 + 현재 시간 - 마지막 입실 시간)
-  const realtimeMonthly = recognizedMonthly(currentParsed);
+  const realtimeMonthly = calculateRealtimeMonthly(); // 29차: 롤오버 인지
   const monthlyReq = currentSettings.monthlyRequiredHours * 60;
   const monthlyRemainMin = Math.max(0, monthlyReq - realtimeMonthly);
   els.monthlyTotal.textContent = minutesToTimeStr(realtimeMonthly);
@@ -572,7 +686,7 @@ function updateExitCalculationLive() {
   if (nowMin >= exitAlarmEndMinutes) return; // 시간 지남
   
   const entryMin = currentParsed.lastInTime;
-  const todayTotalSoFar = recognizedToday(currentParsed);
+  const todayTotalSoFar = calculateRealtimeRecognized(); // 29차: 롤오버 인지
   const additionalMinutes = exitAlarmEndMinutes - nowMin;
   const projectedDailyTotal = todayTotalSoFar + additionalMinutes;
   const dailyMax = currentSettings.dailyMaxHours * 60;
@@ -603,7 +717,7 @@ function updateGoalCalculationLive() {
   const nowMin = getCurrentMinutes();
   if (nowMin >= goalAlarmEndMinutes) return;
   
-  const todayTotalSoFar = recognizedToday(currentParsed);
+  const todayTotalSoFar = calculateRealtimeRecognized(); // 29차: 롤오버 인지
   const remainingToGoal = goalAlarmEndMinutes - nowMin;
   const projectedDailyTotal = todayTotalSoFar + remainingToGoal;
   const dailyMax = currentSettings.dailyMaxHours * 60;
@@ -763,7 +877,7 @@ function isCurrentMonthView() {
 // K9: 오늘 셀은 서버 확정 값과 실시간 인정 값 중 큰 값 표시 (calendar.js L5와 동작 통일)
 function miniDisplayMinutes(dateStr, serverValue) {
   if (dateStr === getTodayString() && isCurrentMonthView() && currentParsed?.isCurrentlyIn) {
-    return Math.max(serverValue, recognizedToday(currentParsed));
+    return Math.max(serverValue, calculateRealtimeRecognized()); // 29차: 롤오버 인지
   }
   return serverValue;
 }
@@ -1014,7 +1128,7 @@ async function calculateExitTime() {
     }
     
     // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산 (일일 상한 적용)
-    const todayTotalSoFar = recognizedToday(currentParsed);
+    const todayTotalSoFar = calculateRealtimeRecognized(); // 29차: 롤오버 인지
     const additionalMinutes = exitMin - nowMin;
     const projectedDailyTotal = todayTotalSoFar + additionalMinutes;
     const dailyMax = currentSettings.dailyMaxHours * 60;
@@ -1076,7 +1190,7 @@ async function calculateGoalTime() {
     }
     
     // 서버 누적 값 + (현재 시간 - 마지막 입실 시간) 기준으로 계산 (일일 상한 적용)
-    const todayTotalSoFar = recognizedToday(currentParsed);
+    const todayTotalSoFar = calculateRealtimeRecognized(); // 29차: 롤오버 인지
     const remainingToGoal = goalMinutes - todayTotalSoFar;
     
     if (remainingToGoal <= 0) {
@@ -1667,6 +1781,7 @@ function setupEventListeners() {
         currentParsed = response.parsed;
         currentSettings = response.settings;
         currentEvalSync = response.evalSync || null; // S4
+        await syncOvernightFromStorage(); // 29차: 롤오버 선택 상태 병합
         updateDashboardUI();
         checkNotificationPermission();
         updateLastUpdateTime();
@@ -1705,6 +1820,11 @@ function setupEventListeners() {
   });
 
   // 22차: 세션 만료 배너의 재로그인 — 배너는 유지하되 로그인 폼으로 전환해 재인증 유도
+  // 29차: 자정 롤오버 확인 — 밤샘/누락/변경
+  els.btnOvernightStay?.addEventListener('click', () => { chooseOvernight('overnight'); });
+  els.btnOvernightMissing?.addEventListener('click', () => { chooseOvernight('missing'); });
+  els.btnOvernightChange?.addEventListener('click', () => { chooseOvernight(null); });
+
   els.btnSessionRelogin?.addEventListener('click', () => {
     showLoginScreen('세션 만료 — 재로그인 시도');
   });

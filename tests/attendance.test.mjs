@@ -34,7 +34,13 @@ import {
   legacyAlarmName,
   parseAlarmName,
   ALARM_PREFIX,
-  LEGACY_ALARM_PREFIX
+  LEGACY_ALARM_PREFIX,
+  detectCrossMidnightOpen,
+  readOvernightDecision,
+  recognizedTodayOvernightAware,
+  recognizedMonthlyOvernightAware,
+  overnightStatusSuffix,
+  OVERNIGHT_PREF_KEY
 } from '../web/js/shared-attendance.js';
 
 // ===== 픽스처 헬퍼 (오늘 날짜 기준으로 동적 생성 → 날짜 독립적) =====
@@ -926,4 +932,81 @@ test('formatDiagEntry: 날짜·태그·메시지 형식', () => {
   assert.equal(s, '7/18 08:05:09 [GATE] 출입 조회 HTTP 302');
   assert.equal(formatDiagEntry(null), '');
   assert.equal(formatDiagEntry({ tag: 'X' }), '');
+});
+
+// ===== 29차: 자정 롤오버 — 전날 미퇴실 세션 "임시 기록" =====
+// 픽스처: 오늘 01:30 현재, 어제 20:15 입실 미퇴실
+function rolloverFixture() {
+  const now = new Date();
+  now.setHours(1, 30, 0, 0);
+  const entry = new Date(now);
+  entry.setDate(entry.getDate() - 1);
+  entry.setHours(20, 15, 0, 0);
+  const parsed = {
+    isCurrentlyIn: true,
+    entryTimestamp: entry.getTime(),
+    lastInTime: 20 * 60 + 15,
+    dailyTotal: 0,      // 오늘 서버 확정 0
+    monthlyTotal: 120   // 월 서버 확정 2시간
+  };
+  return { now, entry, parsed };
+}
+
+test('29차 detectCrossMidnightOpen: 전날 개방 세션 감지', () => {
+  const { now, entry, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  assert.ok(det);
+  assert.equal(det.entryDateStr, getTodayString(entry));
+  assert.equal(det.entryTimeStr, '20:15');
+  assert.equal(det.elapsedMinutes, 5 * 60 + 15);
+});
+
+test('29차 detectCrossMidnightOpen: 같은 날 세션/미입실이면 null', () => {
+  const now = new Date(); now.setHours(23, 0, 0, 0);
+  const entry = new Date(now); entry.setHours(9, 0, 0, 0);
+  assert.equal(detectCrossMidnightOpen({ isCurrentlyIn: true, entryTimestamp: entry.getTime() }, now.getTime()), null);
+  const { parsed } = rolloverFixture();
+  assert.equal(detectCrossMidnightOpen({ ...parsed, isCurrentlyIn: false }, now.getTime()), null);
+  assert.equal(detectCrossMidnightOpen(null, now.getTime()), null);
+});
+
+test('29차 readOvernightDecision: 날짜·회원 일치 시에만 유효', () => {
+  const { now, entry, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  const raw = JSON.stringify({ entryDate: getTodayString(entry), memberId: 'm1', decision: 'missing' });
+  assert.equal(readOvernightDecision(raw, det, 'm1'), 'missing');
+  assert.equal(readOvernightDecision(raw, det, 'm2'), null); // 회원 불일치
+  assert.equal(readOvernightDecision(JSON.stringify({ entryDate: '2000-01-01', decision: 'overnight' }), det, 'm1'), null);
+  assert.equal(readOvernightDecision(raw, null, 'm1'), null); // 감지 없으면 무시
+});
+
+test('29차 임시(미확인): 전날 경과가 오늘 집계에 합산되지 않음 (당일 기록 오인 방지)', () => {
+  const { now, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  assert.equal(recognizedTodayOvernightAware(parsed, det, null, now.getTime()), 0); // dailyTotal만
+  assert.equal(recognizedMonthlyOvernightAware(parsed, det, null, now.getTime()), 120);
+});
+
+test('29차 밤샘 선택: 기존 규칙대로 경과 합산', () => {
+  const { now, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  assert.equal(recognizedTodayOvernightAware(parsed, det, 'overnight', now.getTime()), 5 * 60 + 15);
+  assert.equal(recognizedMonthlyOvernightAware(parsed, det, 'overnight', now.getTime()), 120 + (5 * 60 + 15));
+});
+
+test('29차 퇴실 누락 선택: 계속 집계 제외', () => {
+  const { now, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  assert.equal(recognizedTodayOvernightAware(parsed, det, 'missing', now.getTime()), 0);
+  assert.equal(recognizedMonthlyOvernightAware(parsed, det, 'missing', now.getTime()), 120);
+});
+
+test('29차 overnightStatusSuffix: 괄호 표기 (임시/밤샘/누락)', () => {
+  const { now, parsed } = rolloverFixture();
+  const det = detectCrossMidnightOpen(parsed, now.getTime());
+  assert.match(overnightStatusSuffix(det, null), /^\s*\(.*임시.*\)$/);
+  assert.match(overnightStatusSuffix(det, 'overnight'), /밤샘/);
+  assert.match(overnightStatusSuffix(det, 'missing'), /누락/);
+  assert.equal(overnightStatusSuffix(null, null), '');
+  assert.equal(OVERNIGHT_PREF_KEY, 'overnight_decision');
 });

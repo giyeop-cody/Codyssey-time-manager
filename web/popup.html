@@ -80,6 +80,16 @@
     <button type="button" class="btn btn-primary btn-sm" id="btn-session-relogin">재로그인</button>
   </div>
 
+  <!-- 29차: 자정 롤오버 "임시 기록" 배너 — 전날 미퇴실 세션의 밤샘/누락 확인 -->
+  <div id="overnight-banner" class="overnight-banner">
+    <span id="overnight-banner-text"></span>
+    <div class="overnight-actions" id="overnight-banner-actions">
+      <button type="button" class="btn btn-primary btn-sm" id="btn-overnight-stay">🌙 밤샘 근무</button>
+      <button type="button" class="btn btn-danger btn-sm" id="btn-overnight-missing">🚪 퇴실 누락</button>
+    </div>
+    <button type="button" class="overnight-change" id="btn-overnight-change">변경</button>
+  </div>
+
   <!-- 요약 카드: 월 누적 + 오늘 실시간 인정 -->
   <div class="summary-grid">
     <div class="summary-card monthly">
