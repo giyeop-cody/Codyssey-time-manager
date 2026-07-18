@@ -304,3 +304,21 @@ node scripts/build-sandbox.js   # → sandbox/popup-sandbox.html 재생성 + 모
 - 재로그인 성공 시 배너 자동 해제.
 - (네이티브 측 명의 폐기는 그대로: member_id 삭제 시 GateCheck는 스킵 — 만료 중 서버 요청 낭비 방지)
 - 후보였으나 미채택: 자동 재로그인(자격증명 Keystore 저장) — 다른 기기 세션과 핑퐁(상호 강제 로그아웃) 위험이 있어 명지적 요청 시에만 구현.
+
+## 부록 10: '퇴실 알람이 시간이 돼도 안 울림' 점검 매트릭스 (23차 — v1.4.1)
+
+예약 알람 경로: SET_ALARM(JS) → AlarmPlugin.schedule(정확 알람) → AlarmReceiver → NotificationHelper(채널 codyssey_alarms).
+
+| 진단 로그 | 판정 |
+|---|---|
+| `ALARM-S 알람 예약: ... (정확)` 있음 | 예약까지는 성공 → 발화 계층 점검 |
+| ALARM-S 없음, 권한 alert 이력 | 23차 이전엔 알림 권한 없음 시 조용히 return됨 — 23차부터 alert으로 안내 |
+| `ALARM-F 알람 발화: ... (정시)` 있음 | 발화까지 정상 → 표시/채널 계층 (NOTIF 로그 확인) |
+| `ALARM-F ... (+"분 지연 — OS가 늦게 깨움)` | 제조사 절전 지연 — 배터리 최적화 예외·정확 알람 재확인 |
+| `ALARM-F 표시 생략 ...` | 15분 stale 상한 초과 발화 — 정책상 표시 안 함 |
+| `NOTIF ⚠️ '출입 알림' 채널이 시스템 설정에서 꺼져 있어...` | 채널 차단 — 시스템 설정에서 채널 활성 필요 (코드 우회 불가) |
+
+코드 수정:
+- PendingIntent requestCode를 id.hashCode() → id별 고유 정수 매핑으로 교체 (해시 충돌 덮어쓰기 소멸 방지) + 구버전 PI 자동 정리(이중 발화 방지).
+- 설정 시 알림 권한 미허용이면 조용한 return → 명시적 alert + 설정 유도.
+- 채널 차단(IMPORTANCE_NONE) 감지 → NOTIF 로그.

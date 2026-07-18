@@ -121,6 +121,33 @@ public class AlarmPlugin extends Plugin {
         call.resolve(result);
     }
 
+    // 23차: PendingIntent requestCode로 id.hashCode()를 쓰면 다른 알람 id끼리
+    // 해시가 충돌했을 때 OS가 같은 PendingIntent로 보고 한쪽을 덮어써 알람이 소멸했다.
+    // → 알림 id 고유 매핑(NotificationHelper 패턴)과 동일하게 id→고유 정수 매핑을 유지.
+    private static final String PI_PREFS = "codyssey_pi_codes";
+    private static final int PI_CODE_BASE = 5000;
+
+    private static int pendingRequestCodeFor(Context ctx, String id) {
+        SharedPreferences prefs = ctx.getSharedPreferences(PI_PREFS, Context.MODE_PRIVATE);
+        String key = "map_" + (id != null ? id : "default");
+        int existing = prefs.getInt(key, -1);
+        if (existing >= 0) return existing;
+        int next = prefs.getInt("counter", PI_CODE_BASE) + 1;
+        prefs.edit().putInt("counter", next).putInt(key, next).apply();
+        return next;
+    }
+
+    // 구버전(id.hashCode() requestCode)으로 예약된 알람을 같이 해제 — 스키마 전환 후
+    // 같은 알람이 구/신 두 갈래로 울리는 이중 발화 방지
+    private static void cancelLegacyAlarm(AlarmManager alarmManager, Context ctx, Intent intent, String id) {
+        try {
+            PendingIntent legacy = PendingIntent.getBroadcast(
+                    ctx, id != null ? id.hashCode() : 0, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            alarmManager.cancel(legacy);
+        } catch (Exception e) { /* 구버전 존재 여부 무관 */ }
+    }
+
     // 현재 정확 알람 사용 가능 여부 (M5 처리의 기준)
     private boolean canScheduleExact() {
         AlarmManager alarmManager = (AlarmManager) getContext().getSystemService(Context.ALARM_SERVICE);
@@ -262,9 +289,11 @@ public class AlarmPlugin extends Plugin {
         }
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
+        cancelLegacyAlarm(alarmManager, ctx, intent, id); // 23차: 구버전 PI 잔재 정리
+
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 ctx,
-                id.hashCode(),
+                pendingRequestCodeFor(ctx, id),
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
@@ -291,9 +320,11 @@ public class AlarmPlugin extends Plugin {
         Intent intent = new Intent(ctx, AlarmReceiver.class);
         intent.setAction(AlarmReceiver.ACTION_ALARM_TRIGGER);
 
+        cancelLegacyAlarm(alarmManager, ctx, intent, id); // 23차: 구버전 PI도 반드시 해제
+
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 ctx,
-                id.hashCode(),
+                pendingRequestCodeFor(ctx, id),
                 intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );

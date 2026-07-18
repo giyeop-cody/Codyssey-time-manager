@@ -1170,7 +1170,11 @@ async function cancelGoalAlarm() {
 
 async function setGenericAlarm(endMinutes, alarmType, label, onSuccess) {
   const hasPerm = await requestNotificationPermission();
-  if (!hasPerm) return;
+  // 23차: 권한 없으면 조용히 return되어 사용자가 '설정된 줄'로 착각하던 결함 — 안내 + 설정 진입
+  if (!hasPerm) {
+    alert('알림 권한이 꺼져 있어 알람이 울리지 않습니다.\n설정 > 알림에서 이 앱의 알림을 허용한 뒤 다시 설정해주세요.');
+    return;
+  }
 
   try {
     const timeStr = formatEndMinutes(endMinutes);

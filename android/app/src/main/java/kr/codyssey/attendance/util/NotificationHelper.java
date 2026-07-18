@@ -57,6 +57,18 @@ public class NotificationHelper {
         boolean sound = alarmSoundEnabled(context);
         createNotificationChannel(context, sound);
 
+        // 23차: 채널이 시스템 설정에서 차단돼 있으면 notify()가 무음 무시된다
+        // (예외도 안 나고 알림만 안 뜸 — "알람이 시간 됐는데 안 울림"의 정숙 원인) → 판독용 로그
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationManager manager = context.getSystemService(NotificationManager.class);
+            NotificationChannel ch = manager != null ? manager.getNotificationChannel(CHANNEL_ID) : null;
+            if (ch != null && ch.getImportance() == NotificationManager.IMPORTANCE_NONE) {
+                kr.codyssey.attendance.util.DiagLog.add(context, "NOTIF",
+                        "⚠️ '출입 알림' 채널이 시스템 설정에서 꺼져 있어 알림이 표시되지 않음: " + title
+                        + " (시스템 설정 → 알림에서 채널 켜기 필요)");
+            }
+        }
+
         String notifIdKey = id != null ? id : "default";
         int notificationId = notificationIdFor(context, notifIdKey);
 
