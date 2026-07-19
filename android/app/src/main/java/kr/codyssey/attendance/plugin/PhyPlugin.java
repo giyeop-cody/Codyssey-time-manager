@@ -11,7 +11,6 @@ import android.provider.Settings;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -19,8 +18,6 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 
-import java.io.File;
-import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -65,18 +62,6 @@ public class PhyPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void setPhyCollect(PluginCall call) {
-        boolean enabled = call.getBoolean("enabled", false);
-        prefs(getContext()).edit().putBoolean("phy_collect", enabled).apply();
-        DiagLog.add(getContext(), "PHY", enabled
-                ? "수집 모드 켜짐 — 틱마다 신호 샘플 누적 (내보내기은 사용자가 직접 공유)"
-                : "수집 모드 꺼짐");
-        JSObject out = new JSObject();
-        out.put("collect", enabled);
-        call.resolve(out);
-    }
-
-    @PluginMethod
     public void setPhyGeofence(PluginCall call) {
         boolean enabled = call.getBoolean("enabled", false);
         Context ctx = getContext();
@@ -85,20 +70,6 @@ public class PhyPlugin extends Plugin {
         out.put("geofence", enabled);
         out.put("needBackground", enabled && Build.VERSION.SDK_INT >= 29
                 && !PhyGeofence.hasBackgroundLocation(ctx));
-        call.resolve(out);
-    }
-
-    @PluginMethod
-    public void setPhyMailTo(PluginCall call) {
-        // 36차 N36-1: 수집 데이터 자동 전송 수신 이메일 (빈값 = 수신자 미지정 → 메일 앱에서 직접 입력)
-        String address = call.getString("address", "");
-        String norm = address != null ? address.trim() : "";
-        prefs(getContext()).edit().putString("phy_mail_to", norm).apply();
-        DiagLog.add(getContext(), "PHY", norm.isEmpty()
-                ? "수집 데이터 수신 이메일 삭제됨 — 자동 전송 시 수신자 직접 입력"
-                : "수집 데이터 수신 이메일 설정됨");
-        JSObject out = new JSObject();
-        out.put("mailTo", norm);
         call.resolve(out);
     }
 
@@ -117,34 +88,6 @@ public class PhyPlugin extends Plugin {
         JSObject out = new JSObject();
         out.put("result", result);
         call.resolve(out);
-    }
-
-    // 베타 내보내기: JSON을 캐시 파일로 쓰고 공유 시트로 보내기 (사용자가 직접 발신자/수신자를 고름)
-    @PluginMethod
-    public void sharePhyExport(PluginCall call) {
-        try {
-            Context ctx = getContext();
-            String json = PhysicalCheck.exportJson(ctx);
-            File file = new File(ctx.getCacheDir(), "codyssey-phy-export.json");
-            FileWriter w = new FileWriter(file);
-            w.write(json);
-            w.close();
-
-            Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", file);
-            Intent share = new Intent(Intent.ACTION_SEND);
-            share.setType("application/json");
-            share.putExtra(Intent.EXTRA_STREAM, uri);
-            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            Intent chooser = Intent.createChooser(share, "물리 탐지 수집 데이터 내보내기");
-            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            ctx.startActivity(chooser);
-
-            JSObject out = new JSObject();
-            out.put("bytes", json.length());
-            call.resolve(out);
-        } catch (Exception e) {
-            call.reject("sharePhyExport failed: " + e.getMessage());
-        }
     }
 
     // '항상 허용'은 API 30+에서 앱이 직접 요청할 수 없음 → 앱 설정 화면으로 안내

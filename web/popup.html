@@ -440,13 +440,6 @@
       </div>
       <div class="setting-row">
         <div>
-          <div class="setting-label">수집 모드 (베타 테스터용)</div>
-          <div class="setting-desc">틱마다 신호 샘플을 폰에만 쌓아두고, 내보내기 버튼으로 직접 개발자에게 공유</div>
-        </div>
-        <label class="toggle"><input type="checkbox" id="setting-phy-collect" checked><span class="toggle-slider"></span></label>
-      </div>
-      <div class="setting-row">
-        <div>
           <div class="setting-label">즉시 감지 (지오펜스)</div>
           <div class="setting-desc">울타리 진입/이탈 즉시 판정 — 위치 '항상 허용' 필요 (앱 설정에서 직접 변경)</div>
         </div>
@@ -458,20 +451,6 @@
           <div class="setting-desc">학원에서 누르세요 — 현재 Wi-Fi·기지국·좌표를 학원 신호로 등록</div>
         </div>
         <button type="button" class="btn btn-secondary btn-sm" id="btn-phy-learn">학습</button>
-      </div>
-      <div class="setting-row">
-        <div>
-          <div class="setting-label">수집 데이터 내보내기</div>
-          <div class="setting-desc">쌓인 샘플 JSON을 공유 시트로 전달 (개발자가 학원 신호 사전을 만드는 원자료)</div>
-        </div>
-        <button type="button" class="btn btn-secondary btn-sm" id="btn-phy-export">내보내기</button>
-      </div>
-      <div class="setting-row">
-        <div>
-          <div class="setting-label">수집 데이터 수신 이메일</div>
-          <div class="setting-desc">수집 모드 켬 상태면 매일 1회 · 샘플 한도(1200건) 도달 시 1회, 탭하면 메일 앱이 열리는 알림을 보냄 — 비우면 수신자를 메일 앱에서 직접 입력</div>
-        </div>
-        <input type="email" id="phy-mail-to" class="input" style="width:170px;" placeholder="dev@example.com" autocomplete="off">
       </div>
       <div class="setting-dash-status" id="setting-phy-status"></div>
     </div>

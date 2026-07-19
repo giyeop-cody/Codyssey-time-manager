@@ -145,7 +145,6 @@ const els = {
   settingMonthlyHours: document.getElementById('setting-monthly-hours'),
   settingDailyHours: document.getElementById('setting-daily-hours'),
   settingDeadlineAlert: document.getElementById('setting-deadline-alert'),
-  phyMailTo: document.getElementById('phy-mail-to'),
   settingNotifications: document.getElementById('setting-notifications'),
   settingSound: document.getElementById('setting-sound'),
   settingAutoRefresh: document.getElementById('setting-auto-refresh'),
@@ -166,10 +165,8 @@ const els = {
   btnOvernightChange: document.getElementById('btn-overnight-change'),
   // 31차: 물리 탐지 (베타)
   settingPhyEnabled: document.getElementById('setting-phy-enabled'),
-  settingPhyCollect: document.getElementById('setting-phy-collect'),
   settingPhyGeofence: document.getElementById('setting-phy-geofence'),
   btnPhyLearn: document.getElementById('btn-phy-learn'),
-  btnPhyExport: document.getElementById('btn-phy-export'),
   settingPhyStatus: document.getElementById('setting-phy-status'),
   btnSessionRelogin: document.getElementById('btn-session-relogin'),
   initSplash: document.getElementById('init-splash'),
@@ -1541,19 +1538,17 @@ async function refreshPhyStatusUI() {
   const phy = window.Capacitor?.Plugins?.PhyPlugin;
   if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !phy) {
     els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능 — 베타 수집은 앱에서만)';
-    [els.settingPhyEnabled, els.settingPhyCollect, els.settingPhyGeofence, els.btnPhyLearn, els.btnPhyExport, els.phyMailTo]
+    [els.settingPhyEnabled, els.settingPhyGeofence, els.btnPhyLearn]
       .forEach(el => { if (el) el.disabled = true; });
     return;
   }
   try {
     const st = await phy.getPhyStatus();
     if (els.settingPhyEnabled) els.settingPhyEnabled.checked = !!st.enabled;
-    if (els.settingPhyCollect) els.settingPhyCollect.checked = !!st.collect;
     if (els.settingPhyGeofence) els.settingPhyGeofence.checked = !!st.geofence;
-    if (els.phyMailTo && typeof st.mailTo === 'string') els.phyMailTo.value = st.mailTo; // 36차: 수신 이메일 동기화
     const insideTxt = (st.inside === null || st.inside === undefined)
       ? '판정 중' : (st.inside ? '학원 근처' : '학원 밖');
-    let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건 · 샘플 ${st.samples}건`;
+    let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건건`;
     txt += st.fine ? ' · 위치 권한 ✅' : ' · 위치 권한 없음 ⚠️';
     if (st.enabled && !st.fine) txt += ' — 토글을 껐다 켜면 권한 요청';
     if (st.geofence) txt += st.backgroundLocation ? ' · 항상 허용 ✅' : ' · 항상 허용 필요 ⚠️';
@@ -1632,14 +1627,6 @@ async function saveSettings() {
 
   // W7: 네이티브 즉시 반영 — 설정 저장과 같은 동작으로 상시 감지/알람 소리 적용
   await applyNativeRuntimeSettings(settings);
-
-  // 36차: 수집 데이터 수신 이메일 (Android만 — iOS/웹 뮤트)
-  try {
-    const phy = window.Capacitor?.Plugins?.PhyPlugin;
-    if (phy && phy.setPhyMailTo && els.phyMailTo) {
-      await phy.setPhyMailTo({ address: els.phyMailTo.value.trim() });
-    }
-  } catch (e) { /* 구버전 앱/플러그인 부재 — 무시 */ }
 
   try {
     await sendMessage('UPDATE_SETTINGS', { settings });
@@ -1907,12 +1894,6 @@ function setupEventListeners() {
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshPhyStatusUI, 800);
   });
-  els.settingPhyCollect?.addEventListener('change', async () => {
-    try {
-      await window.Capacitor?.Plugins?.PhyPlugin?.setPhyCollect({ enabled: els.settingPhyCollect.checked });
-    } catch (e) { /* 무시 */ }
-    setTimeout(refreshPhyStatusUI, 500);
-  });
   els.settingPhyGeofence?.addEventListener('change', async () => {
     try {
       const r = await window.Capacitor?.Plugins?.PhyPlugin?.setPhyGeofence({ enabled: els.settingPhyGeofence.checked });
@@ -1929,12 +1910,6 @@ function setupEventListeners() {
       showNotification('학원 신호 학습', (r && r.result) || '완료');
     } catch (e) { /* 무시 */ }
     setTimeout(refreshPhyStatusUI, 800);
-  });
-  els.btnPhyExport?.addEventListener('click', async () => {
-    try {
-      const r = await window.Capacitor?.Plugins?.PhyPlugin?.sharePhyExport();
-      if (r) showNotification('내보내기 준비 완료', '공유 시트가 열립니다. 개발자에게 전달해 주세요.');
-    } catch (e) { /* 무시 */ }
   });
 
   // 22차: 세션 만료 배너의 재로그인 — 배너는 유지하되 로그인 폼으로 전환해 재인증 유도
