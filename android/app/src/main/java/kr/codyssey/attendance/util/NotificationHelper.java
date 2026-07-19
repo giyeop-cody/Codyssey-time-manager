@@ -75,6 +75,14 @@ public class NotificationHelper {
             }
         }
 
+        // 37차: Android 13+ POST_NOTIFICATIONS 거부 시 notify()가 무음 실패 — 전이 시 로그
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            DiagLog.addOnChange(context, "NOTIF", "perm_off",
+                    "⚠️ 알림 권한이 꺼져 있어 알림이 표시되지 않음 (앱 정보 → 알림 → 허용 필요)");
+        } else {
+            DiagLog.addOnChange(context, "NOTIF", "perm_on", "알림 권한 허용 상태");
+        }
+
         String notifIdKey = id != null ? id : "default";
         int notificationId = notificationIdFor(context, notifIdKey);
 

@@ -5,6 +5,7 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.SystemClock;
 
@@ -35,6 +36,8 @@ public class SyncTickReceiver extends BroadcastReceiver {
         if (intent == null || !ACTION_TICK.equals(intent.getAction())) return;
         if (!PollingPlugin.isEnabled(context)) return; // 설정에서 끈 상태면 체인 중단
 
+        checkTickGap(context); // 37차: 틱 공백 진단 (OS 지연/체인 끊김 가시화)
+
         scheduleNextTick(context); // 체인 유지 — 실행 성공/실패와 무관하게 다음 틱 예약
 
         // 네트워크 호출 수행 — 리시버는 메인 스레드라 goAsync + 백그라운드 스레드
@@ -47,6 +50,24 @@ public class SyncTickReceiver extends BroadcastReceiver {
                 pending.finish();
             }
         }, "codyssey-sync-tick").start();
+    }
+
+    // 37차: 직전 틱 발화와의 간격이 비정상(정상 5분, 허용 15분=3틱)이면 진단 로그.
+    // 백그라운드에서 이 로그가 쌓이면 OS가 알람을 지연시킨 것(절전/앱 제한)이고,
+    // 아예 tick 기록 자체가 없으면 체인이 죽은 것(강제종료/권한)으로 구분할 수 있다.
+    private static void checkTickGap(Context context) {
+        try {
+            SharedPreferences prefs =
+                    context.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE);
+            long now = System.currentTimeMillis();
+            long last = prefs.getLong("tick_last_fire", 0);
+            prefs.edit().putLong("tick_last_fire", now).apply();
+            if (last > 0 && now - last > 15 * 60 * 1000) {
+                DiagLog.add(context, "TICK",
+                        "⚠️ 감지 틱 공백 " + ((now - last) / 60000)
+                                + "분 — OS가 알람을 지연(절전/앱 제한)시켰거나 체인이 끊겼던 흔적");
+            }
+        } catch (Exception e) { /* 진단 실패는 무시 */ }
     }
 
     // ===== 체인 관리 (PollingPlugin/BootReceiver/MainActivity 공용 진입점) =====

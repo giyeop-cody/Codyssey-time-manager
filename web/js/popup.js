@@ -177,6 +177,9 @@ const els = {
   loginDiagList: document.getElementById('login-diag-list'),
   btnDiagCopy: document.getElementById('btn-diag-copy'),
   btnDiagClear: document.getElementById('btn-diag-clear'),
+  settingsDiagList: document.getElementById('settings-diag-list'),
+  btnSettingsDiagCopy: document.getElementById('btn-settings-diag-copy'),
+  btnSettingsDiagClear: document.getElementById('btn-settings-diag-clear'),
   settingEvalLead: document.getElementById('setting-eval-lead'),
   settingEvalAutosync: document.getElementById('setting-eval-autosync'),
   settingEvalInstcdRow: document.getElementById('setting-eval-instcd-row'),
@@ -265,6 +268,26 @@ async function renderLoginDiag() {
     els.loginDiagList.appendChild(div);
   });
   els.loginDiag.style.display = 'block';
+}
+
+// 37차: 설정 화면용 진단 로그 표시 — 백그라운드 감지 불량 원인(TICK/GATE/COOKIE/NOTIF) 확인용
+async function renderSettingsDiag() {
+  if (!els.settingsDiagList) return;
+  const entries = await readDiagEntries();
+  els.settingsDiagList.innerHTML = '';
+  if (!entries.length) {
+    const div = document.createElement('div');
+    div.className = 'login-diag-item';
+    div.textContent = '기록 없음 — 알림이 안 온 시점 이후 항목이 쌓이면 여기에 표시됩니다';
+    els.settingsDiagList.appendChild(div);
+    return;
+  }
+  entries.slice(-8).reverse().forEach(e => {
+    const div = document.createElement('div');
+    div.className = 'login-diag-item';
+    div.textContent = formatDiagEntry(e);
+    els.settingsDiagList.appendChild(div);
+  });
 }
 
 // ===== UI 상태 관리 =====
@@ -1507,6 +1530,7 @@ function openSettings() {
   els.settingDash.checked = currentSettings.dashEnabled !== false; // W7/28차: 백그라운드 감지(5분 주기) 기본 켬
   refreshDashStatusUI();
   refreshPhyStatusUI(); // 31차: 물리 탐지 상태/토글 동기화
+  renderSettingsDiag(); // 37차: 진단 로그 표시
   
   els.settingsModal.classList.add('show');
 }
@@ -1938,6 +1962,23 @@ function setupEventListeners() {
   els.btnDiagClear?.addEventListener('click', async () => {
     await clearDiagEntries();
     renderLoginDiag();
+  });
+
+  // 37차: 설정 화면 진단 로그 복사/지우기
+  els.btnSettingsDiagCopy?.addEventListener('click', async () => {
+    const entries = await readDiagEntries();
+    const txt = entries.map(formatDiagEntry).join('\n');
+    try {
+      await navigator.clipboard.writeText(txt);
+      els.btnSettingsDiagCopy.textContent = '복사됨 ✓';
+      setTimeout(() => { els.btnSettingsDiagCopy.textContent = '전체 복사'; }, 1500);
+    } catch (e) {
+      showLoginError('클립보드 복사 실패 — 로그를 길게 눌러 수동 복사해주세요.');
+    }
+  });
+  els.btnSettingsDiagClear?.addEventListener('click', async () => {
+    await clearDiagEntries();
+    renderSettingsDiag();
   });
 
   // L2+: 비밀번호 표시/숨기기 토글 — 붙여넣기 내용 확인용 (공식 로그인 폼도 동일 기능 제공)
