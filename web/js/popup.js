@@ -1537,7 +1537,7 @@ async function refreshPhyStatusUI() {
   if (!els.settingPhyStatus) return;
   const phy = window.Capacitor?.Plugins?.PhyPlugin;
   if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !phy) {
-    els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능 — 베타 수집은 앱에서만)';
+    els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능)'; // 42차: 39차에서 베타 수집 제거 — 낡은 문구 갱신
     [els.settingPhyEnabled, els.settingPhyGeofence, els.btnPhyLearn]
       .forEach(el => { if (el) el.disabled = true; });
     return;
@@ -1548,7 +1548,7 @@ async function refreshPhyStatusUI() {
     if (els.settingPhyGeofence) els.settingPhyGeofence.checked = !!st.geofence;
     const insideTxt = (st.inside === null || st.inside === undefined)
       ? '판정 중' : (st.inside ? '학원 근처' : '학원 밖');
-    let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건건`;
+    let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건`; // 42차: '건건' 중복 접미사 정정
     txt += st.fine ? ' · 위치 권한 ✅' : ' · 위치 권한 없음 ⚠️';
     if (st.enabled && !st.fine) txt += ' — 토글을 껐다 켜면 권한 요청';
     if (st.geofence) txt += st.backgroundLocation ? ' · 항상 허용 ✅' : ' · 항상 허용 필요 ⚠️';
@@ -1565,6 +1565,9 @@ async function refreshDashStatusUI() {
   const polling = window.Capacitor?.Plugins?.PollingPlugin;
   if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !polling) {
     els.settingDashStatus.textContent = '(Android 앱에서 사용 가능)';
+    // 42차: 플랫폼 동등성 — 물리 탐지 행과 동일하게 익스텐션에서는 Android 전용 제어 비활성
+    [els.settingDash, els.btnBatteryExempt, els.btnExactAlarm]
+      .forEach(el => { if (el) el.disabled = true; });
     return;
   }
   try {
