@@ -22,7 +22,7 @@ import kr.codyssey.attendance.util.SyncTasks;
  *   "감지 중" 상시 알림(FGS 필수)은 필요 없음.
  * - 정확 알람 권한이 없으면 부정확 알람으로 축소 (지연 가능 → 진단 로그로 가시화).
  * - 깊은 Doze에서는 OS가 발화를 수 분 늦출 수 있음 (플랫폼 특성, 제거 불가).
- * - WorkManager 15분 주기 동기화는 폴트러너스(체인 끊김/부팅 보조)로 유지 —
+ * - WorkManager 15분 주기 동기화는 폴트러넌스(체인 끊김/부팅 보조)로 유지 —
  *   양쪽 모두 같은 SyncTasks를 실행하므로 중복 실행은 스냅샷 멱등으로 안전.
  */
 public class SyncTickReceiver extends BroadcastReceiver {
