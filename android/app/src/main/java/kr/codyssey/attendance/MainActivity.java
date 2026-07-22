@@ -31,7 +31,7 @@ public class MainActivity extends BridgeActivity {
         super.onCreate(savedInstanceState);
 
         // 28차 마이그레이션 (1회): 폐기된 1분 상시 감지 FGS/PollingService·TickReceiver 잔재 정리.
-        // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 살제.
+        // 업데이트 전 버전이 남긴 실행 서비스 정지 + 부활 알람(PendingIntent) 취소 + 상시 알림 채널 삭제.
         migrateLegacyForegroundMonitor(getApplicationContext());
 
         // 30차: 백그라운드 감지(dash)가 켜져 있으면 5분 틱 체인 + 15분 백업 동기화 보장
@@ -45,7 +45,7 @@ public class MainActivity extends BridgeActivity {
         }
 
         // L7+K6: 알림 탭으로 앱이 열린 경우 alarmId를 보관 —
-        // JS 리스너(adapter) 준비를 폴한 뒤 이벤트 전달 (고정 지연은 느린 기기에서 이벤트 유실)
+        // JS 리스너(adapter) 준비를 폴링한 뒤 이벤트 전달 (고정 지연은 느린 기기에서 이벤트 유실)
         String alarmId = getIntent() != null ? getIntent().getStringExtra("alarmId") : null;
         if (alarmId != null) {
             emitAlarmEventWhenAdapterReady(alarmId, 30); // 300ms × 30 = 최대 9초 대기
@@ -73,7 +73,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     // 28차: 폐기된 1분 FGS 잔재 정리 (1회 실행). 컴포넌트(PollingService/TickReceiver)는
-    // 코드에서 살제됐으므로, 구버전이 예약해 둔 OS측 리소스만 클래스명 문자열로 해제한다.
+    // 코드에서 삭제됐으므로, 구버전이 예약해 둔 OS측 리소스만 클래스명 문자열로 해제한다.
     private void migrateLegacyForegroundMonitor(android.content.Context ctx) {
         android.content.SharedPreferences prefs =
                 ctx.getSharedPreferences("codyssey_prefs", android.content.Context.MODE_PRIVATE);
@@ -91,7 +91,7 @@ public class MainActivity extends BridgeActivity {
                     android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
             android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(ALARM_SERVICE);
             if (am != null) am.cancel(pi);
-            // 3) "상시 감지" 전용 알림 채널 살제 (더 이상 사용하지 않음)
+            // 3) "상시 감지" 전용 알림 채널 삭제 (더 이상 사용하지 않음)
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 android.app.NotificationManager nm = ctx.getSystemService(android.app.NotificationManager.class);
                 if (nm != null) nm.deleteNotificationChannel("codyssey_monitor");
@@ -115,7 +115,7 @@ public class MainActivity extends BridgeActivity {
         // Mixed content / 임의 권한 허용은 보안상 설정하지 않음(기본값 유지)
     }
 
-    // K6: WebView의 JS 리스너(capacitor-adapter)가 준비될 때까지 폴한 뒤 알람 이벤트 전달.
+    // K6: WebView의 JS 리스너(capacitor-adapter)가 준비될 때까지 폴링한 뒤 알람 이벤트 전달.
     // index.html → popup.html 리다이렉트 + 모듈 로딩이 끝나야 리스너가 등록되므로
     // 고정 지연(1.5초)은 느린 기기에서 이벤트가 유실 될 수 있다.
     private void emitAlarmEventWhenAdapterReady(final String alarmId, final int attemptsLeft) {
@@ -174,6 +174,53 @@ public class MainActivity extends BridgeActivity {
         try {
             kr.codyssey.attendance.util.PhyGeofence.startIfEnabled(getApplicationContext());
         } catch (Exception e) { /* 다음 실행에서 재시도 */ }
+        // 40차: 포그라운드 복귀 시 감지 체인 자가치유 + 권한 상태 진단
+        try {
+            selfHealDetectionChain(getApplicationContext());
+        } catch (Exception e) { /* 치명 아님 */ }
+    }
+
+    // 40차: 앱이 열릴 때마다 감지(dash) 체인을 검사·복구.
+    // 배경: "백그라운드에서 알림이 안 오고 앱을 열 때 한꺼번에 도착" 제보(37차) — 원인 3갈래 중
+    // OS 절전 지연/앱 제한/스와이프 강제종료로 5분 틱 체인이 죽은 경우를 여기서 치유한다.
+    //  - 마지막 동기화가 15분 이상 정체 = 체인이 끊겼던 것 → 진단 로그로 원인 판별 근거를 남김
+    //  - 5분 틱 체인 + 15분 백업 주기를 재예약 (이미 예약돼 있으면 덮어쓰기라 멱등)
+    //  - 배터리 최적화 예외 / 정확한 알람 권한 상태를 전이 시에만 로그 (설정 안내 근거)
+    //  - 동기화가 4분 이상 정체되면 즉시 1회 실행 — 앱을 열 때 네이티브 경로도 바로 깨어남
+    private void selfHealDetectionChain(android.content.Context ctx) {
+        if (!PollingPlugin.isEnabled(ctx)) return; // 사용자가 설정에서 끈 상태는 존중
+        android.content.SharedPreferences prefs =
+                ctx.getSharedPreferences("codyssey_prefs", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        long lastTick = prefs.getLong("tick_last_fire", 0);
+        long lastSync = prefs.getLong("dash_last_tick", 0);
+        long staleBase = Math.max(lastTick, lastSync);
+        if (staleBase > 0 && now - staleBase > 15 * 60 * 1000) {
+            kr.codyssey.attendance.util.DiagLog.add(ctx, "TICK",
+                    "⚠️ 감지 체인 끊김 복구 — 마지막 동기화 " + ((now - staleBase) / 60000)
+                            + "분 전 (OS 절전 지연/앱 제한/강제종료 중 하나. 반복되면 설정 → 절전모드 예외 해제 필요)");
+        }
+        kr.codyssey.attendance.receiver.SyncTickReceiver.ensureChain(ctx);
+        PollingPlugin.ensurePeriodicSync(ctx);
+
+        android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(POWER_SERVICE);
+        boolean exempt = pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
+        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", exempt ? "batt_ok" : "batt_limited",
+                exempt ? "배터리 최적화 예외 해제 상태"
+                        : "⚠️ 배터리 최적화 예외 아님 — 절전 중 감지·알림이 지연될 수 있음 (설정 → 절전모드 예외에서 해제)");
+        android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(ALARM_SERVICE);
+        boolean exact = am == null
+                || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
+                || am.canScheduleExactAlarms();
+        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", exact ? "alarm_ok" : "alarm_limited",
+                exact ? "정확한 알람 허용 상태"
+                        : "⚠️ 정확한 알람 권한 꺼짐 — OS가 알람 발화를 늦출 수 있음 (설정에서 허용 필요)");
+
+        if (now - lastSync > 4 * 60 * 1000) {
+            final android.content.Context appCtx = ctx.getApplicationContext();
+            new Thread(() -> kr.codyssey.attendance.util.SyncTasks.run(appCtx),
+                    "codyssey-foreground-heal").start();
+        }
     }
 
     @Override

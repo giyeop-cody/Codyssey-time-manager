@@ -61,7 +61,7 @@ public class GateCheck {
             notifEnabled = settings.optBoolean("notificationsEnabled", true);
         } catch (Exception e) { /* 기본값 유지 */ }
         // 32차 N31-5: 게이트 알림이 꺼져 있어도, 물리 탐지(phy_enabled)가 켜져 있으면
-        // 세션 스냅샷 갱신은 유지 — 스냅샷 30분 신선도가 물리 판정(S1/S2)의 근가라
+        // 세션 스냅샷 갱신은 유지 — 스냅샷 30분 신선도가 물리 판정(S1/S2)의 근거라
         // 함께 멈추면 "감지 중"이면서 알림이 안 나가는 정체 상태가 생긴다.
         // 이 경로에서는 입·퇴실 이벤트 알림만 생략하고 스냅샷 갱신+롤오버 확인은 수행.
         boolean phyOn = prefs.getBoolean("phy_enabled", false);

@@ -27,7 +27,7 @@ import kr.codyssey.attendance.worker.SyncWorker;
  *
  * 28차: 1분 FGS 폐기 → 30차: 사용자 지시로 감지 간격을 5분으로 통합.
  *  구조: SyncTickReceiver(정확 알람 5분 체인, 상시 알림 없음) = 주 경로
- *       + WorkManager 15분 SyncWorker = 폴트레런스 백업 (둘 다 SyncTasks 실행)
+ *       + WorkManager 15분 SyncWorker = 폴트러너스 백업 (둘 다 SyncTasks 실행)
  *  알람(퇴실/목표/평가)은 계속 AlarmManager 시스템 콜 1회 등록 (AlarmPlugin).
  *
  * startDash/stopDash의 의미 = 5분 틱 체인 + 백업 주기 작업 예약/해제 (dash_enabled 유지).

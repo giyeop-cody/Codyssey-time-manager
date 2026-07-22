@@ -50,7 +50,7 @@
             </intent-filter>
         </activity>
 
-        <!-- 알림 리시버 (앱 남부 전용: 외부 앱의 위조 브로드캐스트 차단) -->
+        <!-- 알림 리시버 (앱 내부 전용: 외부 앱의 위조 브로드캐스트 차단) -->
         <receiver
             android:name="kr.codyssey.attendance.receiver.AlarmReceiver"
             android:exported="false"
@@ -75,7 +75,7 @@
             android:exported="false"
             android:enabled="true" />
 
-        <!-- 31차: 물리 탐지 — 지오펜스 이벤트 / 활동 인식 수신기 (앱 남부 전용) -->
+        <!-- 31차: 물리 탐지 — 지오펜스 이벤트 / 활동 인식 수신기 (앱 내부 전용) -->
         <receiver
             android:name="kr.codyssey.attendance.receiver.GeofenceReceiver"
             android:exported="false"

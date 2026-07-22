@@ -11,7 +11,7 @@ import org.json.JSONObject;
  *
  * 수행: (keep-alive 켬·감지 꺼짐일 때만) 세션 핑 → GateCheck(입·퇴실 감지 +
  * 29차 자정 롤오버 확인) → EvalSync(6시간 스로틀 내장) → 세션 쿠키 전이 기록 →
- * "마지막 감지" 시각 갱신. 모든 예외는 남부에서 흡수 (다음 주기에 재시도).
+ * "마지막 감지" 시각 갱신. 모든 예외는 내부에서 흡수 (다음 주기에 재시도).
  */
 public final class SyncTasks {
 
@@ -27,10 +27,10 @@ public final class SyncTasks {
                 CookieManager.pingKeepAlive(context);
             }
 
-            GateCheck.run(context);  // 남부 gateNotifyEnabled 확인 + 29차 롤오버 확인 포함
+            GateCheck.run(context);  // 내부 gateNotifyEnabled 확인 + 29차 롤오버 확인 포함
             MonthlyDeadlineCheck.run(context); // 36차: 월 출입 페이스/마감 경고 (6시간 스로틀·설정 게이트 내장)
             EvalSync.run(context);   // 6시간 스로틀 내장 — 매 틱 호출필요 없음
-            PhysicalCheck.sampleAndEvaluate(context); // 31차: 물리 탐지 (남부 phy_enabled 게이트)
+            PhysicalCheck.sampleAndEvaluate(context); // 31차: 물리 탐지 (내부 phy_enabled 게이트)
 
             // 세션 쿠키 존재 전이 — 소실 순간을 진단 로그로 확인 가능하게
             boolean hasCookie = CookieManager.hasSessionCookie(context);
