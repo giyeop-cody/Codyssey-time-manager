@@ -58,6 +58,45 @@ public class CookieManager {
         } catch (Exception e) { /* 무시 */ }
     }
 
+    // 41차: 백업 세션 값 그대로 (없으면 null) — 헤드리스 프로세스에서 WebView 저장소를 못 쓸 때 직접 헤더 주입용
+    public static String backupSessionId(Context context) {
+        try {
+            String sid = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .getString(SESSION_BACKUP_KEY, null);
+            return (sid == null || sid.isEmpty()) ? null : sid;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // 41차: 서버 조회 인증이 가능한가 — WebView 저장소의 쿠키 또는 백업 중 하나라도 있으면 true
+    public static boolean hasUsableSession(Context context) {
+        return hasSessionCookie(context) || backupSessionId(context) != null;
+    }
+
+    // 41차: JSESSIONID를 확실히 담은 Cookie 헤더 문자열 — 저장소 쿠키가 있으면 그대로,
+    // 없으면 백업 세션을 직접 주입 (백그라운드 헤드리스 프로세스에서 WebView 저장소
+    // 복원이 조용히 실패하는 경로 우회 — 40차 제보 로그에서 백그라운드 복원 로그 부재로 확인)
+    private static String effectiveCookieHeader(Context context, String origin) {
+        String cookies = getCookies(context, origin);
+        boolean jarHas = cookies != null && cookies.contains("JSESSIONID");
+        if (jarHas) {
+            DiagLog.addOnChange(context, "COOKIE", "src", "jar",
+                    "세션 쿠키 WebView 저장소에서 확보");
+            return cookies;
+        }
+        String sid = backupSessionId(context);
+        if (sid != null) {
+            String merged = "JSESSIONID=" + sid + (cookies != null && !cookies.isEmpty() ? "; " + cookies : "");
+            DiagLog.addOnChange(context, "COOKIE", "src", "direct",
+                    "백업 세션을 요청 헤더에 직접 주입 — 헤드리스 프로세스라 WebView 저장소를 못 쓰는 경로 우회");
+            return merged;
+        }
+        DiagLog.addOnChange(context, "COOKIE", "src", "none",
+                "⚠️ 세션 쿠키·백업 모두 없음 — 이후 서버 조회는 302로 실패 → 재로그인 필요");
+        return cookies;
+    }
+
     // K1: Set-Cookie 헤더명은 대소문자 무관하게 수집 (서버가 "set-cookie" 소문자로
     // 전송하면 getHeaderFields().get("Set-Cookie")가 null을 반환해 쿠키가 유실됨)
     public static java.util.List<String> extractSetCookies(java.net.HttpURLConnection conn) {
@@ -76,9 +115,9 @@ public class CookieManager {
     // 세션 유지 핑 (네이티브 HTTP — 백그라운드 스레드에서 WebView 생성하던 크래시 위험 제거, N7)
     public static void pingKeepAlive(Context context) {
         try {
-            restoreSessionCookie(context); // 21차: 프로세스 재시작 시 백업 세션 복원
+            restoreSessionCookie(context); // 21차: 프로세스 재시작 시 백업 세션 복원 (best-effort)
             android.webkit.CookieManager cookieManager = android.webkit.CookieManager.getInstance();
-            String cookies = cookieManager.getCookie(API_BASE);
+            String cookies = effectiveCookieHeader(context, API_BASE); // 41차: 헤드리스 경로용 백업 직접 주입 포함
 
             java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
                     new java.net.URL(API_BASE + "/rest/user/info/detail").openConnection();
@@ -145,10 +184,10 @@ public class CookieManager {
         HttpResult result = new HttpResult();
         java.net.HttpURLConnection conn = null;
         try {
-            restoreSessionCookie(context); // 21차
+            restoreSessionCookie(context); // 21차 (best-effort — 헤드리스에선 저장소 복원이 실패할 수 있음)
             java.net.URL url = new java.net.URL(urlString);
             String origin = url.getProtocol() + "://" + url.getHost();
-            String cookies = getCookies(context, origin);
+            String cookies = effectiveCookieHeader(context, origin); // 41차: 저장소 미비 시 백업 직접 주입
 
             conn = (java.net.HttpURLConnection) url.openConnection();
             conn.setRequestMethod(method);

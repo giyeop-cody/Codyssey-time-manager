@@ -24,8 +24,8 @@ public class ActivityReceiver extends BroadcastReceiver {
         String label = labelFor(activity.getType()) + ":" + activity.getConfidence();
         context.getSharedPreferences("codyssey_prefs", Context.MODE_PRIVATE)
                 .edit().putString("phy_activity", label).apply();
-        DiagLog.addOnChange(context, "PHY", "act_" + labelFor(activity.getType()),
-                "활동 인식: " + label);
+        DiagLog.addOnChange(context, "PHY", "act", "act_" + labelFor(activity.getType()),
+                "활동 인식: " + label); // 41차: 슬롯 분리 — 판정 로그와 슬롯 공유로 매번 기록되던 충돌 해소 (유형 전이 시에만 1건)
     }
 
     static String labelFor(int type) {

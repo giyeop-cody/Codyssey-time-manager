@@ -166,10 +166,58 @@ public class PollingPlugin extends Plugin {
 
     @PluginMethod
     public void getDiagLog(PluginCall call) {
-        SharedPreferences prefs = getContext().getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        Context ctx = getContext();
+        SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         JSObject out = new JSObject();
         out.put("raw", prefs.getString("diag_log", "[]"));
+        out.put("metaSummary", buildMetaSummary(ctx, prefs)); // 41차: 복사 시점 스냅샷 1줄
         call.resolve(out);
+    }
+
+    // 41차: 진단 로그 복사 시점의 네이티브 상태 1줄 — 링버퍼가 시리즈 전이만 남겨도
+    // 직전 출입 조회 결과/세션/권한 상태를 항상 증거로 남긴다.
+    private static String buildMetaSummary(Context ctx, SharedPreferences prefs) {
+        try {
+            android.content.SharedPreferences p = prefs;
+            boolean member = false;
+            boolean gateOn = true;
+            boolean notifOn = true;
+            try {
+                String mid = p.getString("member_id", null);
+                member = mid != null && !mid.trim().isEmpty();
+                org.json.JSONObject settings = new org.json.JSONObject(p.getString("settings", "{}"));
+                gateOn = settings.optBoolean("gateNotifyEnabled", true);
+                notifOn = settings.optBoolean("notificationsEnabled", true);
+            } catch (Exception e) { /* 기본값 유지 */ }
+            int http = p.getInt("gate_last_http", Integer.MIN_VALUE);
+            long at = p.getLong("gate_last_at", 0);
+            String httpStr;
+            if (http == Integer.MIN_VALUE) httpStr = "기록 없음";
+            else if (http == -2) httpStr = "걸 생략 (member_id 없음)";
+            else if (http == -3) httpStr = "걸 생략 (감지 비활성)";
+            else httpStr = String.valueOf(http);
+            java.text.SimpleDateFormat fmt = new java.text.SimpleDateFormat("M/d H:mm:ss", java.util.Locale.US);
+            String atStr = at > 0 ? fmt.format(new java.util.Date(at)) : "-";
+            long tick = p.getLong("tick_last_fire", 0);
+            long sync = p.getLong("dash_last_tick", 0);
+            android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            boolean exempt = pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
+            android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(Context.ALARM_SERVICE);
+            boolean exact = am == null
+                    || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
+                    || am.canScheduleExactAlarms();
+            boolean usable = kr.codyssey.attendance.util.CookieManager.hasUsableSession(ctx);
+            return "[META] member_id " + (member ? "있음" : "⚠️ 없음")
+                    + " · 입퇴실 감지 " + (gateOn ? "켬" : "끔") + " · 알림 " + (notifOn ? "켬" : "끔")
+                    + " · 세션 " + (usable ? "확보(저장소/백업)" : "⚠️ 없음")
+                    + " · 마지막 출입 조회: HTTP " + httpStr + " (" + atStr + ")"
+                    + " · 마지막 틱 " + (tick > 0 ? fmt.format(new java.util.Date(tick)) : "-")
+                    + " / 동기화 " + (sync > 0 ? fmt.format(new java.util.Date(sync)) : "-")
+                    + " · 절전 예외 " + (exempt ? "예외됨" : "⚠️ 미예외")
+                    + " · 정확 알람 " + (exact ? "허용" : "⚠️ 꺼짐");
+        } catch (Exception e) {
+            return "[META] 스냅샷 구성 실패: " + (e.getMessage() != null ? e.getMessage() : "unknown");
+        }
     }
 
     @PluginMethod

@@ -117,7 +117,7 @@ public final class PhysicalCheck {
                     else if (hint == -1) score = 0;
                 } else {
                     prefs.edit().putInt("phy_geo_hint", 0).apply();
-                    DiagLog.addOnChange(context, "PHY", "hint_expired",
+                    DiagLog.addOnChange(context, "PHY", "hint", "hint_expired",
                             "지오펜스 힌트 만료(6시간 무갱신) — 이후 판정은 신호 점수만 사용");
                 }
             }
@@ -131,9 +131,9 @@ public final class PhysicalCheck {
 
             // 32차 N31-8: 로그 키에서 점수 제외 — 셀 환경 누화로 점수가 출렁일 때마다
             // 새 키가 만들어지며 진단 링버퍼가 씻기는 것을 방지 (점수는 메시지에만)
-            DiagLog.addOnChange(context, "PHY", "state_" + insideName(next.inside),
+            DiagLog.addOnChange(context, "PHY", "state", "state_" + insideName(next.inside),
                     "물리 판정: " + insideName(next.inside) + " (점수 " + score
-                            + (sessionOpen != null ? ", 서버세션 " + (sessionOpen ? "열림" : "닫힘") : ", 서버세션 불명") + ")");
+                            + (sessionOpen != null ? ", 서버세션 " + (sessionOpen ? "열림" : "닫힘") : ", 서버세션 불명") + ")"); // 41차: 슬롯 분리 — 활동 인식과의 슬롯 충돌 해소
         } catch (Exception e) { /* 틱 실패는 다음 틱으로 */ }
     }
 

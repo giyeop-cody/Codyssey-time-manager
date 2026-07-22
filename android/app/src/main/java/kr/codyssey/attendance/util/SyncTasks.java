@@ -32,11 +32,11 @@ public final class SyncTasks {
             EvalSync.run(context);   // 6시간 스로틀 내장 — 매 틱 호출필요 없음
             PhysicalCheck.sampleAndEvaluate(context); // 31차: 물리 탐지 (내부 phy_enabled 게이트)
 
-            // 세션 쿠키 존재 전이 — 소실 순간을 진단 로그로 확인 가능하게
-            boolean hasCookie = CookieManager.hasSessionCookie(context);
-            DiagLog.addOnChange(context, "COOKIE", hasCookie ? "have" : "none",
-                    hasCookie ? "세션 쿠키(JSESSIONID) 존재 확인"
-                              : "⚠️ 세션 쿠키(JSESSIONID) 소실 — 이후 서버 조회는 302로 실패 → 재로그인 필요");
+            // 인증 확보 여부 전이 — 41차: 저장소 쿠키 또는 백업 중 하나면 서버 조회 가능
+            boolean hasCookie = CookieManager.hasUsableSession(context);
+            DiagLog.addOnChange(context, "COOKIE", "sess", hasCookie ? "have" : "none",
+                    hasCookie ? "세션 확보 (쿠키 저장소 또는 백업) — 서버 조회 가능"
+                              : "⚠️ 세션 쿠키·백업 모두 소실 — 이후 서버 조회는 302로 실패 → 재로그인 필요");
 
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit()

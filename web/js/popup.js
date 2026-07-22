@@ -1174,7 +1174,7 @@ async function calculateExitTime() {
       els.exitWarning.classList.remove('show');
     }
     
-    // 알람: 26차 — 계산 즉시 자동 등록 (살제는 '해제' 또는 목록에서)
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetExitAlarm.style.display = 'block';
     els.btnCancelExitAlarm.style.display = 'none';
     els.exitResult.classList.add('show');
@@ -1252,7 +1252,7 @@ async function calculateGoalTime() {
       els.goalWarning.classList.remove('show');
     }
     
-    // 알람: 26차 — 계산 즉시 자동 등록 (살제는 '해제' 또는 목록에서)
+    // 알람: 26차 — 계산 즉시 자동 등록 (삭제는 '해제' 또는 목록에서)
     els.btnSetGoalAlarm.style.display = 'block';
     els.btnCancelGoalAlarm.style.display = 'none';
     els.goalResult.classList.add('show');
@@ -1422,7 +1422,7 @@ async function autoRegisterAlarm(endMinutes, type, label) {
       label: `${label} (${timeStr})`
     });
     if (response && response.success) {
-      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 살제 가능)`);
+      showNotification('알람 자동 등록', `${timeStr}에 ${label}이 울립니다. (목록에서 삭제 가능)`);
       if (response.exact === false) {
         alert('정확한 알람 권한이 꺼져 있어 알림 시각이 늦어질 수 있습니다.\n시스템 설정에서 "정확한 알람"을 허용해주세요.');
       }
@@ -1942,7 +1942,13 @@ function setupEventListeners() {
   // 37차: 설정 화면 진단 로그 복사/지우기
   els.btnSettingsDiagCopy?.addEventListener('click', async () => {
     const entries = await readDiagEntries();
-    const txt = entries.map(formatDiagEntry).join('\n');
+    let prefix = '';
+    try {
+      // 41차: 복사 시점 네이티브 스냅샷 1줄 — 링버퍼가 전이만 남겨도 마지막 출입 조회 결과가 남음
+      const d = await window.Capacitor?.Plugins?.PollingPlugin?.getDiagLog();
+      if (d && d.metaSummary) prefix = d.metaSummary + '\n\n';
+    } catch (e) { /* non-native or 실패 시 스냅샷 생략 */ }
+    const txt = prefix + entries.map(formatDiagEntry).join('\n');
     try {
       await navigator.clipboard.writeText(txt);
       els.btnSettingsDiagCopy.textContent = '복사됨 ✓';

@@ -48,10 +48,11 @@ public class GateCheck {
         String memberId = unquoteJson(prefs.getString("member_id", null));
         if (memberId == null || memberId.isEmpty()) {
             // member_id 소실 = JS측 로그아웃 또는 인증 오류 폐기 — 전이 1걸만 기록
-            DiagLog.addOnChange(context, "GATE", "nomember", "member_id 없음 — 로그아웃/미로그인 상태라 입·퇴실 감지 스킵");
+            DiagLog.addOnChange(context, "GATE", "member", "nomember", "member_id 없음 — 로그아웃/미로그인 상태라 입·퇴실 감지 스킵");
+            markFetchResult(context, -2); // 41차: -2 = member_id 없음 경로 (복사 시점 증거 보존)
             return;
         }
-        DiagLog.addOnChange(context, "GATE", "member", "member_id 확인 — 입·퇴실 감지 정상 가동");
+        DiagLog.addOnChange(context, "GATE", "member", "member", "member_id 확인 — 입·퇴실 감지 정상 가동");
 
         boolean gateEnabled = true;
         boolean notifEnabled = true;
@@ -65,9 +66,12 @@ public class GateCheck {
         // 함께 멈추면 "감지 중"이면서 알림이 안 나가는 정체 상태가 생긴다.
         // 이 경로에서는 입·퇴실 이벤트 알림만 생략하고 스냅샷 갱신+롤오버 확인은 수행.
         boolean phyOn = prefs.getBoolean("phy_enabled", false);
-        if (!gateEnabled && !phyOn) return; // 감지 비활성 — API 조회 자체를 하지 않음 (배터리/트래픽 절약)
+        if (!gateEnabled && !phyOn) {
+            markFetchResult(context, -3); // 41차: -3 = 감지 비활성 경로
+            return; // 감지 비활성 — API 조회 자체를 하지 않음 (배터리/트래픽 절약)
+        }
         if (!gateEnabled) {
-            DiagLog.addOnChange(context, "GATE", "phy_only",
+            DiagLog.addOnChange(context, "GATE", "member", "phy_only",
                     "입·퇴실 알림 꺼짐 — 물리 탐지 근거(세션 스냅샷) 갱신만 수행");
         }
 
@@ -316,17 +320,31 @@ public class GateCheck {
         String url = API_BASE + "/rest/secom/detail?mbrId=" + memberId
                 + "&year=" + year + "&month=" + String.format(Locale.US, "%02d", month);
         CookieManager.HttpResult res = CookieManager.httpGet(context, url);
+        markFetchResult(context, res.status); // 41차: 복사 시점에 마지막 조회 결과가 남도록 브레드크럼
         if (res.status != 200) { // 302/401=세션 만료, 그 외는 다음 주기로
-            DiagLog.addOnChange(context, "GATE", "api_" + res.status,
+            DiagLog.addOnChange(context, "GATE", "api", "api_" + res.status,
                     "출입 조회 HTTP " + res.status + authHint(res.status));
             return null;
         }
-        DiagLog.addOnChange(context, "GATE", "ok", "출입 조회 정상 (HTTP 200)");
+        DiagLog.addOnChange(context, "GATE", "api", "ok", "출입 조회 정상 (HTTP 200)");
         try {
             return new JSONObject(res.body);
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // 41차: 마지막 출입 조회 결과를 prefs에 보존 — 진단 로그가 시리즈 전이만 남겨도
+    // 복사 시점의 네이티브 스냅샷(getDiagLog meta)에서 직전 결과를 항상 읽을 수 있게.
+    // 코드: -1 네트워크, -2 member_id 없음, -3 감지 비활성, 그 외 HTTP 상태
+    private static void markFetchResult(Context context, int status) {
+        try {
+            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putInt("gate_last_http", status)
+                    .putLong("gate_last_at", System.currentTimeMillis())
+                    .apply();
+        } catch (Exception e) { /* 브레드크럼 실패는 무시 */ }
     }
 
     // 19차: HTTP 상태 → 사용자 판독 힌트 (로그인 폼 회귀 원인 분류)

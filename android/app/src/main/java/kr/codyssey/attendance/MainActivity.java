@@ -205,14 +205,14 @@ public class MainActivity extends BridgeActivity {
 
         android.os.PowerManager pm = (android.os.PowerManager) ctx.getSystemService(POWER_SERVICE);
         boolean exempt = pm != null && pm.isIgnoringBatteryOptimizations(ctx.getPackageName());
-        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", exempt ? "batt_ok" : "batt_limited",
+        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", "batt", exempt ? "batt_ok" : "batt_limited",
                 exempt ? "배터리 최적화 예외 해제 상태"
                         : "⚠️ 배터리 최적화 예외 아님 — 절전 중 감지·알림이 지연될 수 있음 (설정 → 절전모드 예외에서 해제)");
         android.app.AlarmManager am = (android.app.AlarmManager) ctx.getSystemService(ALARM_SERVICE);
         boolean exact = am == null
                 || android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.S
                 || am.canScheduleExactAlarms();
-        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", exact ? "alarm_ok" : "alarm_limited",
+        kr.codyssey.attendance.util.DiagLog.addOnChange(ctx, "PERM", "alarm", exact ? "alarm_ok" : "alarm_limited",
                 exact ? "정확한 알람 허용 상태"
                         : "⚠️ 정확한 알람 권한 꺼짐 — OS가 알람 발화를 늦출 수 있음 (설정에서 허용 필요)");
 

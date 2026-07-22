@@ -36,11 +36,21 @@ public class DiagLog {
     /**
      * 상태 전이 시에만 기록 — 같은 상태가 연속될 때 1분 주기 스팸을 막음.
      * state가 이전과 다륩면 기록하고 저장. (예: GATE 200→302는 기록, 302 연속은 1걸만)
+     * 4-arg 호환 버전 — 슬롯 미지정 시 태그당 1칸.
      */
     public static void addOnChange(Context ctx, String tag, String state, String msg) {
+        addOnChange(ctx, tag, "", state, msg);
+    }
+
+    /**
+     * 41차: 슬롯(시리즈) 지정 버전 — 같은 태그에서 여러 독립 시리즈가 로그를 남길 때
+     * (예: PHY 판정 vs 활동 인식) 서로의 마지막 상태를 덮어써 둘 다 매번 기록되는
+     * 충돌을 slot 단위 분리로 해소. (예: addOnChange(ctx,"PHY","act","act_still",...))
+     */
+    public static void addOnChange(Context ctx, String tag, String slot, String state, String msg) {
         try {
             SharedPreferences prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
-            String sk = "diag_state_" + tag;
+            String sk = "diag_state_" + tag + (slot == null || slot.isEmpty() ? "" : "#" + slot);
             String prev = prefs.getString(sk, null);
             if (state.equals(prev)) return;
             prefs.edit().putString(sk, state).apply();
