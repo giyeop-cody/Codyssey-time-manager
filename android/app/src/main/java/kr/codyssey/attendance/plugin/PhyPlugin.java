@@ -47,9 +47,12 @@ public class PhyPlugin extends Plugin {
         boolean enabled = call.getBoolean("enabled", false);
         Context ctx = getContext();
         prefs(ctx).edit().putBoolean("phy_enabled", enabled).apply();
+        // 44차: 단일화 — 지오펜스·활동 인식은 phy_enabled에 종속 (항상 허용 없으면
+        // 등록은 진행핚도 백그라운드 이벤트가 안 올 수 있음 → 5분 틱 판정이 커버)
         if (enabled) {
             ensureRuntimePermissions();
-            DiagLog.add(ctx, "PHY", "물리 탐지 켜짐 — SSID/셀 학습·판정 시작" + (isFineGranted()
+            PhyGeofence.startIfEnabled(ctx, true);
+            DiagLog.add(ctx, "PHY", "물리 탐지 켜짐 — SSID/셀 학습·판정 + 지오펜스 가속 시작" + (isFineGranted()
                     ? "" : " (위치 권한 요청 중 — 허용해야 동작)"));
         } else {
             PhyGeofence.stop(ctx);
@@ -58,8 +61,13 @@ public class PhyPlugin extends Plugin {
         JSObject out = new JSObject();
         out.put("enabled", enabled);
         out.put("fine", isFineGranted());
+        out.put("needBackground", enabled && Build.VERSION.SDK_INT >= 29
+                && !PhyGeofence.hasBackgroundLocation(ctx)); // 44차: 항상 허용 안내 단일 경로
         call.resolve(out);
     }
+
+    // 44차: 지오펜스 개별 토글 폐지 — 호환 유지용 (구버전 웹과의 조합 시에도 무해)
+   
 
     @PluginMethod
     public void setPhyGeofence(PluginCall call) {

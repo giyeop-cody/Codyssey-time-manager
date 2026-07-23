@@ -46,15 +46,17 @@ public final class PhyGeofence {
 
     private PhyGeofence() {}
 
+    // 44차: 지오펜스는 별도 토글 없이 물리 탐지(phy_enabled)에 종속 — 단일 게이트
     public static boolean isGeofenceEnabled(Context context) {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                .getBoolean("phy_geofence", false);
+                .getBoolean("phy_enabled", false);
     }
 
+    // 44차: 더 이상 UI에서 호출하지 않음 (호환 유지). 등록 자체는 phy_enabled 경로에서 관리.
     public static void setGeofenceEnabled(Context context, boolean enabled) {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putBoolean("phy_geofence", enabled).apply();
-        if (enabled) startIfEnabled(context, true); // 32차: 토글 ON은 캐시와 무관하게 즉시 등록
+        if (enabled) startIfEnabled(context, true);
         else stop(context);
     }
 

@@ -165,7 +165,6 @@ const els = {
   btnOvernightChange: document.getElementById('btn-overnight-change'),
   // 31차: 물리 탐지 (베타)
   settingPhyEnabled: document.getElementById('setting-phy-enabled'),
-  settingPhyGeofence: document.getElementById('setting-phy-geofence'),
   btnPhyLearn: document.getElementById('btn-phy-learn'),
   settingPhyStatus: document.getElementById('setting-phy-status'),
   btnSessionRelogin: document.getElementById('btn-session-relogin'),
@@ -1538,20 +1537,24 @@ async function refreshPhyStatusUI() {
   const phy = window.Capacitor?.Plugins?.PhyPlugin;
   if (!(window.CodysseyNative && window.CodysseyNative.isNative) || !phy) {
     els.settingPhyStatus.textContent = '(Android 앱에서 사용 가능)'; // 42차: 39차에서 베타 수집 제거 — 낡은 문구 갱신
-    [els.settingPhyEnabled, els.settingPhyGeofence, els.btnPhyLearn]
+    [els.settingPhyEnabled, els.btnPhyLearn] // 44차: 지오펜스 토글 제거 — phy_enabled 단일화
       .forEach(el => { if (el) el.disabled = true; });
     return;
   }
   try {
     const st = await phy.getPhyStatus();
     if (els.settingPhyEnabled) els.settingPhyEnabled.checked = !!st.enabled;
-    if (els.settingPhyGeofence) els.settingPhyGeofence.checked = !!st.geofence;
     const insideTxt = (st.inside === null || st.inside === undefined)
       ? '판정 중' : (st.inside ? '학원 근처' : '학원 밖');
     let txt = `상태: ${st.enabled ? '켜짐' : '꺼짐'} · 판정 ${insideTxt} · 학습 ${st.locations}건`; // 42차: '건건' 중복 접미사 정정
     txt += st.fine ? ' · 위치 권한 ✅' : ' · 위치 권한 없음 ⚠️';
     if (st.enabled && !st.fine) txt += ' — 토글을 껐다 켜면 권한 요청';
-    if (st.geofence) txt += st.backgroundLocation ? ' · 항상 허용 ✅' : ' · 항상 허용 필요 ⚠️';
+    // 44차: 지오펜스는 phy_enabled에 종속 — 별도 토글 없이 상태만 표시
+    if (st.enabled) {
+      txt += st.geofence
+        ? (st.backgroundLocation ? ' · 지오펜스 가속 ✅' : ' · 지오펜스: 항상 허용 필요 ⚠️')
+        : ' · 지오펜스 꺼짐 (판정만)';
+    }
     if (st.activity && st.activity !== 'unknown') txt += ` · 활동 ${st.activity}`;
     els.settingPhyStatus.textContent = txt;
   } catch (e) {
@@ -1894,19 +1897,15 @@ function setupEventListeners() {
       if (enabled && r && r.fine === false) {
         showNotification('위치 권한 요청', '학원 근처 감지에 위치 권한이 필요합니다. 요청창에서 허용해 주세요.');
       }
+      // 44차: 지오펜스 가속은 위치 '항상 허용' 필요 — 없으면 판정은 동작, 반응만 5분 지연
+      if (enabled && r && r.needBackground) {
+        showNotification("'항상 허용' 권장", '즉시 반응(지오펜스 가속)은 위치 권한을 "항상 허용"으로 바꿔야 합니다. 미설정핚도 약 5분 지연 판정은 동작합니다. 앱 설정 화면을 엽니다.');
+        try { await window.Capacitor?.Plugins?.PhyPlugin?.openPhySettings(); } catch (e) { /* 무시 */ }
+      }
     } catch (e) { /* 웹/구버전 무시 */ }
     setTimeout(refreshPhyStatusUI, 800);
   });
-  els.settingPhyGeofence?.addEventListener('change', async () => {
-    try {
-      const r = await window.Capacitor?.Plugins?.PhyPlugin?.setPhyGeofence({ enabled: els.settingPhyGeofence.checked });
-      if (r && r.needBackground) {
-        showNotification("'항상 허용' 필요", '즉시 감지(지오펜스)는 위치 권한을 "항상 허용"으로 바꿔야 합니다. 앱 설정 화면을 엽니다.');
-        try { await window.Capacitor?.Plugins?.PhyPlugin?.openPhySettings(); } catch (e) { /* 무시 */ }
-      }
-    } catch (e) { /* 무시 */ }
-    setTimeout(refreshPhyStatusUI, 1500);
-  });
+  // 44차: 지오펜스 별도 토글 제거 — 항상 허용 안내는 학원 근처 감지 토글 경로로 통합
   els.btnPhyLearn?.addEventListener('click', async () => {
     try {
       const r = await window.Capacitor?.Plugins?.PhyPlugin?.learnNow();

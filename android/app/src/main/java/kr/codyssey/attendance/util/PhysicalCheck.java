@@ -566,8 +566,9 @@ public final class PhysicalCheck {
         try {
             SharedPreferences prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
             Decision d = readState(prefs);
-            out.put("enabled", prefs.getBoolean("phy_enabled", false));
-            out.put("geofence", prefs.getBoolean("phy_geofence", false));
+            boolean phyOn = prefs.getBoolean("phy_enabled", false);
+            out.put("enabled", phyOn);
+            out.put("geofence", phyOn); // 44차: 지오펜스는 phy_enabled 종속 (별도 토글 폐지)
             if (d.inside == null) out.put("inside", JSONObject.NULL);
             else out.put("inside", d.inside == 1);
             out.put("locations", new JSONArray(prefs.getString("phy_locations", "[]")).length());
