@@ -1531,12 +1531,12 @@ function updateKeepAliveUI() {
   
   if (keepAliveEnabled) {
     els.btnKeepAlive.classList.add('active');
-    els.btnKeepAlive.textContent = '⏸️';
+    els.btnKeepAlive.style.display = ''; // 46차: 유지 중일 때만 '로그인 유지 중' 칩 표시
     els.btnKeepAlive.title = '로그인 유지 중 (클릭하여 중지)';
     startKeepAlive();
   } else {
     els.btnKeepAlive.classList.remove('active');
-    els.btnKeepAlive.textContent = '🔄';
+    els.btnKeepAlive.style.display = 'none'; // 46차: 비활성 시 자리 비움
     els.btnKeepAlive.title = '로그인 유지 시작';
     stopKeepAlive();
   }

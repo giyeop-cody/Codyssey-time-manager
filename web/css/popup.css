@@ -631,3 +631,16 @@ body {
 .day-session.open .day-session-dur { color: var(--accent-gold); }
 .day-session.stale { border-color: rgba(255,213,79,0.4); }
 .day-empty { text-align: center; color: var(--text-muted); font-size: 12px; padding: 22px 0; }
+
+/* ===== 46차: 이모지 → 콘셉트 컬러 투명 PNG 아이콘 =====
+   (단말 이모지 폰트 차이로 회색 박스/깨진 글리프로 보이던 문제 해결) */
+.ui-icon { width: 15px; height: 15px; vertical-align: -2px; }
+.icon-title { width: 21px; height: 21px; vertical-align: -4px; }
+.header-btn .hb-icon { width: 16px; height: 16px; }
+.mode-card-text .ui-icon { width: 14px; height: 14px; }
+.btn .ui-icon { width: 13px; height: 13px; }
+.realtime-label .ui-icon { width: 13px; height: 13px; }
+.login-logo img { width: 34px; height: 34px; }
+/* 46차: 로그인 유지 헤더 칩 — 활성 시에만 '로그인 유지 중' 텍스트, 비활성 시 비움(JS가 display 제어) */
+.keepalive-chip { border: 1px solid rgba(78,201,176,0.45) !important; border-radius: 999px; padding: 3px 10px !important; }
+.keepalive-chip .hb-label { font-size: 10px; color: var(--accent-teal); font-weight: 600; }

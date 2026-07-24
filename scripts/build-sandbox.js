@@ -85,4 +85,9 @@ try {
 }
 
 fs.writeFileSync(path.join(ROOT, 'sandbox', 'popup-sandbox.html'), out);
+// 46차: PNG 아이콘 복사 (sandbox에서 상대 경로 icons/ 참조용)
+try {
+  fs.cpSync(path.join(ROOT, 'web', 'icons'), path.join(ROOT, 'sandbox', 'icons'), { recursive: true });
+  console.log('OK sandbox/icons 아이콘 복사');
+} catch (e) { console.warn('icons copy skip:', e.message); }
 console.log(`OK sandbox/popup-sandbox.html 생성 (${(out.length / 1024).toFixed(1)} KB, 모듈 문법 검사 통과)`);
