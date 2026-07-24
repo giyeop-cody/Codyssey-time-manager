@@ -156,6 +156,46 @@ public class GateCheck {
 
         // 29차: 자정 롤오버 확인 — 전날 입실 후 미퇴실이면 밤샘/누락 확인 알림 (당일 1회)
         checkOvernightRollover(context, prefs, monthData, prevMonthData, todayStr, yesterdayStr);
+        maybeAlertOverstay(context, prefs, monthData, todayStr); // 47차
+    }
+
+    // 47차: 당일 실제 체류(원시) 상한 초과 알림 — 인정(서버 12h 캡)과 분리. 설정 상한 기준 · 당일 1회.
+    // 익스텐션 background maybeNotifyOverstay와 문구 동일. 세션 데이터는 이번 조회의 monthData 재활용.
+    private static void maybeAlertOverstay(Context context, SharedPreferences prefs,
+                                           JSONObject monthData, String todayStr) {
+        try {
+            JSONObject settings = new JSONObject(prefs.getString("settings", "{}"));
+            if (!settings.optBoolean("overstayAlertEnabled", true)) return;
+            if (!settings.optBoolean("notificationsEnabled", true)) return;
+            int dailyHours = settings.optInt("dailyMaxHours", 12);
+            if (todayStr.equals(prefs.getString("overstay_notified", ""))) return;
+
+            JSONArray sessions = sessionsOf(monthData, todayStr);
+            long now = System.currentTimeMillis();
+            long sumMin = 0;
+            for (int i = 0; i < sessions.length(); i++) {
+                JSONArray pair = sessions.optJSONArray(i);
+                if (pair == null || pair.length() < 2) continue;
+                if (pair.isNull(0)) continue; // 입실 누락 세션은 원시 소요 산정 불가 — 제외
+                String entry = pair.optString(0, null);
+                String exit = pair.isNull(1) ? null : pair.optString(1, null);
+                if (entry == null || entry.isEmpty()) continue;
+                long e = eventTimestamp(todayStr, entry, null);
+                long x = exit != null && !exit.isEmpty() ? eventTimestamp(todayStr, exit, null) : now;
+                if (e <= 0 || x < e) continue; // 역전/파싱 실패 제외
+                sumMin += (x - e) / 60000;
+            }
+            if (sumMin <= dailyHours * 60L) return;
+
+            long hh = sumMin / 60, mm = sumMin % 60;
+            NotificationHelper.showNotification(context,
+                    "⏰ 오늘 체류 상한 초과",
+                    "실제 체류 " + hh + "시간 " + mm + "분이 상한 " + dailyHours
+                            + "시간을 넘었습니다 — 인정 시간은 상한에서 잘리니 퇴실 처리를 확인해 주세요.",
+                    "overstay_" + todayStr);
+            prefs.edit().putString("overstay_notified", todayStr).apply();
+            DiagLog.add(context, "GATE", "체류 상한 초과 알림 — 실제 " + hh + "시간 " + mm + "분 (상한 " + dailyHours + "시간)");
+        } catch (Exception ignored) { }
     }
 
     // 29차: 전날 시작 미퇴실 세션 감지 → 확인 요청 알림.

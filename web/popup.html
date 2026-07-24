@@ -68,7 +68,7 @@
   <div class="dashboard-header">
     <h2 class="dashboard-title"><img class="ui-icon icon-title" src="icons/bell.png" alt=""> 출입 현황 알리미</h2>
     <div class="header-actions">
-      <button class="btn btn-ghost btn-sm header-btn keepalive-chip" id="btn-keep-alive" title="로그인 유지"><span class="hb-label">로그인 유지 중</span></button>
+      <span class="header-btn keepalive-chip passive" id="btn-keep-alive" role="status"><span class="hb-label">로그인 유지 중</span></span>
       <button class="btn btn-ghost btn-sm header-btn" id="btn-settings" title="설정"><img class="hb-icon" src="icons/gear.png" alt=""><span class="hb-label">설정</span></button>
       <button class="btn btn-ghost btn-sm header-btn" id="btn-refresh" title="새로고침"><img class="hb-icon" src="icons/refresh.png" alt=""><span class="hb-label">갱신</span></button>
     </div>
@@ -350,6 +350,13 @@
           <div class="setting-desc">게이트에 입실/퇴실이 기록되면 알림</div>
         </div>
         <label class="toggle"><input type="checkbox" id="setting-gate-notify" checked><span class="toggle-slider"></span></label>
+      </div>
+      <div class="setting-row">
+        <div>
+          <div class="setting-label">체류 상한 초과 알림</div>
+          <div class="setting-desc">당일 실제 체류(인정 캡 미적용)가 일 최대 시간을 넘으면 당일 1회 알림</div>
+        </div>
+        <label class="toggle"><input type="checkbox" id="setting-overstay-alert" checked><span class="toggle-slider"></span></label>
       </div>
       <div class="setting-row">
         <div>

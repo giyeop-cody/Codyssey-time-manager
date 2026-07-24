@@ -29,7 +29,8 @@ import {
   OVERNIGHT_PREF_KEY,
   timeStrToMinutes,
   getDaySessions,
-  describeDaySession
+  describeDaySession,
+  rawStayMinutesForDate
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -160,6 +161,7 @@ const els = {
   settingRefreshInterval: document.getElementById('setting-refresh-interval'),
   settingKeepAlive: document.getElementById('setting-keep-alive'),
   settingGateNotify: document.getElementById('setting-gate-notify'),
+  settingOverstayAlert: document.getElementById('setting-overstay-alert'),
   settingDash: document.getElementById('setting-dash'),
   btnBatteryExempt: document.getElementById('btn-battery-exempt'),
   btnExactAlarm: document.getElementById('btn-exact-alarm'),
@@ -970,8 +972,11 @@ function renderCalendar() {
     const date = new Date(year, month - 1, day);
     const dateStr = getTodayString(date);
     const dayData = calendarData.dailyBreakdown[dateStr] || 0;
-    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, true, false, todayStr));
+    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, rawStayMinutesForDate(calendarData, dateStr), true, false, todayStr));
   }
+
+  // 47차: 오늘 원시 체류 = 완료 세션 원시 합 + 진행 중 세션 경과 (인정 캡 미적용)
+  const openMinToday = currentParsed?.isCurrentlyIn ? elapsedSinceEntry(currentParsed) : 0;
 
   // 이번 달
   for (let day = 1; day <= lastDate; day++) {
@@ -979,7 +984,8 @@ function renderCalendar() {
     const dateStr = getTodayString(date);
     const dayData = miniDisplayMinutes(dateStr, calendarData.dailyBreakdown[dateStr] || 0); // K9: 오늘은 실시간 값
     const isToday = dateStr === todayStr;
-    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, false, isToday, todayStr));
+    const rawMin = rawStayMinutesForDate(calendarData, dateStr) + (isToday ? openMinToday : 0);
+    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, rawMin, false, isToday, todayStr));
   }
 
   // 다음 달
@@ -989,14 +995,14 @@ function renderCalendar() {
     const date = new Date(year, month + 1, day);
     const dateStr = getTodayString(date);
     const dayData = calendarData.dailyBreakdown[dateStr] || 0;
-    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, true, false, todayStr));
+    grid.appendChild(createMiniDayElement(day, dateStr, dayData, dailyMax, rawStayMinutesForDate(calendarData, dateStr), true, false, todayStr));
   }
 
   // 월 표시
   els.calendarMonth.textContent = formatMonth(currentViewDate);
 }
 
-function createMiniDayElement(day, dateStr, minutes, dailyMax, isOtherMonth, isToday, todayStr) {
+function createMiniDayElement(day, dateStr, minutes, dailyMax, rawMin, isOtherMonth, isToday, todayStr) {
   const div = document.createElement('div');
   div.className = 'calendar-day';
   div.dataset.date = dateStr;
@@ -1004,7 +1010,7 @@ function createMiniDayElement(day, dateStr, minutes, dailyMax, isOtherMonth, isT
   if (isOtherMonth) div.classList.add('other-month');
   if (isToday) div.classList.add('today');
   if (minutes > 0) div.classList.add('has-record');
-  if (minutes > dailyMax) div.classList.add('has-over');
+  if (rawMin > dailyMax) div.classList.add('has-over'); // 47차: 초과는 실제 체류 기준 (인정은 서버 캡이라 초과 불가)
   
   // 현재 입실 중인 날짜 표시
   if (currentParsed?.isCurrentlyIn && dateStr === todayStr && minutes === 0) {
@@ -1021,7 +1027,7 @@ function createMiniDayElement(day, dateStr, minutes, dailyMax, isOtherMonth, isT
   
   if (minutes > 0) {
     const recordDiv = document.createElement('div');
-    recordDiv.className = 'calendar-record' + (minutes > dailyMax ? ' over' : '');
+    recordDiv.className = 'calendar-record' + (rawMin > dailyMax ? ' over' : '');
     recordDiv.textContent = minutesToTimeStr(minutes);
     recordsDiv.appendChild(recordDiv);
   } else if (currentParsed?.isCurrentlyIn && dateStr === todayStr) {
@@ -1056,16 +1062,19 @@ function openDayModal(dateStr) {
   const recMin = dateStr === todayStr ? miniDisplayMinutes(dateStr, rawMin) : rawMin;
   const anyOpen = sessions.some(s => describeDaySession(s, dateStr, todayStr).kind === 'open')
     || (dateStr === todayStr && currentParsed?.isCurrentlyIn);
+  // 47차: 실제 체류 = 완료 세션 원시 합 + (오늘이면) 진행 중 경과 — 인정 캡 미적용
+  const stayMin = rawStayMinutesForDate(calendarData, dateStr)
+    + ((dateStr === todayStr && currentParsed?.isCurrentlyIn) ? elapsedSinceEntry(currentParsed) : 0);
 
   let badgeCls = 'none', badgeText = '기록 없음';
   if (sessions.length > 0 || anyOpen) {
-    badgeCls = recMin > dailyMaxMin ? 'over' : 'ok';
-    badgeText = recMin > dailyMaxMin ? '초과' : '정상';
-    if (anyOpen && recMin <= dailyMaxMin) { badgeCls = 'open'; badgeText = '입실 중'; }
+    badgeCls = stayMin > dailyMaxMin ? 'over' : 'ok';
+    badgeText = stayMin > dailyMaxMin ? '초과' : '정상';
+    if (anyOpen && stayMin <= dailyMaxMin) { badgeCls = 'open'; badgeText = '입실 중'; }
   }
   els.dayModalSub.innerHTML =
     `<span class="day-badge ${badgeCls}">${badgeText}</span>` +
-    `<span>인정 ${minutesToTimeStr(recMin)} · 상한 ${minutesToTimeStr(dailyMaxMin)}</span>`;
+    `<span>인정 ${minutesToTimeStr(recMin)} · 실제 체류 ${minutesToTimeStr(stayMin)} · 상한 ${minutesToTimeStr(dailyMaxMin)}</span>`;
 
   els.dayModalList.innerHTML = '';
   if (!sessions.length) {
@@ -1529,15 +1538,14 @@ function updateKeepAliveUI() {
   
   keepAliveEnabled = currentSettings.keepAliveEnabled !== false;
   
+  // 47차: 칩은 순수 상태 표시 — 표시/숨김은 active 클래스(CSS)가 제어, 클릭 동작 없음
   if (keepAliveEnabled) {
     els.btnKeepAlive.classList.add('active');
-    els.btnKeepAlive.style.display = ''; // 46차: 유지 중일 때만 '로그인 유지 중' 칩 표시
-    els.btnKeepAlive.title = '로그인 유지 중 (클릭하여 중지)';
+    els.btnKeepAlive.title = '로그인 유지 중 (설정에서 변경)';
     startKeepAlive();
   } else {
     els.btnKeepAlive.classList.remove('active');
-    els.btnKeepAlive.style.display = 'none'; // 46차: 비활성 시 자리 비움
-    els.btnKeepAlive.title = '로그인 유지 시작';
+    els.btnKeepAlive.title = '';
     stopKeepAlive();
   }
   
@@ -1603,6 +1611,7 @@ function openSettings() {
   els.settingRefreshInterval.value = currentSettings.refreshInterval;
   els.settingKeepAlive.checked = currentSettings.keepAliveEnabled !== false;
   els.settingGateNotify.checked = currentSettings.gateNotifyEnabled !== false; // G1
+  els.settingOverstayAlert.checked = currentSettings.overstayAlertEnabled !== false; // 47차: 초과 알림 기본 켬
   els.settingEvalLead.value = currentSettings.evalLeadMinutes ?? 30; // E1
   els.settingEvalAutosync.checked = currentSettings.evalAutoSyncEnabled !== false; // E2
   els.settingEvalInstcd.value = currentSettings.evalInstCd || ''; // E2 수동 instCd
@@ -1708,6 +1717,7 @@ async function saveSettings() {
     refreshInterval: parseInt(els.settingRefreshInterval.value) || 30,
     keepAliveEnabled: els.settingKeepAlive.checked,
     gateNotifyEnabled: els.settingGateNotify.checked, // G1
+    overstayAlertEnabled: els.settingOverstayAlert.checked, // 47차: 체류 상한 초과 알림
     evalLeadMinutes: Math.min(1440, Math.max(0, parseInt(els.settingEvalLead.value) || 30)), // E1
     evalAutoSyncEnabled: els.settingEvalAutosync.checked, // E2
     evalInstCd: els.settingEvalInstcd.value.trim(), // E2 수동 instCd (빈값=자동 감지)
@@ -2083,19 +2093,7 @@ function setupEventListeners() {
   });
   
   // 로그인 유지 토글
-  els.btnKeepAlive.addEventListener('click', () => {
-    keepAliveEnabled = !keepAliveEnabled;
-    if (keepAliveEnabled) {
-      startKeepAlive();
-    } else {
-      stopKeepAlive();
-    }
-    updateKeepAliveUI();
-    if (currentSettings) {
-      currentSettings.keepAliveEnabled = keepAliveEnabled;
-      sendMessage('UPDATE_SETTINGS', { settings: currentSettings });
-    }
-  });
+  // 47차: 칩은 순수 상태 표시 — 탭 불가 (토글은 설정에서만)
 
   // 계산기 모드 라디오 (같은 name 묶음이라 선택은 상호 배타)
   els.calcModeExit.addEventListener('change', updateCalcModeUI);

@@ -57,7 +57,8 @@ import {
     gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
     evalLeadMinutes: 30, // E1: 평가 알람 기본 사전 알림 (분)
     evalAutoSyncEnabled: true, // E2: 코디세이 평가 일정 자동 연동 (E1 요청 사항)
-    evalInstCd: '' // E2: instCd 자동 추출 실패 시 사용자 수동 입력
+    evalInstCd: '', // E2: instCd 자동 추출 실패 시 사용자 수동 입력
+    overstayAlertEnabled: true, // 47차: 체류 상한 초과 알림
   };
 
   const CACHE_TTL_MS = 5 * 60 * 1000;

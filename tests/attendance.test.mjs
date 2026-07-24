@@ -46,7 +46,10 @@ import {
   overnightStatusSuffix,
   OVERNIGHT_PREF_KEY,
   getDaySessions,
-  describeDaySession
+  describeDaySession,
+  rawStayMinutesFromSessions,
+  rawStayMinutesForDate,
+  rawStayTodayMinutes
 } from '../web/js/shared-attendance.js';
 
 // ===== 픽스처 헬퍼 (오늘 날짜 기준으로 동적 생성 → 날짜 독립적) =====
@@ -1225,4 +1228,65 @@ test('45차 describeDaySession: 입실 누락·역전 시각 분류', () => {
   const weird = describeDaySession({ entry_time: '18:05:00', exit_time: '09:05:00', is_missing: false, missing_type: null }, '2026-07-22', '2026-07-24');
   assert.equal(weird.kind, 'normal');
   assert.equal(weird.minutes, null);
+});
+// ===== 47차: 실제 체류(원시) 헬퍼 — 인정 캡(12h)과 분리 =====
+test('47차 rawStayMinutesFromSessions: 유효 쌍만 합산, 누락·역전·진행 중 제외', () => {
+  const sessions = [
+    { entry_time: '09:00:00', exit_time: '12:00:00', is_missing: false, missing_type: null },   // 180
+    { entry_time: '13:00:00', exit_time: '23:30:00', is_missing: false, missing_type: null },   // 630
+    { entry_time: '23:00:00', exit_time: '01:00:00', is_missing: false, missing_type: null },   // 역전 → 제외
+    { entry_time: null, exit_time: '18:00:00', is_missing: true, missing_type: 'entry' },       // 입실 누락 → 제외
+    { entry_time: '10:00:00', exit_time: null, is_missing: true, missing_type: 'exit' }         // 미퇴실 → 제외
+  ];
+  assert.equal(rawStayMinutesFromSessions(sessions), 810);
+  assert.equal(rawStayMinutesFromSessions(null), 0);
+  assert.equal(rawStayMinutesFromSessions([]), 0);
+});
+
+test('47차 rawStayMinutesForDate: parsed에서 특정 날짜 원시 체류', () => {
+  assert.equal(rawStayMinutesForDate(dayDetailParsed, '2026-07-22'), 540);
+  // 09:02~12:32 = 210분, 진행 중(퇴실 null) 세션은 합산 제외
+  assert.equal(rawStayMinutesForDate(dayDetailParsed, '2026-07-24'), 210);
+  assert.equal(rawStayMinutesForDate(dayDetailParsed, '2026-07-31'), 0);
+  assert.equal(rawStayMinutesForDate(null, '2026-07-22'), 0);
+  assert.equal(rawStayMinutesForDate({}, '2026-07-22'), 0);
+});
+
+test('47차 rawStayTodayMinutes: 진행 중 세션 경과 포함, 인정 캡 미적용', () => {
+  // 오늘 픽스처: 완료 09:02~12:32(210분) + 진행 중 13:05 입실
+  const now = new Date(today + 'T21:32:00').getTime();
+  const entryTs = new Date(today + 'T13:05:00').getTime();
+  const p = {
+    isCurrentlyIn: true,
+    entryTimestamp: entryTs,
+    rawDetailList: [
+      { date: today, daily_total_duration: '03:30:00', sessions: [
+        { entry_time: '09:02:00', exit_time: '12:32:00', is_missing: false, missing_type: null },
+        { entry_time: '13:05:00', exit_time: null, is_missing: true, missing_type: 'exit' }
+      ] }
+    ]
+  };
+  // 완료 210 + 진행 8시간27분(507) = 717 — 서버 인정(12h 캡)이면 상한 근처에서 멈춰 초과 판정 불가
+  assert.equal(rawStayTodayMinutes(p, now), 717);
+  const late = new Date(today + 'T22:05:00').getTime();
+  assert.equal(rawStayTodayMinutes(p, late), 750); // 210 + 540 — 12시간(720) 초과를 실제로 판별 가능
+  const notIn = Object.assign({}, p, { isCurrentlyIn: false, entryTimestamp: null });
+  assert.equal(rawStayTodayMinutes(notIn, now), 210);
+});
+
+test('47차 rawStayTodayMinutes: 오늘 외 날짜 기록은 무시하고 오늘 것만 합산', () => {
+  const now = new Date(today + 'T21:32:00').getTime();
+  const p = {
+    isCurrentlyIn: false,
+    entryTimestamp: null,
+    rawDetailList: [
+      { date: '2020-01-01', daily_total_duration: '09:00:00', sessions: [
+        { entry_time: '09:00:00', exit_time: '18:00:00', is_missing: false, missing_type: null }
+      ] },
+      { date: today, daily_total_duration: '01:00:00', sessions: [
+        { entry_time: '09:00:00', exit_time: '10:00:00', is_missing: false, missing_type: null }
+      ] }
+    ]
+  };
+  assert.equal(rawStayTodayMinutes(p, now), 60);
 });

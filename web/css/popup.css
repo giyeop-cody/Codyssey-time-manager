@@ -642,5 +642,7 @@ body {
 .realtime-label .ui-icon { width: 13px; height: 13px; }
 .login-logo img { width: 34px; height: 34px; }
 /* 46차: 로그인 유지 헤더 칩 — 활성 시에만 '로그인 유지 중' 텍스트, 비활성 시 비움(JS가 display 제어) */
-.keepalive-chip { border: 1px solid rgba(78,201,176,0.45) !important; border-radius: 999px; padding: 3px 10px !important; }
+.keepalive-chip { display: none !important; border: 1px solid rgba(78,201,176,0.45) !important; border-radius: 999px; padding: 3px 10px !important; }
+.keepalive-chip.active { display: inline-flex !important; } /* 47차: 유지 중일 때만 표시 — .header-btn display !important 대비 */
 .keepalive-chip .hb-label { font-size: 10px; color: var(--accent-teal); font-weight: 600; }
+.keepalive-chip.passive { cursor: default; pointer-events: none; user-select: none; } /* 47차: 순수 표시 전용 */

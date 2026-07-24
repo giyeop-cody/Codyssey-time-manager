@@ -1063,3 +1063,29 @@ export function describeDaySession(session, dateStr, todayStr, nowMs = Date.now(
   const valid = entryMin !== null && exitMin !== null && exitMin >= entryMin;
   return { kind: 'normal', entryMin, exitMin, minutes: valid ? exitMin - entryMin : null };
 }
+
+// ===== 47차: 실제 체류(원시) 시간 — 서버 인정(12h 캡)과 분리 =====
+// 세션 목록의 실제 체류 합 (출입 쌍이 유효한 완료 세션만)
+export function rawStayMinutesFromSessions(sessions) {
+  let sum = 0;
+  for (const s of sessions || []) {
+    const d = describeDaySession(s, '', '');
+    if (d.kind === 'normal' && d.minutes !== null) sum += d.minutes;
+  }
+  return sum;
+}
+
+// 특정 날짜의 실제 체류 분
+export function rawStayMinutesForDate(parsed, dateStr) {
+  return rawStayMinutesFromSessions(getDaySessions(parsed, dateStr));
+}
+
+// 오늘 실제 체류 = 원시 세션 합 + 진행 중 세션 경과 (인정 캡 미적용 — 체류 상한 초과 알림/캘린더 초과 표시 기준)
+export function rawStayTodayMinutes(parsed, nowMs = Date.now()) {
+  const todayStr = getTodayString();
+  let sum = rawStayMinutesForDate(parsed, todayStr);
+  if (parsed?.isCurrentlyIn && parsed.entryTimestamp) {
+    sum += Math.max(0, Math.floor((nowMs - parsed.entryTimestamp) / 60000));
+  }
+  return sum;
+}

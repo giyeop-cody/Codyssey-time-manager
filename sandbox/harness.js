@@ -20,6 +20,7 @@ const sb = {
     refreshInterval: 30,
     keepAliveEnabled: false,
     gateNotifyEnabled: true,
+    overstayAlertEnabled: true,
     evalLeadMinutes: 30,
     evalAutoSyncEnabled: true,
     evalInstCd: ''
@@ -65,6 +66,11 @@ function sbBuildDetailList(year, month) {
         entryToday.sessions.push({ entry_time: '13:05:00', exit_time: null, is_missing: true, missing_type: 'exit' });
       }
       list.push(entryToday);
+    } else if (d % 6 === 3) {
+      // 47차: 초과일 픽스처 — 인정은 서버 12h 캡(12:00:00), 실제 체류는 14시간대
+      list.push({ date: dateStr, daily_total_duration: '12:00:00', sessions: [
+        { entry_time: '07:30:00', exit_time: '22:05:00', is_missing: false, missing_type: null }
+      ] });
     } else {
       // 평일 09:0x ~ 18:0x (날짜별로 몇 분씩 변형)
       const jitter = d % 7;

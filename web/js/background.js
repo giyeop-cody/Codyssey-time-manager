@@ -33,6 +33,7 @@ import {
   mergeDetailLists,
   recognizedMonthly,
   monthlyDeadlineAlert,
+  rawStayTodayMinutes,
   OVERNIGHT_PREF_KEY,
   EVAL_AUTO_ID_PREFIX,
   parseEvalNoticeAlarms,
@@ -66,7 +67,8 @@ const DEFAULT_SETTINGS = {
   gateNotifyEnabled: true, // G1: 입·퇴실 처리 감지 알림 (요청 기능 — 기본 켬)
   evalLeadMinutes: 30, // E1: 평가 알람 기본 사전 알림 (분)
   evalAutoSyncEnabled: true, // E2: 코디세이 평가 일정 자동 연동 (E1 요청 사항)
-  evalInstCd: '' // E2: instCd 자동 추출 실패 시 사용자 수동 입력
+  evalInstCd: '', // E2: instCd 자동 추출 실패 시 사용자 수동 입력
+  overstayAlertEnabled: true, // 47차: 체류 상한 초과 알림 — 실제(원시) 체류 기준 · 당일 1회
 };
 
 // ===== 스토리지 =====
@@ -755,6 +757,25 @@ async function checkMonthlyDeadline(memberId, parsed, settings) {
   await setStorage({ monthly_deadline_mark: `${todayStr}:${alert.level}` });
 }
 
+// ===== 47차: 당일 실제 체류 상한 초과 — 설정 일 최대 시간 기준 · 당일 1회 =====
+// 인정 시간(서버 12h 캡)과 분리해 원시 체류로 판정. 자바 GateCheck.maybeAlertOverstay와 문구 동일.
+async function maybeNotifyOverstay(memberId, parsed, settings) {
+  if (settings.overstayAlertEnabled === false) return;
+  if (settings.notificationsEnabled === false) return;
+  const todayStr = getTodayString();
+  const mark = (await getStorage(['overstay_mark'])).overstay_mark || '';
+  if (mark === todayStr) return;
+  const rawMin = rawStayTodayMinutes(parsed);
+  const capMin = (settings.dailyMaxHours ?? 12) * 60;
+  if (rawMin <= capMin) return;
+  const hh = Math.floor(rawMin / 60), mm = rawMin % 60;
+  await showNotification(
+    '⏰ 오늘 체류 상한 초과',
+    `실제 체류 ${hh}시간 ${mm}분이 상한 ${settings.dailyMaxHours ?? 12}시간을 넘었습니다 — 인정 시간은 상한에서 잘리니 퇴실 처리를 확인해 주세요.`,
+    memberId, 'overstay');
+  await setStorage({ overstay_mark: todayStr });
+}
+
 async function showNotification(title, body, memberId, idKey = 'alarm') {
   const settings = await getSettings();
   if (!settings.notificationsEnabled) return;
@@ -917,6 +938,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const alarms = await getActiveAlarms(memberId);
           // 36차(N36-3): 월 마감 임박 경고 — 동기화 결과로 1일 1회까지 알림
           checkMonthlyDeadline(memberId, parsed, settings).catch(() => {});
+          maybeNotifyOverstay(memberId, parsed, settings).catch(() => {}); // 47차
           // S4: 평가 연동 상태도 함께 반환 — 팝업이 실패 원인(403/세션 만료/instCd 등)을 표시
           const evalState = (await getStorage([EVAL_STATE_KEY]))[EVAL_STATE_KEY] || null;
           sendResponse({
