@@ -37,6 +37,11 @@ body {
   max-width: 420px;
 }
 
+/* 45차: 360~379px 폭 단말에서 본문 최소 너비가 뷰포트를 넘겨 좌우 스크롤이 생기지 않도록 해제 */
+@media (max-width: 379px) {
+  body { min-width: 0; }
+}
+
 /* ===== 스크롤바 ===== */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -317,7 +322,7 @@ body {
 
 .calendar-grid-mini { 
   display: grid; 
-  grid-template-columns: repeat(7, 1fr); 
+  grid-template-columns: repeat(7, minmax(0, 1fr)); /* 45차: 기록 칩 내용이 트랙을 밀어내 좌우 스크롤이 생기던 것 방지 */ 
   gap: 1px; 
   margin-bottom: 8px; 
 }
@@ -336,9 +341,10 @@ body {
   display: flex; 
   flex-direction: column; 
   gap: 1px; 
-  cursor: default; 
+  cursor: pointer; 
   position: relative; 
   min-height: 36px; 
+  min-width: 0; 
   font-size: 10px; 
 }
 .calendar-grid-mini .calendar-day:hover { background: var(--bg-tertiary); }
@@ -349,7 +355,7 @@ body {
 .calendar-grid-mini .calendar-day-number { font-size: 10px; font-weight: 600; line-height: 1; }
 .calendar-grid-mini .calendar-day.today .calendar-day-number { color: var(--accent-teal); }
 .calendar-grid-mini .calendar-day.other-month .calendar-day-number { color: var(--text-muted); }
-.calendar-grid-mini .calendar-day-records { display: flex; flex-direction: column; gap: 1px; flex: 1; overflow: hidden; }
+.calendar-grid-mini .calendar-day-records { display: flex; flex-direction: column; gap: 1px; flex: 1; overflow: hidden; min-width: 0; }
 .calendar-grid-mini .calendar-record { font-size: 7px; padding: 1px 3px; border-radius: 2px; background: rgba(78,201,176,0.2); color: var(--accent-teal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
 .calendar-grid-mini .calendar-record.over { background: rgba(244,67,54,0.2); color: var(--accent-red); }
 .calendar-grid-mini .calendar-record.current { background: rgba(255,213,79,0.3); color: #b89600; animation: pulse 2s infinite; }
@@ -603,3 +609,25 @@ body {
 .toggle input:checked + .toggle-slider { background: var(--accent-teal); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(20px); }
 .settings-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
+
+/* ===== 날짜 상세 모달 (45차) ===== */
+.day-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1001; padding: 20px; }
+.day-modal.show { display: flex; }
+.day-modal-panel { background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px; width: 100%; max-width: 340px; max-height: 70vh; overflow-y: auto; }
+.day-modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.day-modal-title { font-size: 15px; font-weight: 700; }
+.day-modal-x { padding: 4px 10px; font-size: 11px; }
+.day-modal-sub { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); margin-bottom: 14px; flex-wrap: wrap; }
+.day-badge { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.day-badge.ok { background: rgba(78,201,176,0.18); color: var(--accent-teal); }
+.day-badge.over { background: rgba(244,67,54,0.18); color: var(--accent-red); }
+.day-badge.open { background: rgba(255,213,79,0.25); color: var(--accent-gold); }
+.day-badge.none { background: var(--bg-tertiary); color: var(--text-muted); }
+.day-session { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.day-session:last-child { margin-bottom: 0; }
+.day-session-text { font-size: 12.5px; }
+.day-session-sub { font-size: 10.5px; color: var(--text-muted); margin-top: 2px; }
+.day-session-dur { font-size: 12px; font-weight: 700; color: var(--accent-teal); white-space: nowrap; margin-left: 10px; }
+.day-session.open .day-session-dur { color: var(--accent-gold); }
+.day-session.stale { border-color: rgba(255,213,79,0.4); }
+.day-empty { text-align: center; color: var(--text-muted); font-size: 12px; padding: 22px 0; }

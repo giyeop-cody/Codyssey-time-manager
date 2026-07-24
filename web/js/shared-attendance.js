@@ -1038,3 +1038,28 @@ export function monthlyDeadlineAlert(recognizedMin, requiredHours, daysLeftInclu
   }
   return null;
 }
+
+// ===== 45차: 캘린더 날짜 상세(모달) =====
+// 특정 날짜의 원본 세션 목록 (기록 없음/미래/파싱 전은 빈 배열)
+export function getDaySessions(parsed, dateStr) {
+  const list = parsed?.rawDetailList || [];
+  const day = list.find(d => d && d.date === dateStr);
+  return (day && Array.isArray(day.sessions)) ? day.sessions : [];
+}
+
+// 세션 한 건의 표시 상태 분류: normal | open(유효 개방=입실 중) | stale_exit(낡은 미퇴실) | no_entry(입실 누락)
+// minutes는 출입 쌍이 유효(exit >= entry)할 때만
+export function describeDaySession(session, dateStr, todayStr, nowMs = Date.now()) {
+  const entryMin = timeStrToMinutes(session?.entry_time);
+  const exitMin = timeStrToMinutes(session?.exit_time);
+  if (session?.is_missing === true && session?.missing_type === 'entry') {
+    return { kind: 'no_entry', entryMin, exitMin, minutes: null };
+  }
+  if (entryMin !== null && exitMin === null) {
+    const ts = parseEntryTimestamp(dateStr, session.entry_time);
+    const open = dateStr === todayStr && isOpenSessionFresh(ts, nowMs);
+    return { kind: open ? 'open' : 'stale_exit', entryMin, exitMin: null, minutes: null };
+  }
+  const valid = entryMin !== null && exitMin !== null && exitMin >= entryMin;
+  return { kind: 'normal', entryMin, exitMin, minutes: valid ? exitMin - entryMin : null };
+}

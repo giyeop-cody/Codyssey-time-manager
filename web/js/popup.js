@@ -26,7 +26,10 @@ import {
   recognizedMonthlyOvernightAware,
   overnightStatusSuffix,
   overnightEvidenceSuffix,
-  OVERNIGHT_PREF_KEY
+  OVERNIGHT_PREF_KEY,
+  timeStrToMinutes,
+  getDaySessions,
+  describeDaySession
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -142,6 +145,12 @@ const els = {
 
   // 설정 모달
   settingsModal: document.getElementById('settings-modal'),
+  // 날짜 상세 모달 (45차)
+  dayModal: document.getElementById('day-modal'),
+  dayModalTitle: document.getElementById('day-modal-title'),
+  dayModalSub: document.getElementById('day-modal-sub'),
+  dayModalList: document.getElementById('day-session-list'),
+  btnDayModalClose: document.getElementById('btn-day-close'),
   settingMonthlyHours: document.getElementById('setting-monthly-hours'),
   settingDailyHours: document.getElementById('setting-daily-hours'),
   settingDeadlineAlert: document.getElementById('setting-deadline-alert'),
@@ -1025,6 +1034,81 @@ function createMiniDayElement(day, dateStr, minutes, dailyMax, isOtherMonth, isT
   
   div.appendChild(recordsDiv);
   return div;
+}
+
+// ===== 45차: 캘린더 날짜 클릭 → 그날 입퇴실 상세 모달 =====
+function openDayModal(dateStr) {
+  if (!els.dayModal || !dateStr) return;
+  const calendarData = window.calendarParsed || currentParsed;
+  if (!calendarData) return;
+  const todayStr = getTodayString();
+  const dailyMaxMin = (currentSettings?.dailyMaxHours || 12) * 60;
+  const hh = (tm) => (typeof tm === 'string' && tm.length >= 5 ? tm.slice(0, 5) : '--:--');
+
+  const date = new Date(dateStr + 'T00:00:00');
+  const weekdays = ['일', '월', '화', '수', '목', '금', '토'];
+  els.dayModalTitle.textContent = `${date.getMonth() + 1}월 ${date.getDate()}일 (${weekdays[date.getDay()]}) 출입 상세`;
+
+  const sessions = getDaySessions(calendarData, dateStr)
+    .slice()
+    .sort((a, b) => (timeStrToMinutes(a.entry_time) ?? 0) - (timeStrToMinutes(b.entry_time) ?? 0));
+  const rawMin = calendarData.dailyBreakdown?.[dateStr] || 0;
+  const recMin = dateStr === todayStr ? miniDisplayMinutes(dateStr, rawMin) : rawMin;
+  const anyOpen = sessions.some(s => describeDaySession(s, dateStr, todayStr).kind === 'open')
+    || (dateStr === todayStr && currentParsed?.isCurrentlyIn);
+
+  let badgeCls = 'none', badgeText = '기록 없음';
+  if (sessions.length > 0 || anyOpen) {
+    badgeCls = recMin > dailyMaxMin ? 'over' : 'ok';
+    badgeText = recMin > dailyMaxMin ? '초과' : '정상';
+    if (anyOpen && recMin <= dailyMaxMin) { badgeCls = 'open'; badgeText = '입실 중'; }
+  }
+  els.dayModalSub.innerHTML =
+    `<span class="day-badge ${badgeCls}">${badgeText}</span>` +
+    `<span>인정 ${minutesToTimeStr(recMin)} · 상한 ${minutesToTimeStr(dailyMaxMin)}</span>`;
+
+  els.dayModalList.innerHTML = '';
+  if (!sessions.length) {
+    const empty = document.createElement('div');
+    empty.className = 'day-empty';
+    empty.textContent = dateStr > todayStr ? '아직 오지 않은 날짜입니다.' : '이 날의 출입 기록이 없습니다.';
+    els.dayModalList.appendChild(empty);
+  } else {
+    for (const s of sessions) {
+      const info = describeDaySession(s, dateStr, todayStr);
+      const row = document.createElement('div');
+      row.className = 'day-session' + (info.kind === 'open' ? ' open' : (info.kind === 'stale_exit' || info.kind === 'no_entry') ? ' stale' : '');
+      const left = document.createElement('div');
+      left.className = 'day-session-text';
+      const dur = document.createElement('div');
+      dur.className = 'day-session-dur';
+      if (info.kind === 'normal') {
+        left.textContent = `입실 ${hh(s.entry_time)} → 퇴실 ${hh(s.exit_time)}`;
+        dur.textContent = info.minutes !== null ? minutesToTimeStr(info.minutes) : '';
+      } else if (info.kind === 'open') {
+        left.textContent = `입실 ${hh(s.entry_time)} → 진행 중`;
+        dur.textContent = '입실 중';
+      } else {
+        if (info.kind === 'no_entry') {
+          left.textContent = `(입실 기록 없음) → 퇴실 ${hh(s.exit_time)}`;
+        } else {
+          left.textContent = `입실 ${hh(s.entry_time)} → 퇴실 기록 없음`;
+        }
+        const sub = document.createElement('div');
+        sub.className = 'day-session-sub';
+        sub.textContent = (info.kind === 'no_entry' ? '입실' : '퇴실') + ' 누락 의심 — 포털 기록 확인 권장';
+        left.appendChild(sub);
+      }
+      row.appendChild(left);
+      row.appendChild(dur);
+      els.dayModalList.appendChild(row);
+    }
+  }
+  els.dayModal.classList.add('show');
+}
+
+function closeDayModal() {
+  els.dayModal?.classList.remove('show');
 }
 
 // ===== 캘린더 네비게이션 =====
@@ -2077,6 +2161,16 @@ function setupEventListeners() {
   els.btnSettingsCancel.addEventListener('click', closeSettings);
   els.settingsModal.addEventListener('click', (e) => {
     if (e.target === els.settingsModal) closeSettings();
+  });
+
+  // 45차: 캘린더 날짜 클릭 → 상세 모달 (그리드 재렌더에도 유지되는 위임 방식)
+  els.calendarGridMini?.addEventListener('click', (e) => {
+    const cell = e.target.closest('.calendar-day');
+    if (cell?.dataset?.date) openDayModal(cell.dataset.date);
+  });
+  els.btnDayModalClose?.addEventListener('click', closeDayModal);
+  els.dayModal?.addEventListener('click', (e) => {
+    if (e.target === els.dayModal) closeDayModal();
   });
   // E2: 자동 연동 토글 시 수동 instCd 입력란 노출 전환
   els.settingEvalAutosync.addEventListener('change', () => {
