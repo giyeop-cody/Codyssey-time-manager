@@ -8,6 +8,7 @@ import android.webkit.WebView;
 import com.getcapacitor.BridgeActivity;
 
 import kr.codyssey.attendance.plugin.AlarmPlugin;
+import kr.codyssey.attendance.plugin.AppInfoPlugin;
 import kr.codyssey.attendance.plugin.NetworkPlugin;
 import kr.codyssey.attendance.plugin.PhyPlugin;
 import kr.codyssey.attendance.plugin.PollingPlugin;
@@ -27,6 +28,7 @@ public class MainActivity extends BridgeActivity {
         registerPlugin(AlarmPlugin.class);
         registerPlugin(PollingPlugin.class);
         registerPlugin(PhyPlugin.class); // 31차: 물리 탐지 JS 브릿지
+        registerPlugin(AppInfoPlugin.class); // 48차: 버전·서명 지문 조회 (설치본 진위 확인)
 
         super.onCreate(savedInstanceState);
 

@@ -1089,3 +1089,33 @@ export function rawStayTodayMinutes(parsed, nowMs = Date.now()) {
   }
   return sum;
 }
+// ===== 48차: 보안 유틸 — 서버 원문 HTML 이스케이프 + 버전 비교 + 공식 서명 지문 =====
+// V-3: innerHTML로 렌더되는 문자열(서버 원문 포함)에 최소 이스케이프 적용
+export function escapeHtml(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 버전 비교: "v1.10.9"/"1.10.9" — latest가 current보다 새 버전이면 true
+export function isNewerVersion(latest, current) {
+  const pa = String(latest || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10));
+  const pb = String(current || '').replace(/^v/i, '').split('.').map(n => parseInt(n, 10));
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const a = pa[i] || 0, b = pb[i] || 0;
+    if (Number.isNaN(a) || Number.isNaN(b)) return false;
+    if (a > b) return true;
+    if (a < b) return false;
+  }
+  return false;
+}
+
+// 48차: 앱 버전 상수 — 설정의 앱 정보·업데이트 배너 기준 (manifest와 동기, 단위 테스트가 검증)
+export const APP_VERSION = '1.10.9';
+
+// 48차: 공식 릴리즈 서명 지문(SHA-256) — keystore는 리포에 커밋하지 않음 (V-1)
+// 설정 '앱 정보'에서 설치본의 서명과 비교해 비공식 설치본을 감지
+export const EXPECTED_APK_SIGNATURE_SHA256 = '06:F1:50:1E:74:55:D3:6F:4D:C5:2E:F0:4F:9A:D0:F2:A5:D3:38:CE:1F:02:11:C1:23:8A:5F:C4:52:8E:1C:3F';

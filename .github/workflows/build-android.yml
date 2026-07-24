@@ -103,12 +103,22 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
-            echo 'Keystore decoded from secrets'
-          else
-            echo '::warning::KEYSTORE_BASE64 secret이 없습니다. 서명 없이 릴리스 빌드합니다.'
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo '::error::KEYSTORE_BASE64 secret이 없습니다. 서명된 릴리스를 만들 수 없어 중단합니다.'
+            exit 1
           fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/keystore.jks
+          echo 'Keystore decoded from secrets'
+
+      - name: Build Release APK (signed, on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: ./android
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          VERSION_NAME: ${{ github.ref_name }}
+        run: ./gradlew assembleRelease --no-daemon
 
       - name: Build Release AAB (on tags)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -120,6 +130,37 @@ jobs:
           VERSION_NAME: ${{ github.ref_name }}  # L12: 태그명을 versionName으로
         run: ./gradlew bundleRelease --no-daemon
 
+      - name: Verify Release APK + checksums (on tags)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -e
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          # V-2: 배포 빌드가 debuggable이면 배포 불가
+          APKANALYZER=$(find "$ANDROID_HOME" -name apkanalyzer -type f 2>/dev/null | head -1)
+          if [ -n "$APKANALYZER" ]; then
+            if "$APKANALYZER" manifest print "$APK" | grep -q "android:debuggable.*0xffffffff"; then
+              echo '::error::app-release.apk가 debuggable입니다 — 배포 중단'
+              exit 1
+            fi
+            echo 'OK — release APK는 debuggable이 아님'
+          else
+            echo '::warning::apkanalyzer 없음 — debuggable 검사 건어듦'
+          fi
+          # P-6: 사용자 검증 자료 (해시 + 서명 지문)
+          mkdir -p dist
+          (cd android/app/build/outputs/apk/release && sha256sum app-release.apk) > dist/SHA256SUMS.txt
+          (cd android/app/build/outputs/bundle/release && sha256sum app-release.aab) >> dist/SHA256SUMS.txt
+          (cd dist && sha256sum codyssey-extension.zip) >> dist/SHA256SUMS.txt
+          if unzip -Z1 "$APK" | grep -q 'META-INF/.*\.RSA'; then
+            SIG_FILE=$(unzip -Z1 "$APK" 'META-INF/*.RSA' | head -1)
+            unzip -p "$APK" "$SIG_FILE" > /tmp/cert.rsa
+            keytool -printcert -file /tmp/cert.rsa | grep -iE 'SHA-?256' | head -2 > dist/SIGNATURE.txt
+            echo '--- SIGNATURE.txt ---'; cat dist/SIGNATURE.txt
+          else
+            echo '압축 서명 인증서 추출 실패 — 앱 설정의 앱 정보에서 지문 확인' > dist/SIGNATURE.txt
+          fi
+          cat dist/SHA256SUMS.txt
+
       - name: Upload Release AAB
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
@@ -128,13 +169,30 @@ jobs:
           path: android/app/build/outputs/bundle/release/app-release.aab
           retention-days: 90
 
+      - name: Upload Release APK (signed)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 90
+
       - name: Create Release (on tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # 세 파일을 각각 배포: APK(디버그, 설치용) / AAB(릴리스) / 익스텐션 ZIP
+          # 48차 (V-1/V-2): 배포 APK를 서명된 release 빌드로 전환, 검증 자료 동봉
+          body: |
+            ⚠️ **설치 방법 변경 (v1.10.9~)**: 배포 서명이 공식 릴리스 키로 전환되었습니다.
+            **이전 버전(디버그 서명, 지문 D4:6C:…:F7) 사용자는 기존 앱 삭제 후 새로 설치해야 합니다** — 서명이 달라 덮어쓰기 설치가 불가능합니다 (로그인·설정·학습 데이터는 재입력 필요).
+            설치 후 앱 설정의 '앱 정보'에서 서명 지문이 SIGNATURE.txt와 일치하는지 확인하세요.
+            - **app-release.apk**: 안드로이드 설치 파일 (공식 릴리스 서명)
+            - **codyssey-extension.zip**: 크롬 익스텐션
+            - **SHA256SUMS.txt / SIGNATURE.txt**: 설치 파일 검증 자료
           files: |
-            android/app/build/outputs/apk/debug/app-debug.apk
+            android/app/build/outputs/apk/release/app-release.apk
             android/app/build/outputs/bundle/release/app-release.aab
             dist/codyssey-extension.zip
+            dist/SHA256SUMS.txt
+            dist/SIGNATURE.txt
           generate_release_notes: true

@@ -646,3 +646,13 @@ body {
 .keepalive-chip.active { display: inline-flex !important; } /* 47차: 유지 중일 때만 표시 — .header-btn display !important 대비 */
 .keepalive-chip .hb-label { font-size: 10px; color: var(--accent-teal); font-weight: 600; }
 .keepalive-chip.passive { cursor: default; pointer-events: none; user-select: none; } /* 47차: 순수 표시 전용 */
+/* 48차: 업데이트 배너 (GitHub 릴리즈) */
+.update-banner { display: none; margin: 8px 12px 0; padding: 8px 12px; border: 1px solid var(--accent-teal); border-radius: 10px; background: rgba(78,201,176,0.10); color: var(--accent-teal); text-decoration: none; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 600; }
+.update-banner.show { display: flex; }
+.update-banner:hover { background: rgba(78,201,176,0.18); }
+.update-banner-cta { flex: none; border: 1px solid var(--accent-teal); border-radius: 999px; padding: 2px 10px; font-size: 11px; }
+
+/* 48차: 설정 하단 앱 정보 */
+.app-info-line { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; padding: 6px 2px; font-size: 12px; }
+.app-info-line .app-info-label { color: var(--text-muted); flex: none; }
+.app-info-line .app-info-value { color: var(--text-primary); text-align: right; word-break: break-all; }

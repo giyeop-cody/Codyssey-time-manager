@@ -4,6 +4,7 @@
 
 // 공통 유틸/계산 (단일 소스 — L3: 자체 복사본 제거)
 import {
+  escapeHtml,
   minutesToTimeStr,
   durationToMinutes,
   timeStrToMinutes,
@@ -349,8 +350,8 @@ function openDayDetail(dateStr, minutes) {
 
       rows.push(`
         <div class="day-detail-record ${isMissing && missingType === 'exit' ? 'current' : ''}">
-          <span class="day-detail-record-time">${displayTime}</span>
-          <span class="day-detail-record-duration ${isOverRecord ? 'over' : ''}">${displayDuration}</span>
+          <span class="day-detail-record-time">${escapeHtml(displayTime)}</span>
+          <span class="day-detail-record-duration ${isOverRecord ? 'over' : ''}">${escapeHtml(displayDuration)}</span>
         </div>
       `);
     }

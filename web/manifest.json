@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "코디세이 출입 현황 알리미",
   "short_name": "출입알리미",
-  "version": "1.10.8",
+  "version": "1.10.9",
   "description": "코디세이 월 80시간/일 12시간 출입기록 관리, 캘린더 뷰, 퇴실 알람",
   "permissions": [
     "storage",
@@ -11,6 +11,7 @@
     "cookies"
   ],
   "host_permissions": [
+    "https://api.github.com/*",
     "https://ams.codyssey.kr/*",
     "https://api.ams.codyssey.kr/*",
     "https://api.usr.codyssey.kr/*",
@@ -49,21 +50,5 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "calendar.html",
-        "css/*",
-        "js/*"
-      ],
-      "matches": [
-        "https://codyssey.kr/*",
-        "https://ams.codyssey.kr/*",
-        "https://usr.codyssey.kr/*",
-        "https://api.ams.codyssey.kr/*",
-        "https://api.usr.codyssey.kr/*"
-      ]
-    }
-  ]
+  }
 }

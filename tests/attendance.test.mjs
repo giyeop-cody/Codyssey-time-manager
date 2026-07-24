@@ -49,7 +49,11 @@ import {
   describeDaySession,
   rawStayMinutesFromSessions,
   rawStayMinutesForDate,
-  rawStayTodayMinutes
+  rawStayTodayMinutes,
+  escapeHtml,
+  isNewerVersion,
+  APP_VERSION,
+  EXPECTED_APK_SIGNATURE_SHA256
 } from '../web/js/shared-attendance.js';
 
 // ===== 픽스처 헬퍼 (오늘 날짜 기준으로 동적 생성 → 날짜 독립적) =====
@@ -1289,4 +1293,34 @@ test('47차 rawStayTodayMinutes: 오늘 외 날짜 기록은 무시하고 오늘
     ]
   };
   assert.equal(rawStayTodayMinutes(p, now), 60);
+});
+// ===== 48차: 보안 유틸 =====
+test('48차 escapeHtml: 서버 원문의 마크업 메타문자 이스케이프', () => {
+  assert.equal(escapeHtml('<img onerror=alert(1)>'), '&lt;img onerror=alert(1)&gt;');
+  assert.equal(escapeHtml('동료 평가 <중간> "A조" & B조'), '동료 평가 &lt;중간&gt; &quot;A조&quot; &amp; B조');
+  assert.equal(escapeHtml("it's"), 'it&#39;s');
+  assert.equal(escapeHtml(null), '');
+  assert.equal(escapeHtml(undefined), '');
+  assert.equal(escapeHtml(123), '123');
+});
+
+test('48차 isNewerVersion: v 접두어·자릿수 차이 비교', () => {
+  assert.equal(isNewerVersion('v1.10.9', '1.10.8'), true);
+  assert.equal(isNewerVersion('v1.10.8', '1.10.8'), false);
+  assert.equal(isNewerVersion('v1.10.7', '1.10.8'), false);
+  assert.equal(isNewerVersion('v2.0.0', '1.10.9'), true);
+  assert.equal(isNewerVersion('v1.11.0', '1.10.9'), true);
+  assert.equal(isNewerVersion('v1.10.9.1', '1.10.9'), true);
+  assert.equal(isNewerVersion('', '1.10.9'), false);
+  assert.equal(isNewerVersion(null, '1.10.9'), false);
+});
+
+test('48차 APP_VERSION은 web/manifest.json 버전과 동기', async () => {
+  const { readFileSync } = await import('node:fs');
+  const m = JSON.parse(readFileSync(new URL('../web/manifest.json', import.meta.url), 'utf8'));
+  assert.equal(APP_VERSION, m.version);
+});
+
+test('48차 EXPECTED_APK_SIGNATURE_SHA256: 공식 지문 형식', () => {
+  assert.match(EXPECTED_APK_SIGNATURE_SHA256, /^([0-9A-F]{2}:){31}[0-9A-F]{2}$/);
 });

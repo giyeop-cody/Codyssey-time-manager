@@ -21,16 +21,17 @@ android {
         buildConfig true
     }
     signingConfigs {
-        // N1 개선: 저장소에 커밋된 고정 디버그 키스토어 사용 (공개 표준 자격증명).
-        // CI 러너의 ~/.android/debug.keystore 는 매 실행마다 재생성되어
-        // 서명이 달라지고, 기기에서 APK 덮어쓰기(업데이트) 설치가 불가능했음.
-        // androiddebugkey/android 는 Android SDK 기본 디버그 자격증명으로 공개 값이며,
-        // 프로덕션 키가 아니므로 저장소 포함이 공식 권장 패턴임.
+        // 48차 (V-1): 커밋된 고정 디버그 키스토어 폐기 — 공개 키로 배포물이 서명되던 문제 해소.
+        // 디버그 키는 로컬 파일이 있을 때만 사용(없으면 Gradle 기본 생성 키).
+        // 배포는 release 키스토어(CI가 secrets에서 복호화)로만 서명한다.
+        def dbgKeystore = file('debug.keystore')
         debug {
-            storeFile file('debug.keystore')
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+            if (dbgKeystore.exists()) {
+                storeFile dbgKeystore
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
         release {
             if (releaseKeystore.exists()) {

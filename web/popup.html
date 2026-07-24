@@ -74,6 +74,13 @@
     </div>
   </div>
 
+  <!-- 48차: 업데이트 알림 배너 (GitHub 릴리즈 확인 후 표시) -->
+  <a id="update-banner" class="update-banner" target="_blank" rel="noopener"
+     href="https://github.com/giyeop-cody/Codyssey-time-manager/releases/latest" role="status">
+    <span class="update-banner-text" id="update-banner-text"></span>
+    <span class="update-banner-cta">다운로드</span>
+  </a>
+
   <!-- 22차: 세션 만료 배너 — 세션이 죽어도 로그인 폼으로 화면을 뺏지 않고 캐시 대시보드 유지 -->
   <div id="session-expired-banner" class="session-expired-banner" style="display:none;">
     <span class="seb-text">🔒 세션이 만료됐어요 (다른 기기 로그인 또는 세션 만료). 지금 수치는 마지막 동기화 데이터이고 알람·갱신은 멈춰 있습니다.</span>
@@ -465,6 +472,13 @@
         <button type="button" id="btn-settings-diag-copy" class="btn btn-secondary btn-sm">전체 복사</button>
         <button type="button" id="btn-settings-diag-clear" class="btn btn-ghost btn-sm">지우기</button>
       </div>
+    </div>
+
+    <div class="settings-section">
+      <div class="settings-section-title">앱 정보</div>
+      <div class="app-info-line"><span class="app-info-label">버전</span><span class="app-info-value" id="app-info-version">-</span></div>
+      <div class="app-info-line"><span class="app-info-label">설치 서명</span><span class="app-info-value" id="app-info-signature">-</span></div>
+      <div class="setting-desc">서명 지문 원본은 GitHub Releases의 SIGNATURE.txt — 일치하지 않으면 공식 배포본이 아닙니다.</div>
     </div>
 
     <div class="settings-actions">

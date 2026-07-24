@@ -30,7 +30,11 @@ import {
   timeStrToMinutes,
   getDaySessions,
   describeDaySession,
-  rawStayMinutesForDate
+  rawStayMinutesForDate,
+  escapeHtml,
+  isNewerVersion,
+  EXPECTED_APK_SIGNATURE_SHA256,
+  APP_VERSION
 } from './shared-attendance.js';
 
 // 유틸리티 함수들
@@ -162,6 +166,10 @@ const els = {
   settingKeepAlive: document.getElementById('setting-keep-alive'),
   settingGateNotify: document.getElementById('setting-gate-notify'),
   settingOverstayAlert: document.getElementById('setting-overstay-alert'),
+  updateBanner: document.getElementById('update-banner'),
+  updateBannerText: document.getElementById('update-banner-text'),
+  appInfoVersion: document.getElementById('app-info-version'),
+  appInfoSignature: document.getElementById('app-info-signature'),
   settingDash: document.getElementById('setting-dash'),
   btnBatteryExempt: document.getElementById('btn-battery-exempt'),
   btnExactAlarm: document.getElementById('btn-exact-alarm'),
@@ -850,7 +858,7 @@ function renderAlarms(alarms) {
     return `
       <div class="alarm-item ${type}" data-end-minutes="${alarm.endMinutes}" data-alarm-type="${type}">
         <div class="alarm-info">
-          <div class="alarm-label">${label}</div>
+          <div class="alarm-label">${escapeHtml(label)}</div>
           <div class="alarm-time">${timeStr} (${subText})</div>
           <div class="alarm-meta">설정: ${createdStr}</div>
         </div>
@@ -1598,6 +1606,63 @@ async function pingKeepAlive() {
   }
 }
 
+// ===== 48차: GitHub 최신 릴리즈 확인 → 업데이트 배너 =====
+// 스토어 미등록 상태라 자동 업데이트가 없으므로(P-1), 새 버전이 있으면 배너로 안내.
+// 캐시 12시간 — GitHub API 비로그인 한도(시간 60회/IP) 절약. 네트워크 실패는 조용히 무시.
+const RELEASE_CHECK_KEY = 'codyssey_release_check_cache';
+const RELEASE_CHECK_TTL = 12 * 3600 * 1000;
+const RELEASE_REPO = 'giyeop-cody/Codyssey-time-manager';
+
+function currentAppVersion() { return APP_VERSION; } // manifest와 단위 테스트로 동기 검증
+
+function showUpdateBanner(tag) {
+  els.updateBannerText.textContent = `새 버전 ${tag} 출시 — 지금 v${currentAppVersion()}`;
+  els.updateBanner.classList.add('show');
+}
+
+async function checkLatestRelease() {
+  try {
+    let cache = null;
+    try { cache = JSON.parse(localStorage.getItem(RELEASE_CHECK_KEY) || 'null'); } catch (e) { /* 캐시 파손 무시 */ }
+    if (!cache || !cache.tag || Date.now() - (cache.checkedAt || 0) > RELEASE_CHECK_TTL) {
+      const res = await fetch(`https://api.github.com/repos/${RELEASE_REPO}/releases/latest`,
+        { headers: { Accept: 'application/vnd.github+json' } });
+      if (res.ok) {
+        const j = await res.json();
+        cache = { tag: j.tag_name || '', checkedAt: Date.now() };
+        try { localStorage.setItem(RELEASE_CHECK_KEY, JSON.stringify(cache)); } catch (e) { /* 저장 실패 무시 */ }
+      }
+    }
+    if (cache && isNewerVersion(cache.tag, currentAppVersion())) showUpdateBanner(cache.tag);
+  } catch (e) { /* 오프라인·레이트리밋 등 — 업데이트 확인은 부가 기능 */ }
+}
+
+// ===== 48차: 설정 '앱 정보' — 버전 + APK 서명 지문(설치본 진위 확인) =====
+async function renderAppInfo() {
+  const isNative = !!(window.CodysseyNative?.isNative);
+  let ver = APP_VERSION;
+  try { if (chrome?.runtime?.getManifest) ver = chrome.runtime.getManifest().version || ver; } catch (e) { /* 무시 */ }
+
+  let nativeVer = null, sig = null;
+  if (isNative) {
+    try {
+      const r = await window.Capacitor.Plugins.AppInfo.getInfo();
+      nativeVer = r.versionName || null;
+      sig = r.signatureSha256 || null;
+    } catch (e) { /* 플러그인 없음(구버전 앱 셸) — 아래 null 분기 */ }
+  }
+  els.appInfoVersion.textContent = `${isNative ? '안드로이드 앱' : '크롬 익스텐션'} v${nativeVer || ver}`;
+  if (!isNative) {
+    els.appInfoSignature.textContent = '익스텐션은 서명 지문 대상이 아님 — 설치 원본: GitHub Releases zip';
+  } else if (!sig) {
+    els.appInfoSignature.textContent = '지문 확인 불가 (구버전 앱 또는 확인 실패)';
+  } else if (sig.toUpperCase() === EXPECTED_APK_SIGNATURE_SHA256) {
+    els.appInfoSignature.textContent = `공식 배포 서명과 일치 ✅ ${sig.slice(0, 17)}…`;
+  } else {
+    els.appInfoSignature.textContent = `⚠️ 서명 불일치 ${sig.slice(0, 17)}… — 비공식 설치본 가능성. 공식 Releases에서 재설치 권장`;
+  }
+}
+
 // ===== 설정 모달 =====
 function openSettings() {
   if (!currentSettings) return;
@@ -1620,6 +1685,7 @@ function openSettings() {
   refreshDashStatusUI();
   refreshPhyStatusUI(); // 31차: 물리 탐지 상태/토글 동기화
   renderSettingsDiag(); // 37차: 진단 로그 표시
+  renderAppInfo(); // 48차: 버전·서명 지문 표시
   
   els.settingsModal.classList.add('show');
 }
@@ -2193,6 +2259,8 @@ function setupEventListeners() {
 async function init() {
   setupEventListeners();
   
+  checkLatestRelease(); // 48차: 최신 릴리즈 확인 → 업데이트 배너 (실패 무시·비차단)
+
   // 시작 시 세션 확인 - 이미 로그인되어 있으면 바로 대시보드로
   const hasSession = await checkExistingSession();
   if (hasSession) {

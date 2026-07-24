@@ -18,3 +18,6 @@ android/local.properties
 
 # cap sync 생성물 (web/의 복사본 — 커밋 금지, CI에서 생성)
 android/app/src/main/assets/public/
+# 48차 (V-1): 키스토어는 리포에 커밋하지 않음 — CI는 secrets에서 복호화
+android/app/keystore.jks
+android/app/debug.keystore

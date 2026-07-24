@@ -28,8 +28,9 @@ public class CookieManager {
         try {
             String sid = getSessionId(context);
             if (sid == null || sid.isEmpty()) return;
+            // 48차 (V-4): 평문 저장 제거 — AndroidKeyStore 암호화 후 저장
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .edit().putString(SESSION_BACKUP_KEY, sid).apply();
+                    .edit().putString(SESSION_BACKUP_KEY, SecurePrefs.encrypt(sid)).apply();
         } catch (Exception e) { /* 백업 실패는 치명 아님 — 다음 기회에 */ }
     }
 
@@ -37,8 +38,7 @@ public class CookieManager {
     public static void restoreSessionCookie(Context context) {
         try {
             if (hasSessionCookie(context)) return;
-            String sid = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                    .getString(SESSION_BACKUP_KEY, null);
+            String sid = readBackupSessionId(context); // 48차: 복호화 경유 (레거시 평문 자동 마이그레이션)
             if (sid == null || sid.isEmpty()) return;
             android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
             cm.setAcceptCookie(true);
@@ -60,10 +60,33 @@ public class CookieManager {
 
     // 41차: 백업 세션 값 그대로 (없으면 null) — 헤드리스 프로세스에서 WebView 저장소를 못 쓸 때 직접 헤더 주입용
     public static String backupSessionId(Context context) {
+        return readBackupSessionId(context); // 48차: 복호화 경유
+    }
+
+    // 48차 (V-4): 백업 세션 읽기 공통 — ENCv1: 암호문은 복호화, 레거시 평문은
+    // 그대로 읽되 즉시 암호화 저장으로 마이그레이션. 복호화 실패(위변조·키 소실)시
+    // null 반환하고 저장된 값을 지워 죽은 세션 부활을 막는다.
+    private static String readBackupSessionId(Context context) {
         try {
-            String sid = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            Context ctx = context;
+            String raw = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .getString(SESSION_BACKUP_KEY, null);
-            return (sid == null || sid.isEmpty()) ? null : sid;
+            if (raw == null || raw.isEmpty()) return null;
+            if (!SecurePrefs.isEncrypted(raw)) {
+                // 레거시 평문 — 이번에 읽어 쓰되, 곧바로 암호화 형태로 재저장
+                final String legacy = raw;
+                ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit().putString(SESSION_BACKUP_KEY, SecurePrefs.encrypt(legacy)).apply();
+                DiagLog.add(ctx, "COOKIE", "세션 백업을 암호화 저장으로 마이그레이션 (48차)");
+                return legacy;
+            }
+            String sid = SecurePrefs.decrypt(raw);
+            if (sid == null) {
+                ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit().remove(SESSION_BACKUP_KEY).apply();
+                DiagLog.add(ctx, "COOKIE", "⚠️ 세션 백업 복호화 실패 — 값 폐기, 재로그인 필요");
+            }
+            return sid;
         } catch (Exception e) {
             return null;
         }
